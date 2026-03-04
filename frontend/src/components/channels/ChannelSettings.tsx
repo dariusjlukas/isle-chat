@@ -72,7 +72,7 @@ export function ChannelSettings({ channel, onClose }: Props) {
       <ModalContent>
         <ModalHeader>Channel Settings — #{channel.name}</ModalHeader>
         <ModalBody className="pb-6">
-          <Tabs>
+          <Tabs color="primary" classNames={{ tabList: "bg-content2" }}>
             <Tab key="settings" title="Settings">
               <div className="space-y-4 pt-2">
                 <Input label="Channel Name" variant="bordered" value={name}
