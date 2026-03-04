@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Button, Textarea, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from '@heroui/react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faEllipsis, faPencil, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import type { Message } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 
@@ -112,7 +114,7 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
                 <button
                   className="w-6 h-6 rounded-full bg-content1 border border-divider flex items-center justify-center text-xs hover:bg-content2 text-foreground shadow-sm"
                 >
-                  &#8943;
+                  <FontAwesomeIcon icon={faEllipsis} />
                 </button>
               </DropdownTrigger>
               <DropdownMenu
@@ -126,8 +128,8 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
                   }
                 }}
               >
-                <DropdownItem key="edit" startContent={<span>&#9998;</span>}>Edit</DropdownItem>
-                <DropdownItem key="delete" className="text-danger" color="danger" startContent={<span>&#128465;</span>}>Delete</DropdownItem>
+                <DropdownItem key="edit" startContent={<FontAwesomeIcon icon={faPencil} />}>Edit</DropdownItem>
+                <DropdownItem key="delete" className="text-danger" color="danger" startContent={<FontAwesomeIcon icon={faTrashCan} />}>Delete</DropdownItem>
               </DropdownMenu>
             </Dropdown>
           </div>

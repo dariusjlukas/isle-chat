@@ -1,4 +1,6 @@
 import { Button } from '@heroui/react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faBars, faGear, faHashtag, faLock } from '@fortawesome/free-solid-svg-icons';
 import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
 import logoSmall from '../../assets/isle-chat-logo-small.png';
@@ -32,14 +34,14 @@ export function Header({ onShowAdmin, onShowSettings, onToggleSidebar, onShowCha
     <header className="bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 flex items-center justify-between">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <Button isIconOnly variant="light" size="sm" className="md:hidden flex-shrink-0" onPress={onToggleSidebar}>
-          &#9776;
+          <FontAwesomeIcon icon={faBars} />
         </Button>
         <img src={logoSmall} alt="Isle Chat" className="h-7 w-7 flex-shrink-0 dark:hidden" />
         <img src={logoSmallDark} alt="Isle Chat" className="h-7 w-7 flex-shrink-0 hidden dark:block" />
         <span className="text-foreground font-bold hidden sm:inline flex-shrink-0">Isle Chat</span>
         {activeChannel && (
           <h2 className="text-foreground font-semibold truncate">
-            {activeChannel.is_direct ? '' : (activeChannel.is_public ? '# ' : '\u{1F512} ')}
+            {!activeChannel.is_direct && <FontAwesomeIcon icon={activeChannel.is_public ? faHashtag : faLock} className="text-xs mr-1.5" />}
             {activeChannel.name || 'Direct Message'}
           </h2>
         )}
@@ -50,7 +52,7 @@ export function Header({ onShowAdmin, onShowSettings, onToggleSidebar, onShowCha
         )}
         {canManageChannel && (
           <Button isIconOnly variant="light" size="sm" onPress={onShowChannelSettings} title="Channel Settings">
-            &#9881;
+            <FontAwesomeIcon icon={faGear} />
           </Button>
         )}
       </div>

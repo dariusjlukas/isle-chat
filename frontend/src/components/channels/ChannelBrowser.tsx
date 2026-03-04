@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Modal, ModalContent, ModalHeader, ModalBody, Input, Button, Card, CardBody } from '@heroui/react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faHashtag } from '@fortawesome/free-solid-svg-icons';
 import * as api from '../../services/api';
 import { useChatStore } from '../../stores/chatStore';
 
@@ -51,7 +53,7 @@ export function ChannelBrowser({ onClose }: Props) {
               <Card key={ch.id} shadow="sm">
                 <CardBody className="flex flex-row items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="font-semibold text-foreground"># {ch.name}</p>
+                    <p className="font-semibold text-foreground"><FontAwesomeIcon icon={faHashtag} className="text-xs mr-1" />{ch.name}</p>
                     {ch.description && <p className="text-sm text-default-400 truncate">{ch.description}</p>}
                     <p className="text-xs text-default-300">
                       Default role: {ch.default_role}
