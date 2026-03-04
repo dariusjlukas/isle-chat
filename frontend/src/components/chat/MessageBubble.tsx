@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Button, Textarea, Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faEllipsis, faPencil, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Message } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 
@@ -99,7 +101,13 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
             </div>
           </div>
         ) : (
-          <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+          <div className={`text-sm break-words prose prose-sm max-w-none ${
+            isOwn
+              ? 'prose-invert prose-p:text-inherit prose-headings:text-inherit prose-strong:text-inherit prose-em:text-inherit prose-li:text-inherit prose-a:text-inherit prose-blockquote:text-inherit prose-code:text-primary-foreground/80 prose-pre:bg-black/20'
+              : 'dark:prose-invert prose-pre:bg-content1'
+          }`}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+          </div>
         )}
 
         <p className={`text-xs mt-1 ${isOwn ? 'text-primary-200' : 'text-default-400'}`}>
