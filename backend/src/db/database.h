@@ -66,11 +66,22 @@ public:
     // Messages
     Message create_message(const std::string& channel_id, const std::string& user_id,
                            const std::string& content);
+    Message create_file_message(const std::string& channel_id, const std::string& user_id,
+                                const std::string& content, const std::string& file_id,
+                                const std::string& file_name, int64_t file_size,
+                                const std::string& file_type);
     std::vector<Message> get_messages(const std::string& channel_id, int limit = 50,
                                        const std::string& before = "");
     Message edit_message(const std::string& message_id, const std::string& user_id,
                           const std::string& new_content);
     Message delete_message(const std::string& message_id, const std::string& user_id);
+    struct FileInfo { std::string file_name, file_type; };
+    std::optional<FileInfo> get_file_info(const std::string& file_id);
+
+    // Server settings
+    std::optional<std::string> get_setting(const std::string& key);
+    void set_setting(const std::string& key, const std::string& value);
+    int64_t get_total_file_size();
 
     // Invites
     std::string create_invite(const std::string& created_by, int expiry_hours = 24);

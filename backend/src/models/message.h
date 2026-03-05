@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <cstdint>
 
 struct Message {
     std::string id;
@@ -10,4 +11,8 @@ struct Message {
     std::string created_at;
     std::string edited_at;
     bool is_deleted = false;
+    std::string file_id;
+    std::string file_name;
+    int64_t file_size = 0;
+    std::string file_type;
 };

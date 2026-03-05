@@ -14,14 +14,15 @@ struct WsUserData {
     std::string username;
 };
 
+template <bool SSL>
 class WsHandler {
 public:
     Database& db;
 
     explicit WsHandler(Database& db) : db(db) {}
 
-    void register_routes(uWS::App& app) {
-        app.ws<WsUserData>("/ws", {
+    void register_routes(uWS::TemplatedApp<SSL>& app) {
+        app.template ws<WsUserData>("/ws", {
             .compression = uWS::SHARED_COMPRESSOR,
             .maxPayloadLength = 64 * 1024,
             .idleTimeout = 120,
@@ -174,9 +175,9 @@ public:
 
 private:
     std::mutex mutex_;
-    std::unordered_map<std::string, std::unordered_set<uWS::WebSocket<false, true, WsUserData>*>> user_sockets_;
+    std::unordered_map<std::string, std::unordered_set<uWS::WebSocket<SSL, true, WsUserData>*>> user_sockets_;
 
-    void handle_message(uWS::WebSocket<false, true, WsUserData>* ws, std::string_view raw) {
+    void handle_message(uWS::WebSocket<SSL, true, WsUserData>* ws, std::string_view raw) {
         auto* data = ws->getUserData();
         try {
             auto j = json::parse(raw);
@@ -197,7 +198,7 @@ private:
         }
     }
 
-    void handle_send_message(uWS::WebSocket<false, true, WsUserData>* ws,
+    void handle_send_message(uWS::WebSocket<SSL, true, WsUserData>* ws,
                               WsUserData* data, const json& j) {
         std::string channel_id = j.at("channel_id");
         std::string content = j.at("content");
@@ -227,7 +228,7 @@ private:
         ws->send(broadcast.dump(), uWS::OpCode::TEXT);
     }
 
-    void handle_edit_message(uWS::WebSocket<false, true, WsUserData>* ws,
+    void handle_edit_message(uWS::WebSocket<SSL, true, WsUserData>* ws,
                               WsUserData* data, const json& j) {
         std::string message_id = j.at("message_id");
         std::string content = j.at("content");
@@ -245,7 +246,7 @@ private:
         ws->send(broadcast.dump(), uWS::OpCode::TEXT);
     }
 
-    void handle_delete_message(uWS::WebSocket<false, true, WsUserData>* ws,
+    void handle_delete_message(uWS::WebSocket<SSL, true, WsUserData>* ws,
                                 WsUserData* data, const json& j) {
         std::string message_id = j.at("message_id");
 
@@ -260,7 +261,7 @@ private:
         ws->send(broadcast.dump(), uWS::OpCode::TEXT);
     }
 
-    void handle_typing(uWS::WebSocket<false, true, WsUserData>* ws,
+    void handle_typing(uWS::WebSocket<SSL, true, WsUserData>* ws,
                         WsUserData* data, const json& j) {
         std::string channel_id = j.at("channel_id");
 
@@ -286,6 +287,12 @@ private:
         };
         if (!msg.edited_at.empty()) {
             j["edited_at"] = msg.edited_at;
+        }
+        if (!msg.file_id.empty()) {
+            j["file_id"] = msg.file_id;
+            j["file_name"] = msg.file_name;
+            j["file_size"] = msg.file_size;
+            j["file_type"] = msg.file_type;
         }
         return j;
     }

@@ -9,7 +9,13 @@ interface Props {
   onClose: () => void;
 }
 
-export function Sidebar({ onCreateChannel, onStartDM, onBrowseChannels, open, onClose }: Props) {
+export function Sidebar({
+  onCreateChannel,
+  onStartDM,
+  onBrowseChannels,
+  open,
+  onClose,
+}: Props) {
   return (
     <>
       {open && (
@@ -27,7 +33,11 @@ export function Sidebar({ onCreateChannel, onStartDM, onBrowseChannels, open, on
           <h1 className="text-xl font-bold text-foreground">Chat</h1>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
-          <ChannelList onCreateChannel={onCreateChannel} onBrowseChannels={onBrowseChannels} onSelect={onClose} />
+          <ChannelList
+            onCreateChannel={onCreateChannel}
+            onBrowseChannels={onBrowseChannels}
+            onSelect={onClose}
+          />
           <DMList onStartDM={onStartDM} onSelect={onClose} />
         </div>
       </aside>

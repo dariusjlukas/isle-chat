@@ -37,9 +37,9 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
         token: inviteToken.trim() || undefined,
       });
 
-      setAuth(result.user as any, result.token);
-    } catch (e: any) {
-      setError(e.message || 'Registration failed');
+      setAuth(result.user, result.token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Registration failed');
     } finally {
       setLoading(false);
     }
@@ -47,15 +47,27 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background">
-      <img src={logoLarge} alt="Isle Chat" className="w-24 h-24 mb-4 dark:hidden" />
-      <img src={logoLargeDark} alt="Isle Chat" className="w-24 h-24 mb-4 hidden dark:block" />
+      <img
+        src={logoLarge}
+        alt="Isle Chat"
+        className="w-24 h-24 mb-4 dark:hidden"
+      />
+      <img
+        src={logoLargeDark}
+        alt="Isle Chat"
+        className="w-24 h-24 mb-4 hidden dark:block"
+      />
       <Card className="w-full max-w-md mx-4 sm:mx-auto shadow-2xl">
         <CardBody className="p-5 sm:p-8">
           <h1 className="text-3xl font-bold text-foreground mb-2">Register</h1>
-          <p className="text-default-500 mb-6">Create your account with a cryptographic key</p>
+          <p className="text-default-500 mb-6">
+            Create your account with a cryptographic key
+          </p>
 
           {error && (
-            <Alert color="danger" variant="flat" className="mb-4">{error}</Alert>
+            <Alert color="danger" variant="flat" className="mb-4">
+              {error}
+            </Alert>
           )}
 
           <form onSubmit={handleRegister} className="space-y-4">
@@ -81,16 +93,32 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
               onChange={(e) => setInviteToken(e.target.value)}
               placeholder="Paste invite token here"
             />
-            <Button type="submit" color="primary" fullWidth isLoading={loading} size="lg">
-              {loading ? 'Creating account...' : 'Create Account & Generate Keys'}
+            <Button
+              type="submit"
+              color="primary"
+              fullWidth
+              isLoading={loading}
+              size="lg"
+            >
+              {loading
+                ? 'Creating account...'
+                : 'Create Account & Generate Keys'}
             </Button>
           </form>
 
           <p className="mt-4 text-center text-sm text-default-500">
-            A cryptographic keypair will be generated and stored in your browser.
+            A cryptographic keypair will be generated and stored in your
+            browser.
           </p>
 
-          <Button variant="light" color="primary" fullWidth onPress={onSwitchToLogin} className="mt-4" size="sm">
+          <Button
+            variant="light"
+            color="primary"
+            fullWidth
+            onPress={onSwitchToLogin}
+            className="mt-4"
+            size="sm"
+          >
             Already registered? Sign in
           </Button>
         </CardBody>

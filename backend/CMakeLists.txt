@@ -29,19 +29,22 @@ target_compile_definitions(uSockets PUBLIC LIBUS_USE_OPENSSL)
 # nlohmann/json (header-only)
 set(JSON_DIR ${CMAKE_SOURCE_DIR}/libs/json/single_include)
 
-# Application sources
-file(GLOB_RECURSE APP_SOURCES src/*.cpp)
+# Application library (shared between main executable and tests)
+set(LIB_SOURCES
+    src/auth/pki.cpp
+    src/db/database.cpp
+)
 
-add_executable(chat-server ${APP_SOURCES})
+add_library(chat-lib STATIC ${LIB_SOURCES})
 
-target_include_directories(chat-server PRIVATE
+target_include_directories(chat-lib PUBLIC
     ${UWS_DIR}
     ${USOCKETS_DIR}/src
     ${JSON_DIR}
     src
 )
 
-target_link_libraries(chat-server
+target_link_libraries(chat-lib PUBLIC
     uSockets
     OpenSSL::SSL
     OpenSSL::Crypto
@@ -50,4 +53,15 @@ target_link_libraries(chat-server
     pthread
 )
 
-target_compile_definitions(chat-server PRIVATE LIBUS_USE_OPENSSL)
+target_compile_definitions(chat-lib PUBLIC LIBUS_USE_OPENSSL)
+
+# Main executable
+add_executable(chat-server src/main.cpp)
+target_link_libraries(chat-server PRIVATE chat-lib)
+
+# Testing
+option(BUILD_TESTS "Build test suite" OFF)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

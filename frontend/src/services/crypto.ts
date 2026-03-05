@@ -58,7 +58,9 @@ function openDB(): Promise<IDBDatabase> {
 
 // --- Public API ---
 
-export async function generateKeyPair(username: string): Promise<{ publicKeyPem: string }> {
+export async function generateKeyPair(
+  username: string,
+): Promise<{ publicKeyPem: string }> {
   const privateKey = ed25519.utils.randomSecretKey();
   const publicKey = ed25519.getPublicKey(privateKey);
   const publicKeyPem = rawPublicKeyToPem(publicKey);
@@ -79,7 +81,7 @@ export async function generateKeyPair(username: string): Promise<{ publicKeyPem:
 }
 
 export async function getStoredKeys(
-  username: string
+  username: string,
 ): Promise<{ privateKey: Uint8Array; publicKeyPem: string } | null> {
   const db = await openDB();
   const tx = db.transaction(STORE_NAME, 'readonly');
@@ -104,7 +106,10 @@ export async function getStoredKeys(
   });
 }
 
-export async function signChallenge(privateKey: Uint8Array, challenge: string): Promise<string> {
+export async function signChallenge(
+  privateKey: Uint8Array,
+  challenge: string,
+): Promise<string> {
   const data = new TextEncoder().encode(challenge);
   const signature = ed25519.sign(data, privateKey);
   return bufferToBase64(signature);
@@ -130,7 +135,7 @@ export async function listStoredUsers(): Promise<string[]> {
 export async function storeKeysAs(
   username: string,
   privateKey: Uint8Array,
-  publicKeyPem: string
+  publicKeyPem: string,
 ): Promise<void> {
   const db = await openDB();
   const tx = db.transaction(STORE_NAME, 'readwrite');

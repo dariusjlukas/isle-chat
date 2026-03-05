@@ -22,8 +22,6 @@ export function TypingIndicator({ channelId }: Props) {
         : `${others[0]} and ${others.length - 1} others are typing...`;
 
   return (
-    <div className="px-4 py-1 text-xs text-default-400 italic">
-      {text}
-    </div>
+    <div className="px-4 py-1 text-xs text-default-400 italic">{text}</div>
   );
 }

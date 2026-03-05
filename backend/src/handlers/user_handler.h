@@ -5,10 +5,11 @@
 
 using json = nlohmann::json;
 
+template <bool SSL>
 struct UserHandler {
     Database& db;
 
-    void register_routes(uWS::App& app) {
+    void register_routes(uWS::TemplatedApp<SSL>& app) {
         app.get("/api/users", [this](auto* res, auto* req) {
             std::string user_id = get_user_id(res, req);
             if (user_id.empty()) return;
@@ -129,7 +130,7 @@ struct UserHandler {
     }
 
 private:
-    std::string get_user_id(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    std::string get_user_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         std::string token(req->getHeader("authorization"));
         if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
         auto user_id = db.validate_session(token);

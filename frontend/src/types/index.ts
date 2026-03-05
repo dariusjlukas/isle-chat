@@ -39,6 +39,10 @@ export interface Message {
   created_at: string;
   edited_at?: string;
   is_deleted?: boolean;
+  file_id?: string;
+  file_name?: string;
+  file_size?: number;
+  file_type?: string;
 }
 
 export interface InviteToken {

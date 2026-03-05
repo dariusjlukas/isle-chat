@@ -1,5 +1,17 @@
 import { useState } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter, Button, Input, Select, SelectItem, Alert, Switch } from '@heroui/react';
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  Input,
+  Select,
+  SelectItem,
+  Alert,
+  Switch,
+} from '@heroui/react';
 import * as api from '../../services/api';
 import { useChatStore } from '../../stores/chatStore';
 
@@ -33,7 +45,7 @@ export function CreateChannel({ onClose, mode }: Props) {
         }
         const ch = await api.createDM(selectedUser);
         const channels = await api.listChannels();
-        useChatStore.getState().setChannels(channels as any);
+        useChatStore.getState().setChannels(channels);
         setActiveChannel(ch.id);
       } else {
         if (!name.trim()) {
@@ -41,27 +53,48 @@ export function CreateChannel({ onClose, mode }: Props) {
           setLoading(false);
           return;
         }
-        const ch = await api.createChannel(name.trim(), description.trim(), undefined,
-                                            isPublic, defaultRole);
+        const ch = await api.createChannel(
+          name.trim(),
+          description.trim(),
+          undefined,
+          isPublic,
+          defaultRole,
+        );
         const channels = await api.listChannels();
-        useChatStore.getState().setChannels(channels as any);
+        useChatStore.getState().setChannels(channels);
         setActiveChannel(ch.id);
       }
       onClose();
-    } catch (e: any) {
-      setError(e.message || 'Failed');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed');
     } finally {
       setLoading(false);
     }
   };
 
   const allUsers = [
-    ...(currentUser ? [{ id: currentUser.id, label: `${currentUser.display_name} (@${currentUser.username}) (you)` }] : []),
-    ...users.filter((u) => u.id !== currentUser?.id).map((u) => ({ id: u.id, label: `${u.display_name} (@${u.username})` })),
+    ...(currentUser
+      ? [
+          {
+            id: currentUser.id,
+            label: `${currentUser.display_name} (@${currentUser.username}) (you)`,
+          },
+        ]
+      : []),
+    ...users
+      .filter((u) => u.id !== currentUser?.id)
+      .map((u) => ({ id: u.id, label: `${u.display_name} (@${u.username})` })),
   ];
 
   return (
-    <Modal isOpen onOpenChange={(open) => { if (!open) onClose(); }} size="md" backdrop="opaque">
+    <Modal
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      size="md"
+      backdrop="opaque"
+    >
       <ModalContent>
         <form onSubmit={handleSubmit}>
           <ModalHeader>
@@ -69,7 +102,9 @@ export function CreateChannel({ onClose, mode }: Props) {
           </ModalHeader>
           <ModalBody>
             {error && (
-              <Alert color="danger" variant="flat">{error}</Alert>
+              <Alert color="danger" variant="flat">
+                {error}
+              </Alert>
             )}
 
             {mode === 'dm' ? (
@@ -102,12 +137,18 @@ export function CreateChannel({ onClose, mode }: Props) {
                 />
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-foreground">Public Channel</p>
+                    <p className="text-sm font-medium text-foreground">
+                      Public Channel
+                    </p>
                     <p className="text-xs text-default-400">
                       {isPublic ? 'Anyone can find and join' : 'Invite only'}
                     </p>
                   </div>
-                  <Switch isSelected={isPublic} onValueChange={setIsPublic} size="sm" />
+                  <Switch
+                    isSelected={isPublic}
+                    onValueChange={setIsPublic}
+                    size="sm"
+                  />
                 </div>
                 <Select
                   label="Default Role for New Members"

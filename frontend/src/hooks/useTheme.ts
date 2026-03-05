@@ -1,6 +1,11 @@
 import { useState, useCallback } from 'react';
 
-export type ColorTheme = 'modern' | 'elegant' | 'coffee' | 'emerald' | 'classic';
+export type ColorTheme =
+  | 'modern'
+  | 'elegant'
+  | 'coffee'
+  | 'emerald'
+  | 'classic';
 export type ModeSetting = 'auto' | 'light' | 'dark';
 export type Mode = 'light' | 'dark';
 
@@ -32,7 +37,9 @@ function getStoredModeSetting(): ModeSetting {
 }
 
 function getSystemMode(): Mode {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
 }
 
 function resolveMode(setting: ModeSetting): Mode {
@@ -46,15 +53,21 @@ function applyTheme(colorTheme: ColorTheme, mode: Mode) {
 }
 
 // Module-level listener: always reacts to OS theme changes when mode is 'auto'
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  if (getStoredModeSetting() !== 'auto') return;
-  applyTheme(getStoredColorTheme(), getSystemMode());
-});
+window
+  .matchMedia('(prefers-color-scheme: dark)')
+  .addEventListener('change', () => {
+    if (getStoredModeSetting() !== 'auto') return;
+    applyTheme(getStoredColorTheme(), getSystemMode());
+  });
 
 export function useTheme() {
-  const [colorTheme, setColorThemeState] = useState<ColorTheme>(getStoredColorTheme);
-  const [modeSetting, setModeSettingState] = useState<ModeSetting>(getStoredModeSetting);
-  const [resolvedMode, setResolvedMode] = useState<Mode>(() => resolveMode(getStoredModeSetting()));
+  const [colorTheme, setColorThemeState] =
+    useState<ColorTheme>(getStoredColorTheme);
+  const [modeSetting, setModeSettingState] =
+    useState<ModeSetting>(getStoredModeSetting);
+  const [resolvedMode, setResolvedMode] = useState<Mode>(() =>
+    resolveMode(getStoredModeSetting()),
+  );
 
   const setColorTheme = useCallback((newColorTheme: ColorTheme) => {
     localStorage.setItem('colorTheme', newColorTheme);
@@ -70,5 +83,11 @@ export function useTheme() {
     setResolvedMode(resolved);
   }, []);
 
-  return { colorTheme, modeSetting, resolvedMode, setColorTheme, setModeSetting } as const;
+  return {
+    colorTheme,
+    modeSetting,
+    resolvedMode,
+    setColorTheme,
+    setModeSetting,
+  } as const;
 }

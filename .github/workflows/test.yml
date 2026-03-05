@@ -1,0 +1,111 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/test.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - ".github/workflows/test.yml"
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: chatapp_test
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: chatapp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chatapp_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: chatapp_test
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: chatapp_test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libssl-dev \
+            libpqxx-dev \
+            pkg-config \
+            zlib1g-dev \
+            git
+
+      - name: Clone library dependencies
+        working-directory: backend
+        run: |
+          mkdir -p libs
+          git clone --depth 1 --recurse-submodules \
+            https://github.com/uNetworking/uWebSockets.git libs/uWebSockets
+          git clone --depth 1 --branch v3.11.3 \
+            https://github.com/nlohmann/json.git libs/json
+
+      - name: Configure CMake
+        working-directory: backend
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
+
+      - name: Build
+        working-directory: backend
+        run: cmake --build build -j$(nproc)
+
+      - name: Run unit tests
+        working-directory: backend/build
+        run: ctest --output-on-failure -L unit --timeout 30
+
+      - name: Run integration tests
+        working-directory: backend/build
+        run: ctest --output-on-failure -L integration --timeout 60

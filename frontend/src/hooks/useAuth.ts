@@ -7,24 +7,20 @@ export function useAuth() {
   const user = useChatStore((s) => s.user);
   const setAuth = useChatStore((s) => s.setAuth);
   const clearAuth = useChatStore((s) => s.clearAuth);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => !!localStorage.getItem('session_token'),
+  );
 
   useEffect(() => {
     const token = localStorage.getItem('session_token');
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+    if (!token) return;
 
-    api.getMe()
-      .then((userData) => {
-        setAuth(userData as any, token);
-      })
-      .catch(() => {
-        clearAuth();
-      })
+    api
+      .getMe()
+      .then((userData) => setAuth(userData, token))
+      .catch(() => clearAuth())
       .finally(() => setLoading(false));
-  }, []);
+  }, [setAuth, clearAuth]);
 
   return { isAuthenticated, loading, user };
 }

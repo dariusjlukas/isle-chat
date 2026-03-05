@@ -7,11 +7,12 @@
 
 using json = nlohmann::json;
 
+template <bool SSL>
 struct AuthHandler {
     Database& db;
     const Config& config;
 
-    void register_routes(uWS::App& app) {
+    void register_routes(uWS::TemplatedApp<SSL>& app) {
         app.post("/api/auth/challenge", [this](auto* res, auto* req) {
             std::string body;
             res->onData([this, res, body = std::move(body)](std::string_view data, bool last) mutable {
@@ -72,7 +73,7 @@ struct AuthHandler {
     }
 
 private:
-    void handle_challenge(uWS::HttpResponse<false>* res, const std::string& body) {
+    void handle_challenge(uWS::HttpResponse<SSL>* res, const std::string& body) {
         try {
             auto j = json::parse(body);
             std::string public_key = j.at("public_key");
@@ -95,7 +96,7 @@ private:
         }
     }
 
-    void handle_verify(uWS::HttpResponse<false>* res, const std::string& body) {
+    void handle_verify(uWS::HttpResponse<SSL>* res, const std::string& body) {
         try {
             auto j = json::parse(body);
             std::string public_key = j.at("public_key");
@@ -146,7 +147,7 @@ private:
         }
     }
 
-    void handle_register(uWS::HttpResponse<false>* res, const std::string& body) {
+    void handle_register(uWS::HttpResponse<SSL>* res, const std::string& body) {
         try {
             auto j = json::parse(body);
             std::string username = j.at("username");
@@ -220,7 +221,7 @@ private:
         }
     }
 
-    void handle_add_device(uWS::HttpResponse<false>* res, const std::string& body) {
+    void handle_add_device(uWS::HttpResponse<SSL>* res, const std::string& body) {
         try {
             auto j = json::parse(body);
             std::string device_token = j.at("device_token");
@@ -265,7 +266,7 @@ private:
         }
     }
 
-    void handle_request_access(uWS::HttpResponse<false>* res, const std::string& body) {
+    void handle_request_access(uWS::HttpResponse<SSL>* res, const std::string& body) {
         try {
             auto j = json::parse(body);
             std::string username = j.at("username");

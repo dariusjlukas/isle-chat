@@ -12,7 +12,11 @@ interface Props {
 
 const EMPTY_MESSAGES: Array<import('../../types').Message> = [];
 
-export function MessageList({ channelId, onEditMessage, onDeleteMessage }: Props) {
+export function MessageList({
+  channelId,
+  onEditMessage,
+  onDeleteMessage,
+}: Props) {
   const storeMessages = useChatStore((s) => s.messages[channelId]);
   const messages = storeMessages ?? EMPTY_MESSAGES;
   const setMessages = useChatStore((s) => s.setMessages);
@@ -22,7 +26,7 @@ export function MessageList({ channelId, onEditMessage, onDeleteMessage }: Props
     api.getMessages(channelId).then((msgs) => {
       setMessages(channelId, msgs);
     });
-  }, [channelId]);
+  }, [channelId, setMessages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -36,7 +40,12 @@ export function MessageList({ channelId, onEditMessage, onDeleteMessage }: Props
         </div>
       )}
       {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} onEdit={onEditMessage} onDelete={onDeleteMessage} />
+        <MessageBubble
+          key={msg.id}
+          message={msg}
+          onEdit={onEditMessage}
+          onDelete={onDeleteMessage}
+        />
       ))}
       <TypingIndicator channelId={channelId} />
       <div ref={bottomRef} />

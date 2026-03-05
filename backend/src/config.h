@@ -11,6 +11,14 @@ struct Config {
     int server_port;
     int session_expiry_hours;
     std::string public_url;
+    std::string upload_dir;
+    int64_t max_file_size;
+    std::string ssl_cert_path;
+    std::string ssl_key_path;
+
+    bool has_ssl() const {
+        return !ssl_cert_path.empty() && !ssl_key_path.empty();
+    }
 
     static Config from_env() {
         Config c;
@@ -22,6 +30,10 @@ struct Config {
         c.server_port = std::stoi(env("BACKEND_PORT", "9001"));
         c.session_expiry_hours = std::stoi(env("SESSION_EXPIRY_HOURS", "168"));
         c.public_url = env("PUBLIC_URL", "");
+        c.upload_dir = env("UPLOAD_DIR", "/data/uploads");
+        c.max_file_size = std::stoll(env("MAX_FILE_SIZE", "1073741824"));
+        c.ssl_cert_path = env("SSL_CERT_PATH", "");
+        c.ssl_key_path = env("SSL_KEY_PATH", "");
         return c;
     }
 

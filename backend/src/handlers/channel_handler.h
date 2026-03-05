@@ -7,11 +7,12 @@
 
 using json = nlohmann::json;
 
+template <bool SSL>
 struct ChannelHandler {
     Database& db;
-    WsHandler& ws;
+    WsHandler<SSL>& ws;
 
-    void register_routes(uWS::App& app) {
+    void register_routes(uWS::TemplatedApp<SSL>& app) {
         app.get("/api/channels", [this](auto* res, auto* req) {
             std::string user_id = get_user_id(res, req);
             if (user_id.empty()) return;
@@ -113,6 +114,12 @@ struct ChannelHandler {
                           {"content", msg.content}, {"created_at", msg.created_at},
                           {"is_deleted", msg.is_deleted}};
                 if (!msg.edited_at.empty()) m["edited_at"] = msg.edited_at;
+                if (!msg.file_id.empty()) {
+                    m["file_id"] = msg.file_id;
+                    m["file_name"] = msg.file_name;
+                    m["file_size"] = msg.file_size;
+                    m["file_type"] = msg.file_type;
+                }
                 arr.push_back(m);
             }
             res->writeHeader("Content-Type", "application/json")->end(arr.dump());
@@ -351,7 +358,7 @@ struct ChannelHandler {
     }
 
 private:
-    std::string get_user_id(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    std::string get_user_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         std::string token(req->getHeader("authorization"));
         if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
         auto user_id = db.validate_session(token);
@@ -363,7 +370,7 @@ private:
         return *user_id;
     }
 
-    void handle_create_channel(uWS::HttpResponse<false>* res, const std::string& body,
+    void handle_create_channel(uWS::HttpResponse<SSL>* res, const std::string& body,
                                 const std::string& user_id) {
         try {
             auto j = json::parse(body);
@@ -429,7 +436,7 @@ private:
         }
     }
 
-    void handle_create_dm(uWS::HttpResponse<false>* res, const std::string& body,
+    void handle_create_dm(uWS::HttpResponse<SSL>* res, const std::string& body,
                            const std::string& user_id) {
         try {
             auto j = json::parse(body);

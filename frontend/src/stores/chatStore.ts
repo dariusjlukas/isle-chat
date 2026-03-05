@@ -13,6 +13,7 @@ interface ChatState {
   messages: Record<string, Message[]>; // channel_id -> messages
   users: User[];
   typingUsers: Record<string, string[]>; // channel_id -> usernames
+  uploadProgress: number | null;
 
   // Actions
   setAuth: (user: User, token: string) => void;
@@ -30,9 +31,10 @@ interface ChatState {
   removeChannel: (channelId: string) => void;
   setTyping: (channelId: string, username: string) => void;
   clearTyping: (channelId: string, username: string) => void;
+  setUploadProgress: (progress: number | null) => void;
 }
 
-export const useChatStore = create<ChatState>((set, _get) => ({
+export const useChatStore = create<ChatState>((set) => ({
   user: null,
   token: null,
   isAuthenticated: false,
@@ -41,6 +43,7 @@ export const useChatStore = create<ChatState>((set, _get) => ({
   messages: {},
   users: [],
   typingUsers: {},
+  uploadProgress: null,
 
   setAuth: (user, token) => {
     localStorage.setItem('session_token', token);
@@ -49,84 +52,113 @@ export const useChatStore = create<ChatState>((set, _get) => ({
 
   clearAuth: () => {
     localStorage.removeItem('session_token');
-    set({ user: null, token: null, isAuthenticated: false, channels: [], messages: {}, activeChannelId: null });
+    set({
+      user: null,
+      token: null,
+      isAuthenticated: false,
+      channels: [],
+      messages: {},
+      activeChannelId: null,
+    });
   },
 
   setChannels: (channels) => set({ channels }),
 
   setActiveChannel: (channelId) => set({ activeChannelId: channelId }),
 
-  addChannel: (channel) => set((state) => ({
-    channels: [...state.channels, channel],
-  })),
+  addChannel: (channel) =>
+    set((state) => ({
+      channels: [...state.channels, channel],
+    })),
 
-  setMessages: (channelId, messages) => set((state) => ({
-    messages: { ...state.messages, [channelId]: messages },
-  })),
+  setMessages: (channelId, messages) =>
+    set((state) => ({
+      messages: { ...state.messages, [channelId]: messages },
+    })),
 
-  addMessage: (message) => set((state) => {
-    const existing = state.messages[message.channel_id] || [];
-    // Deduplicate by ID
-    if (existing.some((m) => m.id === message.id)) return state;
-    return {
-      messages: {
-        ...state.messages,
-        [message.channel_id]: [...existing, message],
-      },
-    };
-  }),
+  addMessage: (message) =>
+    set((state) => {
+      const existing = state.messages[message.channel_id] || [];
+      // Deduplicate by ID
+      if (existing.some((m) => m.id === message.id)) return state;
+      return {
+        messages: {
+          ...state.messages,
+          [message.channel_id]: [...existing, message],
+        },
+      };
+    }),
 
-  updateMessage: (message) => set((state) => {
-    const existing = state.messages[message.channel_id];
-    if (!existing) return state;
-    return {
-      messages: {
-        ...state.messages,
-        [message.channel_id]: existing.map((m) => (m.id === message.id ? message : m)),
-      },
-    };
-  }),
+  updateMessage: (message) =>
+    set((state) => {
+      const existing = state.messages[message.channel_id];
+      if (!existing) return state;
+      return {
+        messages: {
+          ...state.messages,
+          [message.channel_id]: existing.map((m) =>
+            m.id === message.id ? message : m,
+          ),
+        },
+      };
+    }),
 
-  updateUser: (fields) => set((state) => ({
-    user: state.user ? { ...state.user, ...fields } : null,
-  })),
+  updateUser: (fields) =>
+    set((state) => ({
+      user: state.user ? { ...state.user, ...fields } : null,
+    })),
 
   setUsers: (users) => set({ users }),
 
-  setUserOnline: (userId, online) => set((state) => ({
-    users: state.users.map((u) => (u.id === userId ? { ...u, is_online: online } : u)),
-    channels: state.channels.map((c) => ({
-      ...c,
-      members: c.members.map((m) => (m.id === userId ? { ...m, is_online: online } : m)),
+  setUserOnline: (userId, online) =>
+    set((state) => ({
+      users: state.users.map((u) =>
+        u.id === userId ? { ...u, is_online: online } : u,
+      ),
+      channels: state.channels.map((c) => ({
+        ...c,
+        members: c.members.map((m) =>
+          m.id === userId ? { ...m, is_online: online } : m,
+        ),
+      })),
     })),
-  })),
 
-  updateChannel: (updates) => set((state) => ({
-    channels: state.channels.map((c) =>
-      c.id === updates.id ? { ...c, ...updates } : c
-    ),
-  })),
+  updateChannel: (updates) =>
+    set((state) => ({
+      channels: state.channels.map((c) =>
+        c.id === updates.id ? { ...c, ...updates } : c,
+      ),
+    })),
 
-  removeChannel: (channelId) => set((state) => ({
-    channels: state.channels.filter((c) => c.id !== channelId),
-    activeChannelId: state.activeChannelId === channelId ? null : state.activeChannelId,
-  })),
+  removeChannel: (channelId) =>
+    set((state) => ({
+      channels: state.channels.filter((c) => c.id !== channelId),
+      activeChannelId:
+        state.activeChannelId === channelId ? null : state.activeChannelId,
+    })),
 
-  setTyping: (channelId, username) => set((state) => {
-    const current = state.typingUsers[channelId] || [];
-    if (current.includes(username)) return state;
-    return {
-      typingUsers: { ...state.typingUsers, [channelId]: [...current, username] },
-    };
-  }),
+  setTyping: (channelId, username) =>
+    set((state) => {
+      const current = state.typingUsers[channelId] || [];
+      if (current.includes(username)) return state;
+      return {
+        typingUsers: {
+          ...state.typingUsers,
+          [channelId]: [...current, username],
+        },
+      };
+    }),
 
-  clearTyping: (channelId, username) => set((state) => {
-    const current = state.typingUsers[channelId] || [];
-    return {
-      typingUsers: {
-        ...state.typingUsers,
-        [channelId]: current.filter((u) => u !== username),
-      },
-    };
-  }),
+  clearTyping: (channelId, username) =>
+    set((state) => {
+      const current = state.typingUsers[channelId] || [];
+      return {
+        typingUsers: {
+          ...state.typingUsers,
+          [channelId]: current.filter((u) => u !== username),
+        },
+      };
+    }),
+
+  setUploadProgress: (progress) => set({ uploadProgress: progress }),
 }));

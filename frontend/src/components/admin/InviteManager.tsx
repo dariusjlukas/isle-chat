@@ -4,7 +4,13 @@ import * as api from '../../services/api';
 
 export function InviteManager() {
   const [invites, setInvites] = useState<
-    Array<{ id: string; token: string; created_by: string; used: boolean; expires_at: string }>
+    Array<{
+      id: string;
+      token: string;
+      created_by: string;
+      used: boolean;
+      expires_at: string;
+    }>
   >([]);
   const [loading, setLoading] = useState(false);
 
@@ -12,11 +18,16 @@ export function InviteManager() {
     try {
       const data = await api.listInvites();
       setInvites(data);
-    } catch {}
+    } catch {
+      /* ignored */
+    }
   };
 
   useEffect(() => {
-    loadInvites();
+    api
+      .listInvites()
+      .then(setInvites)
+      .catch(() => {});
   }, []);
 
   const handleCreate = async () => {
@@ -24,7 +35,9 @@ export function InviteManager() {
     try {
       await api.createInvite(24);
       await loadInvites();
-    } catch {}
+    } catch {
+      /* ignored */
+    }
     setLoading(false);
   };
 
@@ -34,9 +47,13 @@ export function InviteManager() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-foreground">Invite Tokens</h3>
-        <Button color="primary" size="sm" isLoading={loading} onPress={handleCreate}>
+      <div className="flex justify-end mb-4">
+        <Button
+          color="primary"
+          size="sm"
+          isLoading={loading}
+          onPress={handleCreate}
+        >
           Generate Invite
         </Button>
       </div>
@@ -50,11 +67,18 @@ export function InviteManager() {
                   {inv.token.substring(0, 16)}...
                 </code>
                 <p className="text-xs text-default-500 mt-1">
-                  {inv.used ? 'Used' : `Expires: ${new Date(inv.expires_at).toLocaleString()}`}
+                  {inv.used
+                    ? 'Used'
+                    : `Expires: ${new Date(inv.expires_at).toLocaleString()}`}
                 </p>
               </div>
               {!inv.used && (
-                <Button variant="light" color="primary" size="sm" onPress={() => copyToken(inv.token)}>
+                <Button
+                  variant="light"
+                  color="primary"
+                  size="sm"
+                  onPress={() => copyToken(inv.token)}
+                >
                   Copy
                 </Button>
               )}

@@ -1,15 +1,41 @@
+import { useState, useRef } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { MessageList } from '../chat/MessageList';
 import { MessageInput } from '../chat/MessageInput';
 import { useWebSocket } from '../../hooks/useWebSocket';
+import { uploadFile } from '../../services/api';
 
 export function ChatArea() {
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channels = useChatStore((s) => s.channels);
-  const { sendMessage, sendTyping, editMessage, deleteMessage } = useWebSocket();
+  const uploadProgress = useChatStore((s) => s.uploadProgress);
+  const setUploadProgress = useChatStore((s) => s.setUploadProgress);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const errorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const { sendMessage, sendTyping, editMessage, deleteMessage } =
+    useWebSocket();
 
   const activeChannel = channels.find((c) => c.id === activeChannelId);
-  const canWrite = activeChannel?.my_role === 'admin' || activeChannel?.my_role === 'write';
+  const canWrite =
+    activeChannel?.my_role === 'admin' || activeChannel?.my_role === 'write';
+
+  const handleUpload = async (file: File, message: string) => {
+    if (!activeChannelId) return;
+    setUploadError(null);
+    clearTimeout(errorTimer.current);
+    setUploadProgress(0);
+    try {
+      await uploadFile(activeChannelId, file, message, (p) =>
+        setUploadProgress(p),
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Upload failed';
+      setUploadError(`Upload failed: ${msg}`);
+      errorTimer.current = setTimeout(() => setUploadError(null), 8000);
+    } finally {
+      setUploadProgress(null);
+    }
+  };
 
   if (!activeChannelId) {
     return (
@@ -24,11 +50,18 @@ export function ChatArea() {
 
   return (
     <div className="flex-1 flex flex-col bg-background">
-      <MessageList channelId={activeChannelId} onEditMessage={editMessage} onDeleteMessage={deleteMessage} />
+      <MessageList
+        channelId={activeChannelId}
+        onEditMessage={editMessage}
+        onDeleteMessage={deleteMessage}
+      />
       {canWrite ? (
         <MessageInput
           onSend={(content) => sendMessage(activeChannelId, content)}
           onTyping={() => sendTyping(activeChannelId)}
+          onUpload={handleUpload}
+          uploadProgress={uploadProgress}
+          uploadError={uploadError}
         />
       ) : (
         <div className="border-t border-default-100 p-4 text-center text-default-400 text-sm">

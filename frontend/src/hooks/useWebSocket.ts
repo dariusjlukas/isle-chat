@@ -1,72 +1,91 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { wsService } from '../services/websocket';
 import { useChatStore } from '../stores/chatStore';
-import type { Message } from '../types';
+import type { Message, Channel, ChannelRole } from '../types';
 
 export function useWebSocket() {
   const token = useChatStore((s) => s.token);
-  const addMessage = useChatStore((s) => s.addMessage);
-  const updateMessage = useChatStore((s) => s.updateMessage);
-  const addChannel = useChatStore((s) => s.addChannel);
-  const updateChannel = useChatStore((s) => s.updateChannel);
-  const removeChannel = useChatStore((s) => s.removeChannel);
-  const setUserOnline = useChatStore((s) => s.setUserOnline);
-  const setTyping = useChatStore((s) => s.setTyping);
-  const clearTyping = useChatStore((s) => s.clearTyping);
-  const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
 
   useEffect(() => {
     if (!token) return;
 
     wsService.connect(token);
+    const timers = typingTimers.current;
 
     const unsubs = [
-      wsService.on('new_message', (data: any) => {
-        const msg: Message = data.message;
-        addMessage(msg);
-        clearTyping(msg.channel_id, msg.username);
+      wsService.on('new_message', (data: unknown) => {
+        const { message } = data as { message: Message };
+        useChatStore.getState().addMessage(message);
+        useChatStore
+          .getState()
+          .clearTyping(message.channel_id, message.username);
       }),
 
-      wsService.on('message_edited', (data: any) => {
-        updateMessage(data.message);
+      wsService.on('message_edited', (data: unknown) => {
+        const { message } = data as { message: Message };
+        useChatStore.getState().updateMessage(message);
       }),
 
-      wsService.on('message_deleted', (data: any) => {
-        updateMessage(data.message);
+      wsService.on('message_deleted', (data: unknown) => {
+        const { message } = data as { message: Message };
+        useChatStore.getState().updateMessage(message);
       }),
 
-      wsService.on('channel_added', (data: any) => {
-        addChannel(data.channel);
+      wsService.on('channel_added', (data: unknown) => {
+        const { channel } = data as { channel: Channel };
+        useChatStore.getState().addChannel(channel);
       }),
 
-      wsService.on('user_online', (data: any) => {
-        setUserOnline(data.user_id, true);
+      wsService.on('user_online', (data: unknown) => {
+        const { user_id } = data as { user_id: string };
+        useChatStore.getState().setUserOnline(user_id, true);
       }),
 
-      wsService.on('user_offline', (data: any) => {
-        setUserOnline(data.user_id, false);
+      wsService.on('user_offline', (data: unknown) => {
+        const { user_id } = data as { user_id: string };
+        useChatStore.getState().setUserOnline(user_id, false);
       }),
 
-      wsService.on('channel_removed', (data: any) => {
-        removeChannel(data.channel_id);
+      wsService.on('channel_removed', (data: unknown) => {
+        const { channel_id } = data as { channel_id: string };
+        useChatStore.getState().removeChannel(channel_id);
       }),
 
-      wsService.on('role_changed', (data: any) => {
-        updateChannel({ id: data.channel_id, my_role: data.role });
+      wsService.on('role_changed', (data: unknown) => {
+        const { channel_id, role } = data as {
+          channel_id: string;
+          role: ChannelRole;
+        };
+        useChatStore
+          .getState()
+          .updateChannel({ id: channel_id, my_role: role });
       }),
 
-      wsService.on('channel_updated', (data: any) => {
-        updateChannel(data.channel);
+      wsService.on('channel_updated', (data: unknown) => {
+        const { channel } = data as {
+          channel: Partial<Channel> & { id: string };
+        };
+        useChatStore.getState().updateChannel(channel);
       }),
 
-      wsService.on('typing', (data: any) => {
-        setTyping(data.channel_id, data.username);
-        const key = `${data.channel_id}:${data.username}`;
-        const existing = typingTimers.current.get(key);
+      wsService.on('typing', (data: unknown) => {
+        const { channel_id, username } = data as {
+          channel_id: string;
+          username: string;
+        };
+        useChatStore.getState().setTyping(channel_id, username);
+        const key = `${channel_id}:${username}`;
+        const existing = timers.get(key);
         if (existing) clearTimeout(existing);
-        typingTimers.current.set(
+        timers.set(
           key,
-          setTimeout(() => clearTyping(data.channel_id, data.username), 3000)
+          setTimeout(
+            () => useChatStore.getState().clearTyping(channel_id, username),
+            3000,
+          ),
         );
       }),
     ];
@@ -74,8 +93,8 @@ export function useWebSocket() {
     return () => {
       unsubs.forEach((unsub) => unsub());
       wsService.disconnect();
-      typingTimers.current.forEach((t) => clearTimeout(t));
-      typingTimers.current.clear();
+      timers.forEach((t) => clearTimeout(t));
+      timers.clear();
     };
   }, [token]);
 

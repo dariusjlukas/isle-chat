@@ -1,5 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Modal, ModalContent, ModalHeader, ModalBody, Spinner } from '@heroui/react';
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  Spinner,
+  Accordion,
+  AccordionItem,
+} from '@heroui/react';
 import { useAuth } from './hooks/useAuth';
 import { useChatStore } from './stores/chatStore';
 import { LoginPage } from './components/auth/LoginPage';
@@ -14,6 +22,7 @@ import { ChannelBrowser } from './components/channels/ChannelBrowser';
 import { ChannelSettings } from './components/channels/ChannelSettings';
 import { InviteManager } from './components/admin/InviteManager';
 import { JoinRequests } from './components/admin/JoinRequests';
+import { ServerSettings } from './components/admin/ServerSettings';
 import { UserSettings } from './components/settings/UserSettings';
 import * as api from './services/api';
 
@@ -33,8 +42,12 @@ function getDeviceTokenFromUrl(): string | null {
 function App() {
   const { isAuthenticated, loading } = useAuth();
   const [urlDeviceToken] = useState(() => getDeviceTokenFromUrl());
-  const [authPage, setAuthPage] = useState<AuthPage>(urlDeviceToken ? 'add-device' : 'login');
-  const [showCreateModal, setShowCreateModal] = useState<'channel' | 'dm' | null>(null);
+  const [authPage, setAuthPage] = useState<AuthPage>(
+    urlDeviceToken ? 'add-device' : 'login',
+  );
+  const [showCreateModal, setShowCreateModal] = useState<
+    'channel' | 'dm' | null
+  >(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showChannelBrowser, setShowChannelBrowser] = useState(false);
@@ -49,9 +62,9 @@ function App() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    api.listChannels().then((channels) => setChannels(channels as any));
-    api.listUsers().then((users) => setUsers(users as any));
-  }, [isAuthenticated]);
+    api.listChannels().then(setChannels);
+    api.listUsers().then(setUsers);
+  }, [isAuthenticated, setChannels, setUsers]);
 
   if (loading) {
     return (
@@ -68,7 +81,12 @@ function App() {
       case 'request':
         return <RequestAccess onSwitchToLogin={() => setAuthPage('login')} />;
       case 'add-device':
-        return <AddDevice onSwitchToLogin={() => setAuthPage('login')} initialToken={urlDeviceToken ?? ''} />;
+        return (
+          <AddDevice
+            onSwitchToLogin={() => setAuthPage('login')}
+            initialToken={urlDeviceToken ?? ''}
+          />
+        );
       default:
         return (
           <LoginPage
@@ -100,7 +118,10 @@ function App() {
       </div>
 
       {showCreateModal && (
-        <CreateChannel mode={showCreateModal} onClose={() => setShowCreateModal(null)} />
+        <CreateChannel
+          mode={showCreateModal}
+          onClose={() => setShowCreateModal(null)}
+        />
       )}
 
       {showChannelBrowser && (
@@ -114,12 +135,31 @@ function App() {
         />
       )}
 
-      <Modal isOpen={showAdmin} onOpenChange={setShowAdmin} size="lg" scrollBehavior="inside" backdrop="opaque">
+      <Modal
+        isOpen={showAdmin}
+        onOpenChange={setShowAdmin}
+        size="lg"
+        scrollBehavior="inside"
+        backdrop="opaque"
+      >
         <ModalContent>
           <ModalHeader>Admin Panel</ModalHeader>
-          <ModalBody className="space-y-8 pb-6">
-            <InviteManager />
-            <JoinRequests />
+          <ModalBody className="pb-6">
+            <Accordion
+              variant="splitted"
+              selectionMode="multiple"
+              defaultExpandedKeys={['server-settings']}
+            >
+              <AccordionItem key="server-settings" title="Server Settings">
+                <ServerSettings />
+              </AccordionItem>
+              <AccordionItem key="invite-tokens" title="Invite Tokens">
+                <InviteManager />
+              </AccordionItem>
+              <AccordionItem key="join-requests" title="Join Requests">
+                <JoinRequests />
+              </AccordionItem>
+            </Accordion>
           </ModalBody>
         </ModalContent>
       </Modal>

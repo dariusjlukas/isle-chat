@@ -6,11 +6,12 @@
 
 using json = nlohmann::json;
 
+template <bool SSL>
 struct AdminHandler {
     Database& db;
     const Config& config;
 
-    void register_routes(uWS::App& app) {
+    void register_routes(uWS::TemplatedApp<SSL>& app) {
         app.post("/api/admin/invites", [this](auto* res, auto* req) {
             auto user_id_copy = get_admin_id(res, req);
             std::string body;
@@ -79,10 +80,52 @@ struct AdminHandler {
             db.update_join_request(request_id, "denied", admin_id);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
+
+        app.get("/api/admin/settings", [this](auto* res, auto* req) {
+            auto user_id = get_admin_id(res, req);
+            if (user_id.empty()) return;
+
+            auto max_file = db.get_setting("max_file_size");
+            auto max_storage = db.get_setting("max_storage_size");
+            int64_t storage_used = db.get_total_file_size();
+
+            json resp = {
+                {"max_file_size", max_file ? std::stoll(*max_file) : config.max_file_size},
+                {"max_storage_size", max_storage ? std::stoll(*max_storage) : 0},
+                {"storage_used", storage_used}
+            };
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        });
+
+        app.put("/api/admin/settings", [this](auto* res, auto* req) {
+            auto admin_id_copy = get_admin_id(res, req);
+            std::string body;
+            res->onData([this, res, admin_id = std::move(admin_id_copy), body = std::move(body)](
+                std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                if (admin_id.empty()) return;
+
+                try {
+                    auto j = json::parse(body);
+                    if (j.contains("max_file_size")) {
+                        db.set_setting("max_file_size", std::to_string(j["max_file_size"].get<int64_t>()));
+                    }
+                    if (j.contains("max_storage_size")) {
+                        db.set_setting("max_storage_size", std::to_string(j["max_storage_size"].get<int64_t>()));
+                    }
+                    res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+                } catch (const std::exception& e) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->end(json{{"error", e.what()}}.dump());
+                }
+            });
+            res->onAborted([]() {});
+        });
     }
 
 private:
-    std::string get_admin_id(uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    std::string get_admin_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         std::string token(req->getHeader("authorization"));
         if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
         auto user_id = db.validate_session(token);
@@ -100,7 +143,7 @@ private:
         return *user_id;
     }
 
-    void handle_approve(uWS::HttpResponse<false>* res, const std::string& request_id,
+    void handle_approve(uWS::HttpResponse<SSL>* res, const std::string& request_id,
                          const std::string& admin_id) {
         auto request = db.get_join_request(request_id);
         if (!request) {
