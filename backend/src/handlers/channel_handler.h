@@ -41,19 +41,22 @@ struct ChannelHandler {
                 for (const auto& m : member_list) {
                     members.push_back({{"id", m.user_id}, {"username", m.username},
                                        {"display_name", m.display_name},
-                                       {"is_online", m.is_online}, {"role", m.role}});
+                                       {"is_online", m.is_online}, {"last_seen", m.last_seen}, {"role", m.role}});
                 }
 
                 std::string my_role = db.get_effective_role(ch.id, user_id);
 
-                arr.push_back({{"id", ch.id}, {"name", ch.name},
+                json ch_json = {{"id", ch.id}, {"name", ch.name},
                                {"description", ch.description},
                                {"is_direct", ch.is_direct},
                                {"is_public", ch.is_public},
                                {"default_role", ch.default_role},
                                {"created_at", ch.created_at},
                                {"my_role", my_role},
-                               {"members", members}});
+                               {"members", members}};
+                if (!ch.space_id.empty()) ch_json["space_id"] = ch.space_id;
+                if (!ch.conversation_name.empty()) ch_json["conversation_name"] = ch.conversation_name;
+                arr.push_back(ch_json);
             }
             res->writeHeader("Content-Type", "application/json")->end(arr.dump());
         });
@@ -121,6 +124,29 @@ struct ChannelHandler {
                     m["file_type"] = msg.file_type;
                 }
                 arr.push_back(m);
+            }
+            res->writeHeader("Content-Type", "application/json")->end(arr.dump());
+        });
+
+        app.get("/api/channels/:id/read-receipts", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+
+            std::string channel_id(req->getParameter("id"));
+
+            std::string role = db.get_effective_role(channel_id, user_id);
+            if (role.empty()) {
+                res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Not a member of this channel"})");
+                return;
+            }
+
+            auto receipts = db.get_channel_read_receipts(channel_id);
+            json arr = json::array();
+            for (const auto& r : receipts) {
+                arr.push_back({{"user_id", r.user_id}, {"username", r.username},
+                               {"last_read_message_id", r.last_read_message_id},
+                               {"last_read_at", r.last_read_at}});
             }
             res->writeHeader("Content-Type", "application/json")->end(arr.dump());
         });
@@ -205,7 +231,7 @@ struct ChannelHandler {
                         for (const auto& m : member_list) {
                             members.push_back({{"id", m.user_id}, {"username", m.username},
                                                {"display_name", m.display_name},
-                                               {"is_online", m.is_online}, {"role", m.role}});
+                                               {"is_online", m.is_online}, {"last_seen", m.last_seen}, {"role", m.role}});
                         }
                         json channel_data = {{"id", ch->id}, {"name", ch->name},
                                              {"description", ch->description},
@@ -215,6 +241,7 @@ struct ChannelHandler {
                                              {"created_at", ch->created_at},
                                              {"my_role", member_role},
                                              {"members", members}};
+                        if (!ch->space_id.empty()) channel_data["space_id"] = ch->space_id;
                         json notify = {{"type", "channel_added"}, {"channel", channel_data}};
                         ws.send_to_user(target_user_id, notify.dump());
                     }
@@ -400,7 +427,7 @@ private:
             for (const auto& m : member_list) {
                 members.push_back({{"id", m.user_id}, {"username", m.username},
                                    {"display_name", m.display_name},
-                                   {"is_online", m.is_online}, {"role", m.role}});
+                                   {"is_online", m.is_online}, {"last_seen", m.last_seen}, {"role", m.role}});
             }
 
             json channel_data = {{"id", ch.id}, {"name", ch.name},
@@ -410,6 +437,7 @@ private:
                                  {"default_role", ch.default_role},
                                  {"created_at", ch.created_at},
                                  {"members", members}};
+            if (!ch.space_id.empty()) channel_data["space_id"] = ch.space_id;
 
             // Notify and subscribe all members
             auto actual_member_ids = db.get_channel_member_ids(ch.id);
@@ -461,7 +489,7 @@ private:
                 if (u) {
                     members.push_back({{"id", u->id}, {"username", u->username},
                                        {"display_name", u->display_name},
-                                       {"is_online", u->is_online}});
+                                       {"is_online", u->is_online}, {"last_seen", u->last_seen}});
                 }
             }
 

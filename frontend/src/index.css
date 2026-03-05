@@ -3,3 +3,16 @@
 @plugin "@tailwindcss/typography";
 @source "../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}";
 @custom-variant dark (&:is(.dark *));
+
+.highlight-flash {
+  animation: highlightFlash 2s ease-out;
+}
+
+@keyframes highlightFlash {
+  0% {
+    background-color: oklch(0.8 0.12 80 / 0.3);
+  }
+  100% {
+    background-color: transparent;
+  }
+}

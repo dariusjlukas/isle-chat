@@ -287,6 +287,8 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
                   selectedKey={selectedMethod}
                   onSelectionChange={(key) => setSelectedMethod(key as string)}
                   className="mb-4"
+                  color="primary"
+                  variant="bordered"
                   fullWidth
                 >
                   <Tab key="passkey" title="Passkey" />

@@ -12,6 +12,7 @@ import {
   ModalHeader,
   ModalBody,
   ModalFooter,
+  Tooltip,
 } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -23,12 +24,14 @@ import {
   faMagnifyingGlassPlus,
   faMagnifyingGlassMinus,
   faArrowsRotate,
+  faEye,
 } from '@fortawesome/free-solid-svg-icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Message } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 import { getFileUrl, downloadFile } from '../../services/api';
+import { UserPopoverCard } from '../common/UserPopoverCard';
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
@@ -362,6 +365,9 @@ interface Props {
 export function MessageBubble({ message, onEdit, onDelete }: Props) {
   const currentUser = useChatStore((s) => s.user);
   const isOwn = currentUser?.id === message.user_id;
+  const receipts = useChatStore((s) => s.readReceipts[message.channel_id]);
+  const users = useChatStore((s) => s.users);
+  const author = !isOwn ? users.find((u) => u.id === message.user_id) : null;
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -391,7 +397,15 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
         <div className="max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2 bg-content1 border border-divider rounded-br-md">
           {!isOwn && (
             <p className="text-xs font-semibold text-default-400 mb-1">
-              {message.username}
+              {author ? (
+                <UserPopoverCard user={author}>
+                  <span className="cursor-pointer hover:underline">
+                    {message.username}
+                  </span>
+                </UserPopoverCard>
+              ) : (
+                message.username
+              )}
             </p>
           )}
           <p className="text-sm italic text-default-400">
@@ -405,6 +419,7 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
 
   return (
     <div
+      id={`msg-${message.id}`}
       className={`flex ${isOwn ? 'justify-end' : 'justify-start'} mb-2 group`}
     >
       <div
@@ -414,7 +429,15 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
       >
         {!isOwn && (
           <p className="text-xs font-semibold text-primary mb-1">
-            {message.username}
+            {author ? (
+              <UserPopoverCard user={author}>
+                <span className="cursor-pointer hover:underline">
+                  {message.username}
+                </span>
+              </UserPopoverCard>
+            ) : (
+              message.username
+            )}
           </p>
         )}
 
@@ -481,14 +504,53 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
           </>
         )}
 
-        <p className={`text-xs mt-1 'text-default-400'`}>
-          {time}
-          {message.edited_at && <span className="ml-1">(edited)</span>}
+        <p className={`text-xs mt-1 text-default-400 flex items-center gap-1`}>
+          <span>
+            {time}
+            {message.edited_at && <span className="ml-1">(edited)</span>}
+          </span>
+          {isOwn &&
+            !editing &&
+            receipts &&
+            (() => {
+              const seenByEntries = Object.entries(receipts)
+                .filter(
+                  ([uid, r]) =>
+                    uid !== currentUser?.id &&
+                    r.last_read_at >= message.created_at,
+                )
+                .map(([, r]) => r);
+              if (seenByEntries.length === 0) return null;
+              const tooltipContent =
+                seenByEntries.length === 1
+                  ? `Seen by ${seenByEntries[0].username} at ${new Date(seenByEntries[0].last_read_at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}`
+                  : seenByEntries
+                      .map(
+                        (r) =>
+                          `${r.username} - ${new Date(r.last_read_at).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}`,
+                      )
+                      .join('\n');
+              return (
+                <Tooltip
+                  content={
+                    <span className="whitespace-pre-line text-xs">
+                      {tooltipContent}
+                    </span>
+                  }
+                  placement="top"
+                  delay={200}
+                >
+                  <span className="text-primary/70 cursor-default">
+                    <FontAwesomeIcon icon={faEye} className="text-[10px]" />
+                  </span>
+                </Tooltip>
+              );
+            })()}
         </p>
 
         {isOwn && !editing && (
           <div
-            className={`absolute -bottom-2 right-1 ${menuOpen ? 'block' : 'hidden group-hover:block'}`}
+            className={`absolute -bottom-2 -right-3 ${menuOpen ? 'block' : 'hidden group-hover:block'}`}
           >
             <Dropdown
               placement="bottom-end"

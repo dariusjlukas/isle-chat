@@ -2,6 +2,7 @@
 #include <App.h>
 #include <nlohmann/json.hpp>
 #include "db/database.h"
+#include "ws/ws_handler.h"
 #include "auth/webauthn.h"
 #include "config.h"
 
@@ -10,6 +11,7 @@ using json = nlohmann::json;
 template <bool SSL>
 struct UserHandler {
     Database& db;
+    WsHandler<SSL>& ws;
     const Config& config;
 
     void register_routes(uWS::TemplatedApp<SSL>& app) {
@@ -22,8 +24,8 @@ struct UserHandler {
             for (const auto& u : users) {
                 arr.push_back({{"id", u.id}, {"username", u.username},
                                {"display_name", u.display_name}, {"role", u.role},
-                               {"is_online", u.is_online}, {"bio", u.bio},
-                               {"status", u.status}});
+                               {"is_online", u.is_online}, {"last_seen", u.last_seen},
+                               {"bio", u.bio}, {"status", u.status}});
             }
             res->writeHeader("Content-Type", "application/json")->end(arr.dump());
         });
@@ -41,8 +43,8 @@ struct UserHandler {
 
             json resp = {{"id", user->id}, {"username", user->username},
                          {"display_name", user->display_name}, {"role", user->role},
-                         {"is_online", user->is_online}, {"bio", user->bio},
-                         {"status", user->status}};
+                         {"is_online", user->is_online}, {"last_seen", user->last_seen},
+                         {"bio", user->bio}, {"status", user->status}};
             res->writeHeader("Content-Type", "application/json")->end(resp.dump());
         });
 
@@ -69,11 +71,15 @@ struct UserHandler {
 
                     auto updated = db.update_user_profile(user_id, display_name, bio, status);
 
-                    json resp = {{"id", updated.id}, {"username", updated.username},
+                    json user_json = {{"id", updated.id}, {"username", updated.username},
                                  {"display_name", updated.display_name}, {"role", updated.role},
-                                 {"is_online", updated.is_online}, {"bio", updated.bio},
-                                 {"status", updated.status}};
-                    res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+                                 {"is_online", updated.is_online}, {"last_seen", updated.last_seen},
+                                 {"bio", updated.bio}, {"status", updated.status}};
+                    res->writeHeader("Content-Type", "application/json")->end(user_json.dump());
+
+                    // Broadcast profile change to all connected users
+                    json broadcast = {{"type", "user_updated"}, {"user", user_json}};
+                    ws.broadcast_to_presence(broadcast.dump());
                 } catch (const std::exception& e) {
                     res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                         ->end(json({{"error", e.what()}}).dump());

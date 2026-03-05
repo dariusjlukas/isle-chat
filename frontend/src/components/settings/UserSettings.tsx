@@ -100,7 +100,7 @@ export function UserSettings({ onClose }: Props) {
           <Accordion
             variant="splitted"
             selectionMode="multiple"
-            defaultExpandedKeys={['profile']}
+            defaultExpandedKeys={[]}
           >
             <AccordionItem key="profile" title="Profile">
               <form onSubmit={handleSaveProfile} className="space-y-3">

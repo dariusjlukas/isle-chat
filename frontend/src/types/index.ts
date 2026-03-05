@@ -4,6 +4,7 @@ export interface User {
   display_name: string;
   role: 'admin' | 'user';
   is_online: boolean;
+  last_seen?: string;
   bio: string;
   status: string;
 }
@@ -15,6 +16,7 @@ export interface ChannelMemberInfo {
   username: string;
   display_name: string;
   is_online: boolean;
+  last_seen?: string;
   role: ChannelRole;
 }
 
@@ -28,7 +30,25 @@ export interface Channel {
   my_role: ChannelRole;
   created_at: string;
   members: ChannelMemberInfo[];
+  space_id?: string;
+  conversation_name?: string;
 }
+
+export interface Space {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  is_public: boolean;
+  default_role: ChannelRole;
+  my_role: ChannelRole;
+  created_at: string;
+  members: ChannelMemberInfo[];
+}
+
+export type SidebarView =
+  | { type: 'space'; spaceId: string }
+  | { type: 'messages' };
 
 export interface Message {
   id: string;
@@ -43,6 +63,12 @@ export interface Message {
   file_name?: string;
   file_size?: number;
   file_type?: string;
+}
+
+export interface ReadReceiptInfo {
+  username: string;
+  last_read_message_id: string;
+  last_read_at: string;
 }
 
 export interface InviteToken {

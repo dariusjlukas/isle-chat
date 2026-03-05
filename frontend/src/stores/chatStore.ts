@@ -1,5 +1,12 @@
 import { create } from 'zustand';
-import type { User, Channel, Message } from '../types';
+import type {
+  User,
+  Channel,
+  Message,
+  Space,
+  SidebarView,
+  ReadReceiptInfo,
+} from '../types';
 
 interface ChatState {
   // Auth
@@ -15,6 +22,19 @@ interface ChatState {
   typingUsers: Record<string, string[]>; // channel_id -> usernames
   uploadProgress: number | null;
 
+  // Spaces
+  spaces: Space[];
+  activeView: SidebarView | null;
+
+  // Search
+  jumpToMessageId: string | null;
+  jumpToChannelId: string | null;
+
+  // Unread / Read receipts
+  unreadCounts: Record<string, number>;
+  mentionCounts: Record<string, number>;
+  readReceipts: Record<string, Record<string, ReadReceiptInfo>>;
+
   // Actions
   setAuth: (user: User, token: string) => void;
   clearAuth: () => void;
@@ -26,12 +46,34 @@ interface ChatState {
   updateMessage: (message: Message) => void;
   setUsers: (users: User[]) => void;
   updateUser: (fields: Partial<User>) => void;
-  setUserOnline: (userId: string, online: boolean) => void;
+  updateUserInList: (userId: string, fields: Partial<User>) => void;
+  setUserOnline: (userId: string, online: boolean, lastSeen?: string) => void;
   updateChannel: (updates: Partial<Channel> & { id: string }) => void;
   removeChannel: (channelId: string) => void;
   setTyping: (channelId: string, username: string) => void;
   clearTyping: (channelId: string, username: string) => void;
   setUploadProgress: (progress: number | null) => void;
+  setSpaces: (spaces: Space[]) => void;
+  addSpace: (space: Space) => void;
+  updateSpace: (updates: Partial<Space> & { id: string }) => void;
+  removeSpace: (spaceId: string) => void;
+  setActiveView: (view: SidebarView | null) => void;
+  setUnreadCounts: (counts: Record<string, number>) => void;
+  setMentionCounts: (counts: Record<string, number>) => void;
+  incrementUnread: (channelId: string) => void;
+  incrementMentionCount: (channelId: string) => void;
+  clearUnread: (channelId: string) => void;
+  updateReadReceipt: (
+    channelId: string,
+    userId: string,
+    info: ReadReceiptInfo,
+  ) => void;
+  setReadReceipts: (
+    channelId: string,
+    receipts: Record<string, ReadReceiptInfo>,
+  ) => void;
+  setJumpToMessage: (channelId: string, messageId: string) => void;
+  clearJumpToMessage: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -44,6 +86,13 @@ export const useChatStore = create<ChatState>((set) => ({
   users: [],
   typingUsers: {},
   uploadProgress: null,
+  spaces: [],
+  activeView: null,
+  jumpToMessageId: null,
+  jumpToChannelId: null,
+  unreadCounts: {},
+  mentionCounts: {},
+  readReceipts: {},
 
   setAuth: (user, token) => {
     localStorage.setItem('session_token', token);
@@ -59,12 +108,26 @@ export const useChatStore = create<ChatState>((set) => ({
       channels: [],
       messages: {},
       activeChannelId: null,
+      spaces: [],
+      activeView: null,
+      unreadCounts: {},
+      mentionCounts: {},
+      readReceipts: {},
     });
   },
 
   setChannels: (channels) => set({ channels }),
 
-  setActiveChannel: (channelId) => set({ activeChannelId: channelId }),
+  setActiveChannel: (channelId) =>
+    set((state) => ({
+      activeChannelId: channelId,
+      unreadCounts: channelId
+        ? { ...state.unreadCounts, [channelId]: 0 }
+        : state.unreadCounts,
+      mentionCounts: channelId
+        ? { ...state.mentionCounts, [channelId]: 0 }
+        : state.mentionCounts,
+    })),
 
   addChannel: (channel) =>
     set((state) => ({
@@ -79,7 +142,6 @@ export const useChatStore = create<ChatState>((set) => ({
   addMessage: (message) =>
     set((state) => {
       const existing = state.messages[message.channel_id] || [];
-      // Deduplicate by ID
       if (existing.some((m) => m.id === message.id)) return state;
       return {
         messages: {
@@ -110,18 +172,28 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setUsers: (users) => set({ users }),
 
-  setUserOnline: (userId, online) =>
+  updateUserInList: (userId, fields) =>
     set((state) => ({
       users: state.users.map((u) =>
-        u.id === userId ? { ...u, is_online: online } : u,
+        u.id === userId ? { ...u, ...fields } : u,
       ),
-      channels: state.channels.map((c) => ({
-        ...c,
-        members: c.members.map((m) =>
-          m.id === userId ? { ...m, is_online: online } : m,
-        ),
-      })),
     })),
+
+  setUserOnline: (userId, online, lastSeen) =>
+    set((state) => {
+      const extra = lastSeen ? { last_seen: lastSeen } : {};
+      return {
+        users: state.users.map((u) =>
+          u.id === userId ? { ...u, is_online: online, ...extra } : u,
+        ),
+        channels: state.channels.map((c) => ({
+          ...c,
+          members: c.members.map((m) =>
+            m.id === userId ? { ...m, is_online: online, ...extra } : m,
+          ),
+        })),
+      };
+    }),
 
   updateChannel: (updates) =>
     set((state) => ({
@@ -161,4 +233,80 @@ export const useChatStore = create<ChatState>((set) => ({
     }),
 
   setUploadProgress: (progress) => set({ uploadProgress: progress }),
+
+  setSpaces: (spaces) => set({ spaces }),
+
+  addSpace: (space) =>
+    set((state) => ({
+      spaces: [...state.spaces, space],
+    })),
+
+  updateSpace: (updates) =>
+    set((state) => ({
+      spaces: state.spaces.map((s) =>
+        s.id === updates.id ? { ...s, ...updates } : s,
+      ),
+    })),
+
+  removeSpace: (spaceId) =>
+    set((state) => ({
+      spaces: state.spaces.filter((s) => s.id !== spaceId),
+      activeView:
+        state.activeView?.type === 'space' &&
+        state.activeView.spaceId === spaceId
+          ? { type: 'messages' }
+          : state.activeView,
+    })),
+
+  setActiveView: (view) => set({ activeView: view }),
+
+  setUnreadCounts: (counts) => set({ unreadCounts: counts }),
+  setMentionCounts: (counts) => set({ mentionCounts: counts }),
+
+  incrementUnread: (channelId) =>
+    set((state) => ({
+      unreadCounts: {
+        ...state.unreadCounts,
+        [channelId]: (state.unreadCounts[channelId] || 0) + 1,
+      },
+    })),
+
+  incrementMentionCount: (channelId) =>
+    set((state) => ({
+      mentionCounts: {
+        ...state.mentionCounts,
+        [channelId]: (state.mentionCounts[channelId] || 0) + 1,
+      },
+    })),
+
+  clearUnread: (channelId) =>
+    set((state) => ({
+      unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
+      mentionCounts: { ...state.mentionCounts, [channelId]: 0 },
+    })),
+
+  updateReadReceipt: (channelId, userId, info) =>
+    set((state) => ({
+      readReceipts: {
+        ...state.readReceipts,
+        [channelId]: {
+          ...(state.readReceipts[channelId] || {}),
+          [userId]: info,
+        },
+      },
+    })),
+
+  setReadReceipts: (channelId, receipts) =>
+    set((state) => ({
+      readReceipts: {
+        ...state.readReceipts,
+        [channelId]: receipts,
+      },
+    })),
+
+  setJumpToMessage: (channelId, messageId) =>
+    set({ jumpToChannelId: channelId, jumpToMessageId: messageId }),
+
+  clearJumpToMessage: () =>
+    set({ jumpToChannelId: null, jumpToMessageId: null }),
 }));

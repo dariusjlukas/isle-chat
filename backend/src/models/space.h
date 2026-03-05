@@ -2,21 +2,18 @@
 #include <string>
 #include <vector>
 
-struct Channel {
+struct Space {
     std::string id;
     std::string name;
     std::string description;
-    bool is_direct = false;
+    std::string icon;
     bool is_public = true;
     std::string default_role = "write";
     std::string created_by;
     std::string created_at;
-    std::string space_id;
-    std::string conversation_name;
-    std::vector<std::string> member_ids;
 };
 
-struct ChannelMember {
+struct SpaceMember {
     std::string user_id;
     std::string username;
     std::string display_name;

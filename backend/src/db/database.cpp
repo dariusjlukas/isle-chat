@@ -233,6 +233,91 @@ void Database::run_migrations() {
         ALTER TABLE join_requests ADD COLUMN IF NOT EXISTS session_token TEXT DEFAULT '';
     )SQL");
 
+    // Recovery tokens (admin-generated account recovery)
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS recovery_tokens (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            token VARCHAR(64) UNIQUE NOT NULL,
+            created_by UUID REFERENCES users(id),
+            for_user_id UUID NOT NULL REFERENCES users(id),
+            used BOOLEAN DEFAULT FALSE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    )SQL");
+
+    // Spaces
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS spaces (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(100) NOT NULL,
+            description TEXT,
+            icon VARCHAR(10) DEFAULT '',
+            is_public BOOLEAN DEFAULT TRUE,
+            default_role VARCHAR(20) DEFAULT 'write',
+            created_by UUID REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS space_members (
+            space_id UUID REFERENCES spaces(id) ON DELETE CASCADE,
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            role VARCHAR(20) DEFAULT 'write',
+            joined_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (space_id, user_id)
+        );
+
+        ALTER TABLE channels ADD COLUMN IF NOT EXISTS space_id UUID REFERENCES spaces(id) ON DELETE CASCADE;
+        CREATE INDEX IF NOT EXISTS idx_channels_space ON channels(space_id);
+        ALTER TABLE channels ADD COLUMN IF NOT EXISTS conversation_name VARCHAR(200);
+
+        CREATE TABLE IF NOT EXISTS channel_read_state (
+            channel_id UUID REFERENCES channels(id) ON DELETE CASCADE,
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            last_read_message_id UUID,
+            PRIMARY KEY (channel_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS mentions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
+            channel_id UUID NOT NULL,
+            mentioned_user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            is_channel_mention BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_mentions_user ON mentions(mentioned_user_id);
+    )SQL");
+
+    // Data migration: create a "General" space for existing channels
+    txn.exec(R"SQL(
+        INSERT INTO spaces (id, name, description, icon, is_public, created_by)
+        SELECT gen_random_uuid(), 'General', 'Default space', '', true,
+               (SELECT id FROM users WHERE role = 'admin' LIMIT 1)
+        WHERE EXISTS (SELECT 1 FROM channels WHERE is_direct = false AND space_id IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM spaces WHERE name = 'General');
+
+        UPDATE channels SET space_id = (SELECT id FROM spaces WHERE name = 'General' LIMIT 1)
+        WHERE is_direct = false AND space_id IS NULL
+          AND EXISTS (SELECT 1 FROM spaces WHERE name = 'General');
+
+        INSERT INTO space_members (space_id, user_id, role)
+        SELECT DISTINCT c.space_id, cm.user_id, MAX(cm.role)
+        FROM channel_members cm
+        JOIN channels c ON c.id = cm.channel_id
+        WHERE c.is_direct = false AND c.space_id IS NOT NULL
+        GROUP BY c.space_id, cm.user_id
+        ON CONFLICT DO NOTHING;
+    )SQL");
+
+    // Full-text search on message content
+    txn.exec(R"SQL(
+        ALTER TABLE messages ADD COLUMN IF NOT EXISTS content_tsv tsvector
+          GENERATED ALWAYS AS (to_tsvector('english', coalesce(content, ''))) STORED;
+        CREATE INDEX IF NOT EXISTS idx_messages_fts ON messages USING GIN (content_tsv);
+    )SQL");
+
     txn.commit();
     std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -442,15 +527,27 @@ void Database::delete_challenge(const std::string& public_key) {
 Channel Database::create_channel(const std::string& name, const std::string& description,
                                   bool is_direct, const std::string& created_by,
                                   const std::vector<std::string>& member_ids,
-                                  bool is_public, const std::string& default_role) {
+                                  bool is_public, const std::string& default_role,
+                                  const std::string& space_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
 
-    auto r = txn.exec_params(
-        "INSERT INTO channels (name, description, is_direct, is_public, default_role, created_by) "
-        "VALUES (NULLIF($1, ''), NULLIF($2, ''), $3, $4, $5, $6) "
-        "RETURNING id, name, description, is_direct, is_public, default_role, created_by, created_at::text",
-        name, description, is_direct, is_public, default_role, created_by);
+    pqxx::result r;
+    if (space_id.empty()) {
+        r = txn.exec_params(
+            "INSERT INTO channels (name, description, is_direct, is_public, default_role, created_by) "
+            "VALUES (NULLIF($1, ''), NULLIF($2, ''), $3, $4, $5, $6) "
+            "RETURNING id, name, description, is_direct, is_public, default_role, created_by, created_at::text, "
+            "space_id, conversation_name",
+            name, description, is_direct, is_public, default_role, created_by);
+    } else {
+        r = txn.exec_params(
+            "INSERT INTO channels (name, description, is_direct, is_public, default_role, created_by, space_id) "
+            "VALUES (NULLIF($1, ''), NULLIF($2, ''), $3, $4, $5, $6, $7) "
+            "RETURNING id, name, description, is_direct, is_public, default_role, created_by, created_at::text, "
+            "space_id, conversation_name",
+            name, description, is_direct, is_public, default_role, created_by, space_id);
+    }
 
     std::string channel_id = r[0][0].as<std::string>();
 
@@ -473,17 +570,36 @@ Channel Database::create_channel(const std::string& name, const std::string& des
     ch.default_role = r[0][5].as<std::string>();
     ch.created_by = r[0][6].is_null() ? "" : r[0][6].as<std::string>();
     ch.created_at = r[0][7].as<std::string>();
+    ch.space_id = r[0][8].is_null() ? "" : r[0][8].as<std::string>();
+    ch.conversation_name = r[0][9].is_null() ? "" : r[0][9].as<std::string>();
     ch.member_ids = member_ids;
     return ch;
 }
+
+static Channel row_to_channel(const pqxx::row& row) {
+    Channel ch;
+    ch.id = row[0].as<std::string>();
+    ch.name = row[1].is_null() ? "" : row[1].as<std::string>();
+    ch.description = row[2].is_null() ? "" : row[2].as<std::string>();
+    ch.is_direct = row[3].as<bool>();
+    ch.is_public = row[4].as<bool>();
+    ch.default_role = row[5].as<std::string>();
+    ch.created_by = row[6].is_null() ? "" : row[6].as<std::string>();
+    ch.created_at = row[7].as<std::string>();
+    ch.space_id = row[8].is_null() ? "" : row[8].as<std::string>();
+    ch.conversation_name = row[9].is_null() ? "" : row[9].as<std::string>();
+    return ch;
+}
+
+static const char* CH_COLS = "c.id, c.name, c.description, c.is_direct, c.is_public, c.default_role, "
+    "c.created_by, c.created_at::text, c.space_id, c.conversation_name";
 
 std::vector<Channel> Database::list_user_channels(const std::string& user_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec_params(
-        "SELECT c.id, c.name, c.description, c.is_direct, c.is_public, c.default_role, "
-        "c.created_by, c.created_at::text "
-        "FROM channels c "
+        std::string("SELECT ") + CH_COLS +
+        " FROM channels c "
         "JOIN channel_members cm ON c.id = cm.channel_id "
         "WHERE cm.user_id = $1 ORDER BY c.created_at",
         user_id);
@@ -491,16 +607,7 @@ std::vector<Channel> Database::list_user_channels(const std::string& user_id) {
 
     std::vector<Channel> channels;
     for (const auto& row : r) {
-        Channel ch;
-        ch.id = row[0].as<std::string>();
-        ch.name = row[1].is_null() ? "" : row[1].as<std::string>();
-        ch.description = row[2].is_null() ? "" : row[2].as<std::string>();
-        ch.is_direct = row[3].as<bool>();
-        ch.is_public = row[4].as<bool>();
-        ch.default_role = row[5].as<std::string>();
-        ch.created_by = row[6].is_null() ? "" : row[6].as<std::string>();
-        ch.created_at = row[7].as<std::string>();
-        channels.push_back(ch);
+        channels.push_back(row_to_channel(row));
     }
     return channels;
 }
@@ -509,9 +616,8 @@ std::optional<Channel> Database::find_dm_channel(const std::string& user1_id, co
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec_params(
-        "SELECT c.id, c.name, c.description, c.is_direct, c.is_public, c.default_role, "
-        "c.created_by, c.created_at::text "
-        "FROM channels c "
+        std::string("SELECT ") + CH_COLS +
+        " FROM channels c "
         "WHERE c.is_direct = true "
         "AND EXISTS (SELECT 1 FROM channel_members WHERE channel_id = c.id AND user_id = $1) "
         "AND EXISTS (SELECT 1 FROM channel_members WHERE channel_id = c.id AND user_id = $2) "
@@ -520,36 +626,17 @@ std::optional<Channel> Database::find_dm_channel(const std::string& user1_id, co
         user1_id, user2_id);
     txn.commit();
     if (r.empty()) return std::nullopt;
-    Channel ch;
-    ch.id = r[0][0].as<std::string>();
-    ch.name = r[0][1].is_null() ? "" : r[0][1].as<std::string>();
-    ch.description = r[0][2].is_null() ? "" : r[0][2].as<std::string>();
-    ch.is_direct = r[0][3].as<bool>();
-    ch.is_public = r[0][4].as<bool>();
-    ch.default_role = r[0][5].as<std::string>();
-    ch.created_by = r[0][6].is_null() ? "" : r[0][6].as<std::string>();
-    ch.created_at = r[0][7].as<std::string>();
-    return ch;
+    return row_to_channel(r[0]);
 }
 
 std::optional<Channel> Database::find_channel_by_id(const std::string& id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec_params(
-        "SELECT id, name, description, is_direct, is_public, default_role, "
-        "created_by, created_at::text FROM channels WHERE id = $1", id);
+        std::string("SELECT ") + CH_COLS + " FROM channels c WHERE c.id = $1", id);
     txn.commit();
     if (r.empty()) return std::nullopt;
-    Channel ch;
-    ch.id = r[0][0].as<std::string>();
-    ch.name = r[0][1].is_null() ? "" : r[0][1].as<std::string>();
-    ch.description = r[0][2].is_null() ? "" : r[0][2].as<std::string>();
-    ch.is_direct = r[0][3].as<bool>();
-    ch.is_public = r[0][4].as<bool>();
-    ch.default_role = r[0][5].as<std::string>();
-    ch.created_by = r[0][6].is_null() ? "" : r[0][6].as<std::string>();
-    ch.created_at = r[0][7].as<std::string>();
-    return ch;
+    return row_to_channel(r[0]);
 }
 
 bool Database::is_channel_member(const std::string& channel_id, const std::string& user_id) {
@@ -615,23 +702,15 @@ Channel Database::update_channel(const std::string& channel_id, const std::strin
                                   const std::string& default_role) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
-    auto r = txn.exec_params(
+    txn.exec_params(
         "UPDATE channels SET name = $2, description = $3, is_public = $4, default_role = $5 "
-        "WHERE id = $1 "
-        "RETURNING id, name, description, is_direct, is_public, default_role, created_by, created_at::text",
+        "WHERE id = $1",
         channel_id, name, description, is_public, default_role);
+    auto r = txn.exec_params(
+        std::string("SELECT ") + CH_COLS + " FROM channels c WHERE c.id = $1", channel_id);
     txn.commit();
     if (r.empty()) throw std::runtime_error("Channel not found");
-    Channel ch;
-    ch.id = r[0][0].as<std::string>();
-    ch.name = r[0][1].is_null() ? "" : r[0][1].as<std::string>();
-    ch.description = r[0][2].is_null() ? "" : r[0][2].as<std::string>();
-    ch.is_direct = r[0][3].as<bool>();
-    ch.is_public = r[0][4].as<bool>();
-    ch.default_role = r[0][5].as<std::string>();
-    ch.created_by = r[0][6].is_null() ? "" : r[0][6].as<std::string>();
-    ch.created_at = r[0][7].as<std::string>();
-    return ch;
+    return row_to_channel(r[0]);
 }
 
 std::vector<Channel> Database::list_public_channels(const std::string& user_id,
@@ -641,18 +720,16 @@ std::vector<Channel> Database::list_public_channels(const std::string& user_id,
     pqxx::result r;
     if (search.empty()) {
         r = txn.exec_params(
-            "SELECT c.id, c.name, c.description, c.is_direct, c.is_public, c.default_role, "
-            "c.created_by, c.created_at::text "
-            "FROM channels c "
+            std::string("SELECT ") + CH_COLS +
+            " FROM channels c "
             "WHERE c.is_public = true AND c.is_direct = false "
             "AND NOT EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $1) "
             "ORDER BY c.name",
             user_id);
     } else {
         r = txn.exec_params(
-            "SELECT c.id, c.name, c.description, c.is_direct, c.is_public, c.default_role, "
-            "c.created_by, c.created_at::text "
-            "FROM channels c "
+            std::string("SELECT ") + CH_COLS +
+            " FROM channels c "
             "WHERE c.is_public = true AND c.is_direct = false "
             "AND NOT EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $1) "
             "AND (c.name ILIKE '%' || $2 || '%' OR c.description ILIKE '%' || $2 || '%') "
@@ -662,16 +739,7 @@ std::vector<Channel> Database::list_public_channels(const std::string& user_id,
     txn.commit();
     std::vector<Channel> channels;
     for (const auto& row : r) {
-        Channel ch;
-        ch.id = row[0].as<std::string>();
-        ch.name = row[1].is_null() ? "" : row[1].as<std::string>();
-        ch.description = row[2].is_null() ? "" : row[2].as<std::string>();
-        ch.is_direct = row[3].as<bool>();
-        ch.is_public = row[4].as<bool>();
-        ch.default_role = row[5].as<std::string>();
-        ch.created_by = row[6].is_null() ? "" : row[6].as<std::string>();
-        ch.created_at = row[7].as<std::string>();
-        channels.push_back(ch);
+        channels.push_back(row_to_channel(row));
     }
     return channels;
 }
@@ -680,21 +748,12 @@ std::vector<Channel> Database::list_all_channels() {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec(
-        "SELECT id, name, description, is_direct, is_public, default_role, "
-        "created_by, created_at::text FROM channels WHERE is_direct = false ORDER BY name");
+        std::string("SELECT ") + CH_COLS +
+        " FROM channels c WHERE c.is_direct = false ORDER BY c.name");
     txn.commit();
     std::vector<Channel> channels;
     for (const auto& row : r) {
-        Channel ch;
-        ch.id = row[0].as<std::string>();
-        ch.name = row[1].is_null() ? "" : row[1].as<std::string>();
-        ch.description = row[2].is_null() ? "" : row[2].as<std::string>();
-        ch.is_direct = row[3].as<bool>();
-        ch.is_public = row[4].as<bool>();
-        ch.default_role = row[5].as<std::string>();
-        ch.created_by = row[6].is_null() ? "" : row[6].as<std::string>();
-        ch.created_at = row[7].as<std::string>();
-        channels.push_back(ch);
+        channels.push_back(row_to_channel(row));
     }
     return channels;
 }
@@ -703,7 +762,7 @@ std::vector<ChannelMember> Database::get_channel_members_with_roles(const std::s
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec_params(
-        "SELECT u.id, u.username, u.display_name, cm.role, u.is_online "
+        "SELECT u.id, u.username, u.display_name, cm.role, u.is_online, u.last_seen::text "
         "FROM channel_members cm JOIN users u ON cm.user_id = u.id "
         "WHERE cm.channel_id = $1 ORDER BY cm.role, u.username",
         channel_id);
@@ -712,7 +771,7 @@ std::vector<ChannelMember> Database::get_channel_members_with_roles(const std::s
     for (const auto& row : r) {
         members.push_back({row[0].as<std::string>(), row[1].as<std::string>(),
                            row[2].as<std::string>(), row[3].as<std::string>(),
-                           row[4].as<bool>()});
+                           row[4].as<bool>(), row[5].is_null() ? "" : row[5].as<std::string>()});
     }
     return members;
 }
@@ -721,20 +780,11 @@ std::optional<Channel> Database::find_general_channel() {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec(
-        "SELECT id, name, description, is_direct, is_public, default_role, "
-        "created_by, created_at::text FROM channels WHERE name = 'general' AND is_direct = false LIMIT 1");
+        std::string("SELECT ") + CH_COLS +
+        " FROM channels c WHERE c.name = 'general' AND c.is_direct = false LIMIT 1");
     txn.commit();
     if (r.empty()) return std::nullopt;
-    Channel ch;
-    ch.id = r[0][0].as<std::string>();
-    ch.name = r[0][1].is_null() ? "" : r[0][1].as<std::string>();
-    ch.description = r[0][2].is_null() ? "" : r[0][2].as<std::string>();
-    ch.is_direct = r[0][3].as<bool>();
-    ch.is_public = r[0][4].as<bool>();
-    ch.default_role = r[0][5].as<std::string>();
-    ch.created_by = r[0][6].is_null() ? "" : r[0][6].as<std::string>();
-    ch.created_at = r[0][7].as<std::string>();
-    return ch;
+    return row_to_channel(r[0]);
 }
 
 std::vector<std::string> Database::get_channel_member_ids(const std::string& channel_id) {
@@ -746,6 +796,258 @@ std::vector<std::string> Database::get_channel_member_ids(const std::string& cha
     std::vector<std::string> ids;
     for (const auto& row : r) ids.push_back(row[0].as<std::string>());
     return ids;
+}
+
+// --- Spaces ---
+
+static Space row_to_space(const pqxx::row& row) {
+    Space sp;
+    sp.id = row[0].as<std::string>();
+    sp.name = row[1].is_null() ? "" : row[1].as<std::string>();
+    sp.description = row[2].is_null() ? "" : row[2].as<std::string>();
+    sp.icon = row[3].is_null() ? "" : row[3].as<std::string>();
+    sp.is_public = row[4].as<bool>();
+    sp.default_role = row[5].as<std::string>();
+    sp.created_by = row[6].is_null() ? "" : row[6].as<std::string>();
+    sp.created_at = row[7].as<std::string>();
+    return sp;
+}
+
+static const char* SP_COLS = "s.id, s.name, s.description, s.icon, s.is_public, s.default_role, "
+    "s.created_by, s.created_at::text";
+
+Space Database::create_space(const std::string& name, const std::string& description,
+                              const std::string& icon, bool is_public,
+                              const std::string& created_by,
+                              const std::string& default_role) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto ins = txn.exec_params(
+        "INSERT INTO spaces (name, description, icon, is_public, default_role, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+        name, description, icon, is_public, default_role, created_by);
+    std::string space_id = ins[0][0].as<std::string>();
+    // Creator is admin
+    txn.exec_params(
+        "INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, 'admin')",
+        space_id, created_by);
+    auto r = txn.exec_params(
+        std::string("SELECT ") + SP_COLS + " FROM spaces s WHERE s.id = $1", space_id);
+    txn.commit();
+    return row_to_space(r[0]);
+}
+
+std::vector<Space> Database::list_user_spaces(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        std::string("SELECT ") + SP_COLS +
+        " FROM spaces s "
+        "JOIN space_members sm ON s.id = sm.space_id "
+        "WHERE sm.user_id = $1 ORDER BY s.name",
+        user_id);
+    txn.commit();
+    std::vector<Space> spaces;
+    for (const auto& row : r) spaces.push_back(row_to_space(row));
+    return spaces;
+}
+
+std::optional<Space> Database::find_space_by_id(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        std::string("SELECT ") + SP_COLS + " FROM spaces s WHERE s.id = $1", id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return row_to_space(r[0]);
+}
+
+Space Database::update_space(const std::string& space_id, const std::string& name,
+                              const std::string& description, const std::string& icon,
+                              bool is_public, const std::string& default_role) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "UPDATE spaces SET name = $2, description = $3, icon = $4, is_public = $5, default_role = $6 "
+        "WHERE id = $1",
+        space_id, name, description, icon, is_public, default_role);
+    auto r = txn.exec_params(
+        std::string("SELECT ") + SP_COLS + " FROM spaces s WHERE s.id = $1", space_id);
+    txn.commit();
+    if (r.empty()) throw std::runtime_error("Space not found");
+    return row_to_space(r[0]);
+}
+
+std::vector<Space> Database::list_public_spaces(const std::string& user_id,
+                                                 const std::string& search) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    pqxx::result r;
+    if (search.empty()) {
+        r = txn.exec_params(
+            std::string("SELECT ") + SP_COLS +
+            " FROM spaces s "
+            "WHERE s.is_public = true "
+            "AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = $1) "
+            "ORDER BY s.name",
+            user_id);
+    } else {
+        r = txn.exec_params(
+            std::string("SELECT ") + SP_COLS +
+            " FROM spaces s "
+            "WHERE s.is_public = true "
+            "AND NOT EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = $1) "
+            "AND (s.name ILIKE '%' || $2 || '%' OR s.description ILIKE '%' || $2 || '%') "
+            "ORDER BY s.name",
+            user_id, search);
+    }
+    txn.commit();
+    std::vector<Space> spaces;
+    for (const auto& row : r) spaces.push_back(row_to_space(row));
+    return spaces;
+}
+
+std::vector<Space> Database::list_all_spaces() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec(
+        std::string("SELECT ") + SP_COLS + " FROM spaces s ORDER BY s.name");
+    txn.commit();
+    std::vector<Space> spaces;
+    for (const auto& row : r) spaces.push_back(row_to_space(row));
+    return spaces;
+}
+
+bool Database::is_space_member(const std::string& space_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT 1 FROM space_members WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id);
+    txn.commit();
+    return !r.empty();
+}
+
+void Database::add_space_member(const std::string& space_id, const std::string& user_id,
+                                 const std::string& role) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        space_id, user_id, role);
+    txn.commit();
+}
+
+void Database::remove_space_member(const std::string& space_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Also remove from all channels in this space
+    txn.exec_params(
+        "DELETE FROM channel_members WHERE user_id = $2 "
+        "AND channel_id IN (SELECT id FROM channels WHERE space_id = $1)",
+        space_id, user_id);
+    txn.exec_params(
+        "DELETE FROM space_members WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id);
+    txn.commit();
+}
+
+void Database::update_space_member_role(const std::string& space_id, const std::string& user_id,
+                                         const std::string& role) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "UPDATE space_members SET role = $3 WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id, role);
+    txn.commit();
+}
+
+std::string Database::get_space_member_role(const std::string& space_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT role FROM space_members WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id);
+    txn.commit();
+    if (r.empty()) return "";
+    return r[0][0].as<std::string>();
+}
+
+std::vector<SpaceMember> Database::get_space_members_with_roles(const std::string& space_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT u.id, u.username, u.display_name, sm.role, u.is_online, u.last_seen::text "
+        "FROM space_members sm JOIN users u ON sm.user_id = u.id "
+        "WHERE sm.space_id = $1 ORDER BY sm.role, u.username",
+        space_id);
+    txn.commit();
+    std::vector<SpaceMember> members;
+    for (const auto& row : r) {
+        members.push_back({row[0].as<std::string>(), row[1].as<std::string>(),
+                           row[2].as<std::string>(), row[3].as<std::string>(),
+                           row[4].as<bool>(), row[5].is_null() ? "" : row[5].as<std::string>()});
+    }
+    return members;
+}
+
+// --- Conversations ---
+
+Channel Database::create_conversation(const std::string& created_by,
+                                       const std::vector<std::string>& member_ids,
+                                       const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "INSERT INTO channels (name, description, is_direct, is_public, default_role, created_by, conversation_name) "
+        "VALUES (NULL, NULL, true, false, 'write', $1, NULLIF($2, '')) "
+        "RETURNING id",
+        created_by, name);
+
+    std::string channel_id = r[0][0].as<std::string>();
+    for (const auto& mid : member_ids) {
+        txn.exec_params(
+            "INSERT INTO channel_members (channel_id, user_id, role) VALUES ($1, $2, 'write') "
+            "ON CONFLICT DO NOTHING",
+            channel_id, mid);
+    }
+
+    auto r2 = txn.exec_params(
+        std::string("SELECT ") + CH_COLS + " FROM channels c WHERE c.id = $1",
+        channel_id);
+    txn.commit();
+    auto ch = row_to_channel(r2[0]);
+    ch.member_ids = member_ids;
+    return ch;
+}
+
+std::vector<Channel> Database::list_user_conversations(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        std::string("SELECT ") + CH_COLS +
+        " FROM channels c "
+        "JOIN channel_members cm ON c.id = cm.channel_id "
+        "WHERE cm.user_id = $1 AND c.is_direct = true "
+        "ORDER BY c.created_at DESC",
+        user_id);
+    txn.commit();
+    std::vector<Channel> channels;
+    for (const auto& row : r) channels.push_back(row_to_channel(row));
+    return channels;
+}
+
+void Database::add_conversation_member(const std::string& channel_id, const std::string& user_id) {
+    add_channel_member(channel_id, user_id, "write");
+}
+
+void Database::rename_conversation(const std::string& channel_id, const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "UPDATE channels SET conversation_name = NULLIF($2, '') WHERE id = $1 AND is_direct = true",
+        channel_id, name);
+    txn.commit();
 }
 
 // --- Messages ---
@@ -1365,4 +1667,748 @@ int Database::count_user_credentials(const std::string& user_id) {
         user_id);
     txn.commit();
     return r[0][0].as<int>();
+}
+
+// --- Recovery Tokens ---
+
+std::string Database::create_recovery_token(const std::string& created_by,
+                                             const std::string& for_user_id,
+                                             int expiry_hours) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string token = random_hex(32);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO recovery_tokens (token, created_by, for_user_id, expires_at) "
+        "VALUES ($1, $2, $3, NOW() + ($4 || ' hours')::interval)",
+        token, created_by, for_user_id, std::to_string(expiry_hours));
+    txn.commit();
+    return token;
+}
+
+std::optional<std::string> Database::get_recovery_token_user_id(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT for_user_id FROM recovery_tokens "
+        "WHERE token = $1 AND used = FALSE AND expires_at > NOW()",
+        token);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return r[0][0].as<std::string>();
+}
+
+void Database::use_recovery_token(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("UPDATE recovery_tokens SET used = TRUE WHERE token = $1", token);
+    txn.commit();
+}
+
+std::vector<Database::RecoveryTokenInfo> Database::list_recovery_tokens() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec(
+        "SELECT rt.id, rt.token, COALESCE(c.username, 'system'), "
+        "COALESCE(u.username, 'unknown'), rt.for_user_id, rt.used, "
+        "rt.expires_at::text, rt.created_at::text "
+        "FROM recovery_tokens rt "
+        "LEFT JOIN users c ON rt.created_by = c.id "
+        "LEFT JOIN users u ON rt.for_user_id = u.id "
+        "ORDER BY rt.created_at DESC");
+    txn.commit();
+    std::vector<RecoveryTokenInfo> tokens;
+    for (const auto& row : r) {
+        tokens.push_back({row[0].as<std::string>(), row[1].as<std::string>(),
+                          row[2].as<std::string>(), row[3].as<std::string>(),
+                          row[4].as<std::string>(), row[5].as<bool>(),
+                          row[6].as<std::string>(), row[7].as<std::string>()});
+    }
+    return tokens;
+}
+
+// --- Read State / Unread Counts ---
+
+void Database::update_read_state(const std::string& channel_id, const std::string& user_id,
+                                  const std::string& message_id, const std::string& timestamp) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO channel_read_state (channel_id, user_id, last_read_at, last_read_message_id) "
+        "VALUES ($1, $2, $3::timestamptz, $4::uuid) "
+        "ON CONFLICT (channel_id, user_id) DO UPDATE "
+        "SET last_read_at = GREATEST(channel_read_state.last_read_at, EXCLUDED.last_read_at), "
+        "    last_read_message_id = CASE WHEN EXCLUDED.last_read_at > channel_read_state.last_read_at "
+        "                           THEN EXCLUDED.last_read_message_id ELSE channel_read_state.last_read_message_id END",
+        channel_id, user_id, timestamp, message_id);
+    txn.commit();
+}
+
+std::vector<Database::UnreadCount> Database::get_unread_counts(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT cm.channel_id, COUNT(m.id)::int AS unread "
+        "FROM channel_members cm "
+        "LEFT JOIN channel_read_state crs "
+        "  ON crs.channel_id = cm.channel_id AND crs.user_id = cm.user_id "
+        "JOIN messages m ON m.channel_id = cm.channel_id "
+        "  AND m.is_deleted = false "
+        "  AND (crs.last_read_at IS NULL OR m.created_at > crs.last_read_at) "
+        "  AND m.user_id != cm.user_id "
+        "WHERE cm.user_id = $1 "
+        "GROUP BY cm.channel_id "
+        "HAVING COUNT(m.id) > 0",
+        user_id);
+    txn.commit();
+    std::vector<UnreadCount> counts;
+    for (const auto& row : r) {
+        counts.push_back({row[0].as<std::string>(), row[1].as<int>()});
+    }
+    return counts;
+}
+
+std::vector<Database::UnreadCount> Database::get_mention_unread_counts(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT mn.channel_id, COUNT(DISTINCT mn.message_id)::int AS unread "
+        "FROM mentions mn "
+        "JOIN messages m ON m.id = mn.message_id AND m.is_deleted = false "
+        "JOIN channels c ON c.id = mn.channel_id AND c.space_id IS NOT NULL "
+        "LEFT JOIN channel_read_state crs "
+        "  ON crs.channel_id = mn.channel_id AND crs.user_id = $1 "
+        "WHERE mn.mentioned_user_id = $1 "
+        "  AND (crs.last_read_at IS NULL OR m.created_at > crs.last_read_at) "
+        "GROUP BY mn.channel_id "
+        "HAVING COUNT(DISTINCT mn.message_id) > 0",
+        user_id);
+    txn.commit();
+    std::vector<UnreadCount> counts;
+    for (const auto& row : r) {
+        counts.push_back({row[0].as<std::string>(), row[1].as<int>()});
+    }
+    return counts;
+}
+
+std::vector<Database::ReadReceipt> Database::get_channel_read_receipts(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT crs.user_id, u.username, "
+        "COALESCE(crs.last_read_message_id::text, ''), crs.last_read_at::text "
+        "FROM channel_read_state crs "
+        "JOIN users u ON u.id = crs.user_id "
+        "WHERE crs.channel_id = $1",
+        channel_id);
+    txn.commit();
+    std::vector<ReadReceipt> receipts;
+    for (const auto& row : r) {
+        receipts.push_back({row[0].as<std::string>(), row[1].as<std::string>(),
+                            row[2].as<std::string>(), row[3].as<std::string>()});
+    }
+    return receipts;
+}
+
+std::vector<Database::ChannelMemberUsername> Database::get_channel_member_usernames(const std::string& channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT cm.user_id, u.username FROM channel_members cm "
+        "JOIN users u ON u.id = cm.user_id WHERE cm.channel_id = $1",
+        channel_id);
+    txn.commit();
+    std::vector<ChannelMemberUsername> members;
+    for (const auto& row : r) {
+        members.push_back({row[0].as<std::string>(), row[1].as<std::string>()});
+    }
+    return members;
+}
+
+void Database::store_mentions(const std::string& message_id, const std::string& channel_id,
+                               const std::string& content,
+                               const std::vector<ChannelMemberUsername>& members) {
+    // Parse @username and @channel from content
+    std::vector<std::string> mentioned_tokens;
+    size_t pos = 0;
+    while (pos < content.size()) {
+        auto at = content.find('@', pos);
+        if (at == std::string::npos) break;
+        size_t start = at + 1;
+        size_t end = start;
+        while (end < content.size() && (std::isalnum(content[end]) || content[end] == '_' || content[end] == '-')) {
+            ++end;
+        }
+        if (end > start) {
+            mentioned_tokens.push_back(content.substr(start, end - start));
+        }
+        pos = end;
+    }
+
+    if (mentioned_tokens.empty()) return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    bool is_channel_mention = false;
+    for (const auto& token : mentioned_tokens) {
+        if (token == "channel") {
+            is_channel_mention = true;
+            continue;
+        }
+        // Find matching member
+        for (const auto& m : members) {
+            if (m.username == token) {
+                txn.exec_params(
+                    "INSERT INTO mentions (message_id, channel_id, mentioned_user_id, is_channel_mention) "
+                    "VALUES ($1::uuid, $2::uuid, $3::uuid, false) ON CONFLICT DO NOTHING",
+                    message_id, channel_id, m.user_id);
+                break;
+            }
+        }
+    }
+
+    // @channel → insert for all members
+    if (is_channel_mention) {
+        for (const auto& m : members) {
+            txn.exec_params(
+                "INSERT INTO mentions (message_id, channel_id, mentioned_user_id, is_channel_mention) "
+                "VALUES ($1::uuid, $2::uuid, $3::uuid, true) ON CONFLICT DO NOTHING",
+                message_id, channel_id, m.user_id);
+        }
+    }
+
+    txn.commit();
+}
+
+// --- Search ---
+
+std::vector<User> Database::search_users(const std::string& query, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT id, username, display_name, public_key, role, is_online, "
+        "last_seen::text, created_at::text, bio, status "
+        "FROM users "
+        "WHERE username ILIKE '%' || $1 || '%' OR display_name ILIKE '%' || $1 || '%' "
+        "ORDER BY CASE WHEN username ILIKE $1 || '%' THEN 0 "
+        "              WHEN display_name ILIKE $1 || '%' THEN 1 ELSE 2 END, username "
+        "LIMIT $2 OFFSET $3",
+        query, limit, offset);
+    txn.commit();
+    std::vector<User> users;
+    for (const auto& row : r) {
+        users.push_back(User{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].as<std::string>(), row[3].is_null() ? "" : row[3].as<std::string>(),
+            row[4].as<std::string>(), row[5].as<bool>(),
+            row[6].is_null() ? "" : row[6].as<std::string>(),
+            row[7].as<std::string>(),
+            row[8].is_null() ? "" : row[8].as<std::string>(),
+            row[9].is_null() ? "" : row[9].as<std::string>()});
+    }
+    return users;
+}
+
+std::vector<Database::MessageSearchResult> Database::search_messages(
+    const std::string& tsquery_expr, const std::string& user_id,
+    bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT m.id, m.channel_id, c.name, COALESCE(s.name,''), "
+        "m.user_id, u.username, m.content, m.created_at::text, c.is_direct "
+        "FROM messages m "
+        "JOIN users u ON m.user_id = u.id "
+        "JOIN channels c ON m.channel_id = c.id "
+        "LEFT JOIN spaces s ON c.space_id = s.id "
+        "WHERE m.content_tsv @@ (" + tsquery_expr + ") "
+        "AND m.is_deleted = false "
+        "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = m.channel_id AND cm.user_id = $1)";
+    if (is_admin) {
+        sql += " OR c.is_direct = false";
+    }
+    sql += ") ORDER BY m.created_at DESC LIMIT $2 OFFSET $3";
+
+    auto r = txn.exec_params(sql, user_id, limit, offset);
+    txn.commit();
+
+    std::vector<MessageSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(MessageSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(),
+            row[4].as<std::string>(), row[5].as<std::string>(),
+            row[6].as<std::string>(), row[7].as<std::string>(),
+            row[8].as<bool>()});
+    }
+    return results;
+}
+
+std::vector<Database::FileSearchResult> Database::search_files(
+    const std::string& query, const std::string& user_id,
+    bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT m.id, m.channel_id, c.name, "
+        "m.user_id, u.username, m.file_id, m.file_name, m.file_type, "
+        "m.created_at::text, m.file_size "
+        "FROM messages m "
+        "JOIN users u ON m.user_id = u.id "
+        "JOIN channels c ON m.channel_id = c.id "
+        "WHERE m.file_id IS NOT NULL AND m.file_id != '' "
+        "AND m.file_name ILIKE '%' || $1 || '%' "
+        "AND m.is_deleted = false "
+        "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = m.channel_id AND cm.user_id = $2)";
+    if (is_admin) {
+        sql += " OR c.is_direct = false";
+    }
+    sql += ") ORDER BY m.created_at DESC LIMIT $3 OFFSET $4";
+
+    auto r = txn.exec_params(sql, query, user_id, limit, offset);
+    txn.commit();
+
+    std::vector<FileSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(FileSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(), row[4].as<std::string>(),
+            row[5].as<std::string>(), row[6].as<std::string>(),
+            row[7].is_null() ? "" : row[7].as<std::string>(),
+            row[8].as<std::string>(),
+            row[9].is_null() ? 0 : row[9].as<int64_t>()});
+    }
+    return results;
+}
+
+std::vector<Database::SpaceSearchResult> Database::search_spaces(
+    const std::string& query, const std::string& user_id,
+    bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT s.id, s.name, s.description, s.icon, s.is_public "
+        "FROM spaces s "
+        "WHERE (s.name ILIKE '%' || $1 || '%' OR s.description ILIKE '%' || $1 || '%') "
+        "AND (EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = $2)";
+    if (is_admin) {
+        sql += " OR true";
+    }
+    sql += ") ORDER BY s.name LIMIT $3 OFFSET $4";
+
+    auto r = txn.exec_params(sql, query, user_id, limit, offset);
+    txn.commit();
+
+    std::vector<SpaceSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(SpaceSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].is_null() ? "" : row[3].as<std::string>(),
+            row[4].as<bool>()});
+    }
+    return results;
+}
+
+std::vector<Database::ChannelSearchResult> Database::search_channels(
+    const std::string& query, const std::string& user_id,
+    bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT c.id, c.name, c.description, COALESCE(s.name,''), "
+        "COALESCE(c.space_id::text,''), c.is_public "
+        "FROM channels c "
+        "LEFT JOIN spaces s ON c.space_id = s.id "
+        "WHERE c.is_direct = false "
+        "AND (c.name ILIKE '%' || $1 || '%' OR c.description ILIKE '%' || $1 || '%') "
+        "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $2)";
+    if (is_admin) {
+        sql += " OR true";
+    }
+    sql += ") ORDER BY c.name LIMIT $3 OFFSET $4";
+
+    auto r = txn.exec_params(sql, query, user_id, limit, offset);
+    txn.commit();
+
+    std::vector<ChannelSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(ChannelSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(),
+            row[4].as<std::string>(),
+            row[5].as<bool>()});
+    }
+    return results;
+}
+
+// Helper: build message-table filter clauses from composite filters
+static void build_message_clauses(pqxx::work& txn,
+    const std::vector<Database::CompositeFilter>& filters,
+    std::vector<std::string>& clauses) {
+    for (const auto& f : filters) {
+        if (f.type == "messages") {
+            clauses.push_back(
+                "m.content_tsv @@ websearch_to_tsquery('english', " +
+                txn.quote(f.value) + ")");
+        } else if (f.type == "users") {
+            clauses.push_back(
+                "u.username ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "files") {
+            clauses.push_back(
+                "(m.file_id IS NOT NULL AND m.file_id != '' AND m.file_name ILIKE '%' || " +
+                txn.quote(f.value) + " || '%')");
+        } else if (f.type == "channels") {
+            clauses.push_back(
+                "c.name ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "spaces") {
+            clauses.push_back(
+                "s.name ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        }
+    }
+}
+
+static std::string join_clauses(const std::vector<std::string>& clauses,
+                                  const std::string& mode) {
+    if (clauses.empty()) return "";
+    std::string connector = (mode == "or") ? " OR " : " AND ";
+    std::string result = " AND (";
+    for (size_t i = 0; i < clauses.size(); i++) {
+        if (i > 0) result += connector;
+        result += clauses[i];
+    }
+    result += ")";
+    return result;
+}
+
+std::vector<Database::MessageSearchResult> Database::search_composite_messages(
+    const std::vector<CompositeFilter>& filters, const std::string& mode,
+    const std::string& user_id, bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT m.id, m.channel_id, c.name, COALESCE(s.name,''), "
+        "m.user_id, u.username, m.content, m.created_at::text, c.is_direct "
+        "FROM messages m "
+        "JOIN users u ON m.user_id = u.id "
+        "JOIN channels c ON m.channel_id = c.id "
+        "LEFT JOIN spaces s ON c.space_id = s.id "
+        "WHERE m.is_deleted = false "
+        "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = m.channel_id AND cm.user_id = " +
+        txn.quote(user_id) + ")";
+    if (is_admin) sql += " OR c.is_direct = false";
+    sql += ")";
+
+    std::vector<std::string> clauses;
+    build_message_clauses(txn, filters, clauses);
+    sql += join_clauses(clauses, mode);
+    sql += " ORDER BY m.created_at DESC LIMIT " + std::to_string(limit) +
+           " OFFSET " + std::to_string(offset);
+
+    auto r = txn.exec(sql);
+    txn.commit();
+
+    std::vector<MessageSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(MessageSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(),
+            row[4].as<std::string>(), row[5].as<std::string>(),
+            row[6].as<std::string>(), row[7].as<std::string>(),
+            row[8].as<bool>()});
+    }
+    return results;
+}
+
+std::vector<Database::FileSearchResult> Database::search_composite_files(
+    const std::vector<CompositeFilter>& filters, const std::string& mode,
+    const std::string& user_id, bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT m.id, m.channel_id, c.name, "
+        "m.user_id, u.username, m.file_id, m.file_name, m.file_type, "
+        "m.created_at::text, m.file_size "
+        "FROM messages m "
+        "JOIN users u ON m.user_id = u.id "
+        "JOIN channels c ON m.channel_id = c.id "
+        "LEFT JOIN spaces s ON c.space_id = s.id "
+        "WHERE m.file_id IS NOT NULL AND m.file_id != '' "
+        "AND m.is_deleted = false "
+        "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = m.channel_id AND cm.user_id = " +
+        txn.quote(user_id) + ")";
+    if (is_admin) sql += " OR c.is_direct = false";
+    sql += ")";
+
+    std::vector<std::string> clauses;
+    build_message_clauses(txn, filters, clauses);
+    sql += join_clauses(clauses, mode);
+    sql += " ORDER BY m.created_at DESC LIMIT " + std::to_string(limit) +
+           " OFFSET " + std::to_string(offset);
+
+    auto r = txn.exec(sql);
+    txn.commit();
+
+    std::vector<FileSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(FileSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(), row[4].as<std::string>(),
+            row[5].as<std::string>(), row[6].as<std::string>(),
+            row[7].is_null() ? "" : row[7].as<std::string>(),
+            row[8].as<std::string>(),
+            row[9].is_null() ? 0 : row[9].as<int64_t>()});
+    }
+    return results;
+}
+
+std::vector<User> Database::search_composite_users(
+    const std::vector<CompositeFilter>& filters, const std::string& mode,
+    const std::string& user_id, bool is_admin, int limit, int offset) {
+    (void)is_admin;
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT DISTINCT u.id, u.username, u.display_name, u.public_key, u.role, "
+        "u.is_online, u.last_seen::text, u.created_at::text, u.bio, u.status "
+        "FROM users u ";
+
+    std::vector<std::string> clauses;
+    bool needs_channels = false, needs_spaces = false;
+
+    for (const auto& f : filters) {
+        if (f.type == "users") {
+            clauses.push_back(
+                "(u.username ILIKE '%' || " + txn.quote(f.value) +
+                " || '%' OR u.display_name ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        } else if (f.type == "channels") {
+            needs_channels = true;
+            clauses.push_back(
+                "ch.name ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "spaces") {
+            needs_spaces = true;
+            clauses.push_back(
+                "sp.name ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "messages") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM messages m_t WHERE m_t.user_id = u.id "
+                "AND m_t.is_deleted = false "
+                "AND m_t.content_tsv @@ websearch_to_tsquery('english', " + txn.quote(f.value) + "))");
+        } else if (f.type == "files") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM messages m_f WHERE m_f.user_id = u.id "
+                "AND m_f.is_deleted = false AND m_f.file_id IS NOT NULL AND m_f.file_id != '' "
+                "AND m_f.file_name ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        }
+    }
+
+    if (needs_channels) {
+        sql += "JOIN channel_members cm_u ON cm_u.user_id = u.id "
+               "JOIN channels ch ON ch.id = cm_u.channel_id AND ch.is_direct = false ";
+    }
+    if (needs_spaces) {
+        sql += "JOIN space_members sm_u ON sm_u.user_id = u.id "
+               "JOIN spaces sp ON sp.id = sm_u.space_id ";
+    }
+
+    sql += "WHERE true";
+    (void)user_id;
+    sql += join_clauses(clauses, mode);
+    sql += " ORDER BY u.username LIMIT " + std::to_string(limit) +
+           " OFFSET " + std::to_string(offset);
+
+    auto r = txn.exec(sql);
+    txn.commit();
+
+    std::vector<User> users;
+    for (const auto& row : r) {
+        users.push_back(User{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].as<std::string>(), row[3].is_null() ? "" : row[3].as<std::string>(),
+            row[4].as<std::string>(), row[5].as<bool>(),
+            row[6].is_null() ? "" : row[6].as<std::string>(),
+            row[7].as<std::string>(),
+            row[8].is_null() ? "" : row[8].as<std::string>(),
+            row[9].is_null() ? "" : row[9].as<std::string>()});
+    }
+    return users;
+}
+
+std::vector<Database::ChannelSearchResult> Database::search_composite_channels(
+    const std::vector<CompositeFilter>& filters, const std::string& mode,
+    const std::string& user_id, bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT DISTINCT c.id, c.name, c.description, COALESCE(s.name,''), "
+        "COALESCE(c.space_id::text,''), c.is_public "
+        "FROM channels c "
+        "LEFT JOIN spaces s ON c.space_id = s.id ";
+
+    bool needs_user_join = false;
+    for (const auto& f : filters) {
+        if (f.type == "users") { needs_user_join = true; break; }
+    }
+    if (needs_user_join) {
+        sql += "JOIN channel_members cm_f ON cm_f.channel_id = c.id "
+               "JOIN users uf ON uf.id = cm_f.user_id ";
+    }
+
+    sql += "WHERE c.is_direct = false "
+           "AND (EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = " +
+           txn.quote(user_id) + ")";
+    if (is_admin) sql += " OR true";
+    sql += ")";
+
+    std::vector<std::string> clauses;
+    for (const auto& f : filters) {
+        if (f.type == "channels") {
+            clauses.push_back(
+                "(c.name ILIKE '%' || " + txn.quote(f.value) +
+                " || '%' OR c.description ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        } else if (f.type == "spaces") {
+            clauses.push_back(
+                "s.name ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "users") {
+            clauses.push_back(
+                "uf.username ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "messages") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM messages m_t WHERE m_t.channel_id = c.id "
+                "AND m_t.is_deleted = false "
+                "AND m_t.content_tsv @@ websearch_to_tsquery('english', " + txn.quote(f.value) + "))");
+        } else if (f.type == "files") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM messages m_f WHERE m_f.channel_id = c.id "
+                "AND m_f.is_deleted = false AND m_f.file_id IS NOT NULL AND m_f.file_id != '' "
+                "AND m_f.file_name ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        }
+    }
+
+    sql += join_clauses(clauses, mode);
+    sql += " ORDER BY c.name LIMIT " + std::to_string(limit) +
+           " OFFSET " + std::to_string(offset);
+
+    auto r = txn.exec(sql);
+    txn.commit();
+
+    std::vector<ChannelSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(ChannelSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].as<std::string>(),
+            row[4].as<std::string>(),
+            row[5].as<bool>()});
+    }
+    return results;
+}
+
+std::vector<Database::SpaceSearchResult> Database::search_composite_spaces(
+    const std::vector<CompositeFilter>& filters, const std::string& mode,
+    const std::string& user_id, bool is_admin, int limit, int offset) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::string sql =
+        "SELECT DISTINCT s.id, s.name, s.description, s.icon, s.is_public "
+        "FROM spaces s ";
+
+    bool needs_user_join = false;
+    for (const auto& f : filters) {
+        if (f.type == "users") { needs_user_join = true; break; }
+    }
+    if (needs_user_join) {
+        sql += "JOIN space_members sm_f ON sm_f.space_id = s.id "
+               "JOIN users uf ON uf.id = sm_f.user_id ";
+    }
+
+    sql += "WHERE (EXISTS (SELECT 1 FROM space_members sm WHERE sm.space_id = s.id AND sm.user_id = " +
+           txn.quote(user_id) + ")";
+    if (is_admin) sql += " OR true";
+    sql += ")";
+
+    std::vector<std::string> clauses;
+    for (const auto& f : filters) {
+        if (f.type == "spaces") {
+            clauses.push_back(
+                "(s.name ILIKE '%' || " + txn.quote(f.value) +
+                " || '%' OR s.description ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        } else if (f.type == "users") {
+            clauses.push_back(
+                "uf.username ILIKE '%' || " + txn.quote(f.value) + " || '%'");
+        } else if (f.type == "messages") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM channels ch_t "
+                "JOIN messages m_t ON m_t.channel_id = ch_t.id "
+                "WHERE ch_t.space_id = s.id AND m_t.is_deleted = false "
+                "AND m_t.content_tsv @@ websearch_to_tsquery('english', " + txn.quote(f.value) + "))");
+        } else if (f.type == "files") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM channels ch_f "
+                "JOIN messages m_f ON m_f.channel_id = ch_f.id "
+                "WHERE ch_f.space_id = s.id AND m_f.is_deleted = false "
+                "AND m_f.file_id IS NOT NULL AND m_f.file_id != '' "
+                "AND m_f.file_name ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        } else if (f.type == "channels") {
+            clauses.push_back(
+                "EXISTS (SELECT 1 FROM channels ch_c WHERE ch_c.space_id = s.id "
+                "AND ch_c.name ILIKE '%' || " + txn.quote(f.value) + " || '%')");
+        }
+    }
+
+    sql += join_clauses(clauses, mode);
+    sql += " ORDER BY s.name LIMIT " + std::to_string(limit) +
+           " OFFSET " + std::to_string(offset);
+
+    auto r = txn.exec(sql);
+    txn.commit();
+
+    std::vector<SpaceSearchResult> results;
+    for (const auto& row : r) {
+        results.push_back(SpaceSearchResult{
+            row[0].as<std::string>(), row[1].as<std::string>(),
+            row[2].is_null() ? "" : row[2].as<std::string>(),
+            row[3].is_null() ? "" : row[3].as<std::string>(),
+            row[4].as<bool>()});
+    }
+    return results;
+}
+
+std::vector<Message> Database::get_messages_around(const std::string& channel_id,
+                                                     const std::string& message_id, int limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    int half = limit / 2 + 1;
+    std::string sql =
+        std::string("SELECT * FROM (") +
+        "(SELECT " + MSG_COLS_JOINED + " FROM messages m JOIN users u ON m.user_id = u.id "
+        "WHERE m.channel_id = $1 AND m.created_at <= (SELECT created_at FROM messages WHERE id = $2) "
+        "ORDER BY m.created_at DESC LIMIT $3) "
+        "UNION ALL "
+        "(SELECT " + MSG_COLS_JOINED + " FROM messages m JOIN users u ON m.user_id = u.id "
+        "WHERE m.channel_id = $1 AND m.created_at > (SELECT created_at FROM messages WHERE id = $2) "
+        "ORDER BY m.created_at ASC LIMIT $3)"
+        ") sub ORDER BY created_at ASC";
+    auto r = txn.exec_params(sql, channel_id, message_id, half);
+    txn.commit();
+
+    std::vector<Message> msgs;
+    for (const auto& row : r) {
+        msgs.push_back(row_to_message(row));
+    }
+    return msgs;
 }

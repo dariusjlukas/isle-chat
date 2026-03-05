@@ -8,6 +8,7 @@
 #include "models/user.h"
 #include "models/channel.h"
 #include "models/message.h"
+#include "models/space.h"
 
 class Database {
 public:
@@ -37,11 +38,44 @@ public:
     std::optional<std::string> get_challenge(const std::string& public_key);
     void delete_challenge(const std::string& public_key);
 
+    // Spaces
+    Space create_space(const std::string& name, const std::string& description,
+                       const std::string& icon, bool is_public,
+                       const std::string& created_by,
+                       const std::string& default_role = "write");
+    std::vector<Space> list_user_spaces(const std::string& user_id);
+    std::optional<Space> find_space_by_id(const std::string& id);
+    Space update_space(const std::string& space_id, const std::string& name,
+                       const std::string& description, const std::string& icon,
+                       bool is_public, const std::string& default_role);
+    std::vector<Space> list_public_spaces(const std::string& user_id,
+                                           const std::string& search = "");
+    std::vector<Space> list_all_spaces();
+
+    // Space membership
+    bool is_space_member(const std::string& space_id, const std::string& user_id);
+    void add_space_member(const std::string& space_id, const std::string& user_id,
+                          const std::string& role = "write");
+    void remove_space_member(const std::string& space_id, const std::string& user_id);
+    void update_space_member_role(const std::string& space_id, const std::string& user_id,
+                                   const std::string& role);
+    std::string get_space_member_role(const std::string& space_id, const std::string& user_id);
+    std::vector<SpaceMember> get_space_members_with_roles(const std::string& space_id);
+
+    // Conversations (group messages)
+    Channel create_conversation(const std::string& created_by,
+                                 const std::vector<std::string>& member_ids,
+                                 const std::string& name = "");
+    std::vector<Channel> list_user_conversations(const std::string& user_id);
+    void add_conversation_member(const std::string& channel_id, const std::string& user_id);
+    void rename_conversation(const std::string& channel_id, const std::string& name);
+
     // Channels
     Channel create_channel(const std::string& name, const std::string& description,
                            bool is_direct, const std::string& created_by,
                            const std::vector<std::string>& member_ids,
-                           bool is_public = true, const std::string& default_role = "write");
+                           bool is_public = true, const std::string& default_role = "write",
+                           const std::string& space_id = "");
     std::vector<Channel> list_user_channels(const std::string& user_id);
     std::optional<Channel> find_dm_channel(const std::string& user1_id, const std::string& user2_id);
     std::optional<Channel> find_channel_by_id(const std::string& id);
@@ -77,6 +111,24 @@ public:
     Message delete_message(const std::string& message_id, const std::string& user_id);
     struct FileInfo { std::string file_name, file_type; };
     std::optional<FileInfo> get_file_info(const std::string& file_id);
+
+    // Read state / unread counts
+    void update_read_state(const std::string& channel_id, const std::string& user_id,
+                           const std::string& message_id, const std::string& timestamp);
+    struct UnreadCount { std::string channel_id; int count; };
+    std::vector<UnreadCount> get_unread_counts(const std::string& user_id);
+    std::vector<UnreadCount> get_mention_unread_counts(const std::string& user_id);
+    struct ReadReceipt {
+        std::string user_id, username, last_read_message_id, last_read_at;
+    };
+    std::vector<ReadReceipt> get_channel_read_receipts(const std::string& channel_id);
+
+    // Mentions
+    struct ChannelMemberUsername { std::string user_id, username; };
+    std::vector<ChannelMemberUsername> get_channel_member_usernames(const std::string& channel_id);
+    void store_mentions(const std::string& message_id, const std::string& channel_id,
+                        const std::string& content,
+                        const std::vector<ChannelMemberUsername>& members);
 
     // Server settings
     std::optional<std::string> get_setting(const std::string& key);
@@ -165,6 +217,69 @@ public:
 
     // Count total auth credentials for a user (passkeys + PKI keys)
     int count_user_credentials(const std::string& user_id);
+
+    // Search
+    struct MessageSearchResult {
+        std::string id, channel_id, channel_name, space_name;
+        std::string user_id, username, content, created_at;
+        bool is_direct;
+    };
+    struct FileSearchResult {
+        std::string message_id, channel_id, channel_name;
+        std::string user_id, username;
+        std::string file_id, file_name, file_type, created_at;
+        int64_t file_size;
+    };
+    struct SpaceSearchResult {
+        std::string id, name, description, icon;
+        bool is_public;
+    };
+    struct ChannelSearchResult {
+        std::string id, name, description, space_name, space_id;
+        bool is_public;
+    };
+    struct CompositeFilter {
+        std::string type;  // messages, users, files, channels, spaces
+        std::string value;
+    };
+    std::vector<User> search_users(const std::string& query, int limit, int offset);
+    std::vector<MessageSearchResult> search_messages(const std::string& tsquery_expr,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<FileSearchResult> search_files(const std::string& query,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<SpaceSearchResult> search_spaces(const std::string& query,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<ChannelSearchResult> search_channels(const std::string& query,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<MessageSearchResult> search_composite_messages(
+        const std::vector<CompositeFilter>& filters, const std::string& mode,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<FileSearchResult> search_composite_files(
+        const std::vector<CompositeFilter>& filters, const std::string& mode,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<User> search_composite_users(
+        const std::vector<CompositeFilter>& filters, const std::string& mode,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<ChannelSearchResult> search_composite_channels(
+        const std::vector<CompositeFilter>& filters, const std::string& mode,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<SpaceSearchResult> search_composite_spaces(
+        const std::vector<CompositeFilter>& filters, const std::string& mode,
+        const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<Message> get_messages_around(const std::string& channel_id,
+        const std::string& message_id, int limit);
+
+    // Recovery tokens (admin-generated account recovery)
+    struct RecoveryTokenInfo {
+        std::string id, token, created_by_username, for_username, for_user_id;
+        bool used;
+        std::string expires_at, created_at;
+    };
+    std::string create_recovery_token(const std::string& created_by, const std::string& for_user_id,
+                                       int expiry_hours = 24);
+    std::optional<std::string> get_recovery_token_user_id(const std::string& token);
+    void use_recovery_token(const std::string& token);
+    std::vector<RecoveryTokenInfo> list_recovery_tokens();
 
 private:
     pqxx::connection& get_conn();

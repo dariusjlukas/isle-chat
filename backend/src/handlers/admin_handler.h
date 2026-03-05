@@ -124,6 +124,56 @@ struct AdminHandler {
             });
             res->onAborted([]() {});
         });
+
+        app.post("/api/admin/recovery-tokens", [this](auto* res, auto* req) {
+            auto admin_id_copy = get_admin_id(res, req);
+            std::string body;
+            res->onData([this, res, admin_id = std::move(admin_id_copy), body = std::move(body)](
+                std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                if (admin_id.empty()) return;
+
+                try {
+                    auto j = json::parse(body);
+                    std::string user_id = j.at("user_id");
+                    int expiry = j.value("expiry_hours", 24);
+
+                    auto user = db.find_user_by_id(user_id);
+                    if (!user) {
+                        res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"User not found"})");
+                        return;
+                    }
+
+                    auto token = db.create_recovery_token(admin_id, user_id, expiry);
+                    json resp = {{"token", token}};
+                    res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+                } catch (const std::exception& e) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->end(json({{"error", e.what()}}).dump());
+                }
+            });
+            res->onAborted([]() {});
+        });
+
+        app.get("/api/admin/recovery-tokens", [this](auto* res, auto* req) {
+            auto user_id = get_admin_id(res, req);
+            if (user_id.empty()) return;
+
+            auto tokens = db.list_recovery_tokens();
+            json arr = json::array();
+            for (const auto& t : tokens) {
+                arr.push_back({{"id", t.id}, {"token", t.token},
+                               {"created_by", t.created_by_username},
+                               {"for_user", t.for_username},
+                               {"for_user_id", t.for_user_id},
+                               {"used", t.used},
+                               {"expires_at", t.expires_at},
+                               {"created_at", t.created_at}});
+            }
+            res->writeHeader("Content-Type", "application/json")->end(arr.dump());
+        });
     }
 
 private:

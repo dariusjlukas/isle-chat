@@ -1,7 +1,14 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { wsService } from '../services/websocket';
 import { useChatStore } from '../stores/chatStore';
-import type { Message, Channel, ChannelRole } from '../types';
+import type {
+  Message,
+  User,
+  Channel,
+  ChannelRole,
+  Space,
+  ChannelMemberInfo,
+} from '../types';
 
 export function useWebSocket() {
   const token = useChatStore((s) => s.token);
@@ -17,11 +24,29 @@ export function useWebSocket() {
 
     const unsubs = [
       wsService.on('new_message', (data: unknown) => {
-        const { message } = data as { message: Message };
-        useChatStore.getState().addMessage(message);
-        useChatStore
-          .getState()
-          .clearTyping(message.channel_id, message.username);
+        const { message, mentions } = data as {
+          message: Message;
+          mentions?: string[];
+        };
+        const store = useChatStore.getState();
+        store.addMessage(message);
+        store.clearTyping(message.channel_id, message.username);
+
+        // Increment unread if not own message and not the active channel
+        if (
+          message.user_id !== store.user?.id &&
+          message.channel_id !== store.activeChannelId
+        ) {
+          store.incrementUnread(message.channel_id);
+          // Increment mention count if user is mentioned or @channel was used
+          if (
+            mentions &&
+            (mentions.includes(store.user?.username || '') ||
+              mentions.includes('@channel'))
+          ) {
+            store.incrementMentionCount(message.channel_id);
+          }
+        }
       }),
 
       wsService.on('message_edited', (data: unknown) => {
@@ -45,8 +70,16 @@ export function useWebSocket() {
       }),
 
       wsService.on('user_offline', (data: unknown) => {
-        const { user_id } = data as { user_id: string };
-        useChatStore.getState().setUserOnline(user_id, false);
+        const { user_id, last_seen } = data as {
+          user_id: string;
+          last_seen?: string;
+        };
+        useChatStore.getState().setUserOnline(user_id, false, last_seen);
+      }),
+
+      wsService.on('user_updated', (data: unknown) => {
+        const { user } = data as { user: User };
+        useChatStore.getState().updateUserInList(user.id, user);
       }),
 
       wsService.on('channel_removed', (data: unknown) => {
@@ -69,6 +102,69 @@ export function useWebSocket() {
           channel: Partial<Channel> & { id: string };
         };
         useChatStore.getState().updateChannel(channel);
+      }),
+
+      wsService.on('space_added', (data: unknown) => {
+        const { space } = data as { space: Space };
+        useChatStore.getState().addSpace(space);
+      }),
+
+      wsService.on('space_updated', (data: unknown) => {
+        const { space } = data as { space: Partial<Space> & { id: string } };
+        useChatStore.getState().updateSpace(space);
+      }),
+
+      wsService.on('space_removed', (data: unknown) => {
+        const { space_id } = data as { space_id: string };
+        useChatStore.getState().removeSpace(space_id);
+      }),
+
+      wsService.on('conversation_member_added', (data: unknown) => {
+        const { channel_id, members } = data as {
+          channel_id: string;
+          members: ChannelMemberInfo[];
+        };
+        useChatStore.getState().updateChannel({ id: channel_id, members });
+      }),
+
+      wsService.on('conversation_renamed', (data: unknown) => {
+        const { channel_id, name } = data as {
+          channel_id: string;
+          name: string;
+        };
+        useChatStore
+          .getState()
+          .updateChannel({ id: channel_id, conversation_name: name });
+      }),
+
+      wsService.on('unread_counts', (data: unknown) => {
+        const { counts, mention_counts } = data as {
+          counts: Record<string, number>;
+          mention_counts: Record<string, number>;
+        };
+        useChatStore.getState().setUnreadCounts(counts);
+        useChatStore.getState().setMentionCounts(mention_counts);
+      }),
+
+      wsService.on('read_receipt', (data: unknown) => {
+        const {
+          channel_id,
+          user_id,
+          username,
+          last_read_message_id,
+          last_read_at,
+        } = data as {
+          channel_id: string;
+          user_id: string;
+          username: string;
+          last_read_message_id: string;
+          last_read_at: string;
+        };
+        useChatStore.getState().updateReadReceipt(channel_id, user_id, {
+          username,
+          last_read_message_id,
+          last_read_at,
+        });
       }),
 
       wsService.on('typing', (data: unknown) => {
@@ -114,5 +210,18 @@ export function useWebSocket() {
     wsService.send({ type: 'delete_message', message_id: messageId });
   }, []);
 
-  return { sendMessage, sendTyping, editMessage, deleteMessage };
+  const markRead = useCallback(
+    (channelId: string, messageId: string, timestamp: string) => {
+      wsService.send({
+        type: 'mark_read',
+        channel_id: channelId,
+        message_id: messageId,
+        timestamp,
+      });
+      useChatStore.getState().clearUnread(channelId);
+    },
+    [],
+  );
+
+  return { sendMessage, sendTyping, editMessage, deleteMessage, markRead };
 }

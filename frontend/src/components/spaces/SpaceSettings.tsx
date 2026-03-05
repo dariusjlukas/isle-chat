@@ -14,46 +14,48 @@ import {
 } from '@heroui/react';
 import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
-import type { Channel, ChannelMemberInfo, ChannelRole } from '../../types';
+import type { Space, ChannelMemberInfo, ChannelRole } from '../../types';
 import { UserPicker } from '../common/UserPicker';
 import { OnlineStatusDot } from '../common/OnlineStatusDot';
 import { UserPopoverCard } from '../common/UserPopoverCard';
 
 interface Props {
-  channel: Channel;
+  space: Space;
   onClose: () => void;
 }
 
-export function ChannelSettings({ channel, onClose }: Props) {
-  const [name, setName] = useState(channel.name);
-  const [description, setDescription] = useState(channel.description);
-  const [isPublic, setIsPublic] = useState(channel.is_public);
+export function SpaceSettings({ space, onClose }: Props) {
+  const [name, setName] = useState(space.name);
+  const [description, setDescription] = useState(space.description);
+  const [icon, setIcon] = useState(space.icon);
+  const [isPublic, setIsPublic] = useState(space.is_public);
   const [defaultRole, setDefaultRole] = useState<ChannelRole>(
-    channel.default_role,
+    space.default_role,
   );
   const [saving, setSaving] = useState(false);
   const [inviteUserId, setInviteUserId] = useState<string[]>([]);
   const [inviteRole, setInviteRole] = useState('write');
   const [inviting, setInviting] = useState(false);
 
-  const setChannels = useChatStore((s) => s.setChannels);
-  const updateChannel = useChatStore((s) => s.updateChannel);
+  const setSpaces = useChatStore((s) => s.setSpaces);
+  const updateSpace = useChatStore((s) => s.updateSpace);
 
   const memberIds = useMemo(
-    () => channel.members.map((m) => m.id),
-    [channel.members],
+    () => space.members.map((m) => m.id),
+    [space.members],
   );
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      const updated = await api.updateChannelSettings(channel.id, {
+      const updated = await api.updateSpaceSettings(space.id, {
         name,
         description,
+        icon,
         is_public: isPublic,
         default_role: defaultRole,
       });
-      updateChannel(updated);
+      updateSpace({ id: space.id, ...updated });
     } catch {
       /* ignored */
     }
@@ -62,21 +64,20 @@ export function ChannelSettings({ channel, onClose }: Props) {
 
   const handleChangeRole = async (userId: string, newRole: string) => {
     try {
-      await api.changeMemberRole(channel.id, userId, newRole);
-      const channels = await api.listChannels();
-      setChannels(channels);
+      await api.changeSpaceMemberRole(space.id, userId, newRole);
+      const spaces = await api.listSpaces();
+      setSpaces(spaces);
     } catch {
       /* ignored */
     }
   };
 
   const handleKick = async (member: ChannelMemberInfo) => {
-    if (!confirm(`Remove ${member.display_name} from #${channel.name}?`))
-      return;
+    if (!confirm(`Remove ${member.display_name} from ${space.name}?`)) return;
     try {
-      await api.kickFromChannel(channel.id, member.id);
-      const channels = await api.listChannels();
-      setChannels(channels);
+      await api.kickFromSpace(space.id, member.id);
+      const spaces = await api.listSpaces();
+      setSpaces(spaces);
     } catch {
       /* ignored */
     }
@@ -86,9 +87,9 @@ export function ChannelSettings({ channel, onClose }: Props) {
     if (inviteUserId.length === 0) return;
     setInviting(true);
     try {
-      await api.inviteToChannel(channel.id, inviteUserId[0], inviteRole);
-      const channels = await api.listChannels();
-      setChannels(channels);
+      await api.inviteToSpace(space.id, inviteUserId[0], inviteRole);
+      const spaces = await api.listSpaces();
+      setSpaces(spaces);
       setInviteUserId([]);
     } catch {
       /* ignored */
@@ -107,13 +108,17 @@ export function ChannelSettings({ channel, onClose }: Props) {
       backdrop="opaque"
     >
       <ModalContent>
-        <ModalHeader>Channel Settings — #{channel.name}</ModalHeader>
+        <ModalHeader>
+          Space Settings —{' '}
+          {space.icon && <span className="mr-1">{space.icon}</span>}
+          {space.name}
+        </ModalHeader>
         <ModalBody className="pb-6">
           <Tabs color="primary" classNames={{ tabList: 'bg-content2' }}>
             <Tab key="settings" title="Settings">
               <div className="space-y-4 pt-2">
                 <Input
-                  label="Channel Name"
+                  label="Space Name"
                   variant="bordered"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
@@ -124,10 +129,18 @@ export function ChannelSettings({ channel, onClose }: Props) {
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                 />
+                <Input
+                  label="Icon"
+                  description="Emoji or short text"
+                  variant="bordered"
+                  value={icon}
+                  onChange={(e) => setIcon(e.target.value)}
+                  maxLength={10}
+                />
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-foreground">
-                      Public Channel
+                      Public Space
                     </p>
                     <p className="text-xs text-default-400">
                       {isPublic ? 'Anyone can find and join' : 'Invite only'}
@@ -156,9 +169,9 @@ export function ChannelSettings({ channel, onClose }: Props) {
               </div>
             </Tab>
 
-            <Tab key="members" title={`Members (${channel.members.length})`}>
+            <Tab key="members" title={`Members (${space.members.length})`}>
               <div className="space-y-2 pt-2">
-                {channel.members.map((m) => (
+                {space.members.map((m) => (
                   <div
                     key={m.id}
                     className="flex items-center justify-between p-2 rounded-lg bg-content1"

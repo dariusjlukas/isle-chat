@@ -12,7 +12,7 @@ export function ChatArea() {
   const setUploadProgress = useChatStore((s) => s.setUploadProgress);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const errorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const { sendMessage, sendTyping, editMessage, deleteMessage } =
+  const { sendMessage, sendTyping, editMessage, deleteMessage, markRead } =
     useWebSocket();
 
   const activeChannel = channels.find((c) => c.id === activeChannelId);
@@ -54,6 +54,7 @@ export function ChatArea() {
         channelId={activeChannelId}
         onEditMessage={editMessage}
         onDeleteMessage={deleteMessage}
+        onMarkRead={markRead}
       />
       {canWrite ? (
         <MessageInput

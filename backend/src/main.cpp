@@ -10,6 +10,8 @@
 #include "handlers/user_handler.h"
 #include "handlers/admin_handler.h"
 #include "handlers/file_handler.h"
+#include "handlers/space_handler.h"
+#include "handlers/search_handler.h"
 #include "ws/ws_handler.h"
 
 us_listen_socket_t* global_listen_socket = nullptr;
@@ -36,9 +38,11 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
     WsHandler<SSL> ws_handler(db);
     AuthHandler<SSL> auth_handler{db, config};
     ChannelHandler<SSL> channel_handler{db, ws_handler};
-    UserHandler<SSL> user_handler{db, config};
+    SpaceHandler<SSL> space_handler{db, ws_handler};
+    UserHandler<SSL> user_handler{db, ws_handler, config};
     AdminHandler<SSL> admin_handler{db, config};
     FileHandler<SSL> file_handler{db, config};
+    SearchHandler<SSL> search_handler{db};
 
     // CORS preflight
     app.options("/*", [](auto* res, auto* req) {
@@ -48,8 +52,10 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
             ->writeStatus("204")->end();
     });
 
-    // Register routes
+    // Register routes (search before channels so /messages/around matches first)
     auth_handler.register_routes(app);
+    search_handler.register_routes(app);
+    space_handler.register_routes(app);
     channel_handler.register_routes(app);
     user_handler.register_routes(app);
     admin_handler.register_routes(app);

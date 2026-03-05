@@ -185,9 +185,9 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
           onValueChange={setRegistrationMode}
         >
           <Radio value="invite">
-            Invite Only
+            Invite Tokens
             <span className="text-xs text-default-400 ml-1">
-              - Users need an invite token
+              - Users may use an invite token to join
             </span>
           </Radio>
           <Radio value="approval">
@@ -281,6 +281,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                   type="number"
                   value={maxFileValue}
                   onValueChange={setMaxFileValue}
+                  variant="bordered"
                   size="sm"
                   className="w-28"
                   min="1"
@@ -291,6 +292,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                     const val = Array.from(keys)[0] as string;
                     if (val) setMaxFileUnit(val);
                   }}
+                  variant="bordered"
                   size="sm"
                   className="w-24"
                 >
@@ -310,6 +312,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                   type="number"
                   value={maxStorageValue}
                   onValueChange={setMaxStorageValue}
+                  variant="bordered"
                   size="sm"
                   className="w-28"
                   min="0"
@@ -320,6 +323,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                     const val = Array.from(keys)[0] as string;
                     if (val) setMaxStorageUnit(val);
                   }}
+                  variant="bordered"
                   size="sm"
                   className="w-24"
                 >

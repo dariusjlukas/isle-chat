@@ -7,49 +7,47 @@ import {
   ModalFooter,
   Button,
   Input,
+  Switch,
   Select,
   SelectItem,
   Alert,
-  Switch,
 } from '@heroui/react';
 import * as api from '../../services/api';
 import { useChatStore } from '../../stores/chatStore';
 
 interface Props {
   onClose: () => void;
-  spaceId: string;
 }
 
-export function CreateChannel({ onClose, spaceId }: Props) {
+export function CreateSpace({ onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [icon, setIcon] = useState('');
   const [isPublic, setIsPublic] = useState(true);
   const [defaultRole, setDefaultRole] = useState('write');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const setActiveChannel = useChatStore((s) => s.setActiveChannel);
+  const setActiveView = useChatStore((s) => s.setActiveView);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError('Channel name is required');
-      setLoading(false);
+      setError('Space name is required');
       return;
     }
     setLoading(true);
     setError('');
     try {
-      const ch = await api.createSpaceChannel(
-        spaceId,
+      const space = await api.createSpace(
         name.trim(),
         description.trim(),
-        undefined,
+        icon.trim(),
         isPublic,
         defaultRole,
       );
-      const channels = await api.listChannels();
-      useChatStore.getState().setChannels(channels);
-      setActiveChannel(ch.id);
+      const spaces = await api.listSpaces();
+      useChatStore.getState().setSpaces(spaces);
+      setActiveView({ type: 'space', spaceId: space.id });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed');
@@ -69,7 +67,7 @@ export function CreateChannel({ onClose, spaceId }: Props) {
     >
       <ModalContent>
         <form onSubmit={handleSubmit}>
-          <ModalHeader>Create Channel</ModalHeader>
+          <ModalHeader>Create Space</ModalHeader>
           <ModalBody>
             {error && (
               <Alert color="danger" variant="flat">
@@ -77,11 +75,11 @@ export function CreateChannel({ onClose, spaceId }: Props) {
               </Alert>
             )}
             <Input
-              label="Channel Name"
+              label="Space Name"
               variant="bordered"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. engineering"
+              placeholder="e.g. Engineering"
             />
             <Input
               label="Description"
@@ -89,12 +87,21 @@ export function CreateChannel({ onClose, spaceId }: Props) {
               variant="bordered"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What's this channel about?"
+              placeholder="What's this space for?"
+            />
+            <Input
+              label="Icon"
+              description="Emoji or short text"
+              variant="bordered"
+              value={icon}
+              onChange={(e) => setIcon(e.target.value)}
+              placeholder="e.g. 🚀"
+              maxLength={10}
             />
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-foreground">
-                  Public Channel
+                  Public Space
                 </p>
                 <p className="text-xs text-default-400">
                   {isPublic ? 'Anyone can find and join' : 'Invite only'}
@@ -121,7 +128,7 @@ export function CreateChannel({ onClose, spaceId }: Props) {
               Cancel
             </Button>
             <Button type="submit" color="primary" isLoading={loading}>
-              Create
+              Create Space
             </Button>
           </ModalFooter>
         </form>

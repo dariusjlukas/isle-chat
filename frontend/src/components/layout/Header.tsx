@@ -10,6 +10,7 @@ import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
 import logoSmall from '../../assets/isle-chat-logo-small.png';
 import logoSmallDark from '../../assets/isle-chat-logo-small-dark.png';
+import { GlobalSearch } from '../search/GlobalSearch';
 
 interface Props {
   onShowAdmin: () => void;
@@ -30,12 +31,30 @@ export function Header({
   const clearAuth = useChatStore((s) => s.clearAuth);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channels = useChatStore((s) => s.channels);
+  const spaces = useChatStore((s) => s.spaces);
 
   const activeChannel = channels.find((c) => c.id === activeChannelId);
+  const activeSpace = activeChannel?.space_id
+    ? spaces.find((s) => s.id === activeChannel.space_id)
+    : null;
+
   const canManageChannel =
     activeChannel &&
     !activeChannel.is_direct &&
     (activeChannel.my_role === 'admin' || user?.role === 'admin');
+
+  const getChannelDisplayName = () => {
+    if (!activeChannel) return null;
+    if (activeChannel.is_direct) {
+      if (activeChannel.conversation_name)
+        return activeChannel.conversation_name;
+      const others =
+        activeChannel.members?.filter((m) => m.id !== user?.id) || [];
+      if (others.length === 0) return `${user?.display_name || 'You'} (you)`;
+      return others.map((o) => o.display_name || o.username).join(', ');
+    }
+    return activeChannel.name;
+  };
 
   const handleLogout = async () => {
     try {
@@ -47,7 +66,7 @@ export function Header({
   };
 
   return (
-    <header className="bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 flex items-center justify-between">
+    <header className="bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] items-center gap-2">
       <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <Button
           isIconOnly
@@ -73,16 +92,25 @@ export function Header({
         </span>
         {activeChannel && (
           <h2 className="text-foreground font-semibold truncate">
+            {activeSpace && (
+              <span className="text-default-400 font-normal">
+                {activeSpace.icon && (
+                  <span className="mr-1">{activeSpace.icon}</span>
+                )}
+                {activeSpace.name}
+                <span className="mx-1.5">/</span>
+              </span>
+            )}
             {!activeChannel.is_direct && (
               <FontAwesomeIcon
                 icon={activeChannel.is_public ? faHashtag : faLock}
                 className="text-xs mr-1.5"
               />
             )}
-            {activeChannel.name || 'Direct Message'}
+            {getChannelDisplayName()}
           </h2>
         )}
-        {activeChannel?.description && (
+        {activeChannel?.description && !activeChannel.is_direct && (
           <span className="text-default-500 text-sm hidden md:inline">
             | {activeChannel.description}
           </span>
@@ -100,7 +128,9 @@ export function Header({
         )}
       </div>
 
-      <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
+      <GlobalSearch />
+
+      <div className="flex items-center gap-1 sm:gap-2 justify-end">
         {user?.role === 'admin' && (
           <Button
             variant="light"
@@ -108,7 +138,7 @@ export function Header({
             onPress={onShowAdmin}
             className="relative overflow-visible"
           >
-            Admin
+            Admin Panel
             {adminNotificationCount > 0 && (
               <span className="absolute -bottom-1 -right-1 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
                 {adminNotificationCount}
@@ -117,7 +147,7 @@ export function Header({
           </Button>
         )}
         <Button variant="light" size="sm" onPress={onShowSettings}>
-          {user?.display_name}
+          User Settings
         </Button>
         <Button
           variant="light"

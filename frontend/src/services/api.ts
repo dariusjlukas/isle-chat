@@ -1,4 +1,4 @@
-import type { User, Channel, Message } from '../types';
+import type { User, Channel, Message, Space, ReadReceiptInfo } from '../types';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
@@ -153,6 +153,12 @@ export function getMessages(
   );
 }
 
+export function getReadReceipts(channelId: string) {
+  return request<(ReadReceiptInfo & { user_id: string })[]>(
+    `/channels/${channelId}/read-receipts`,
+  );
+}
+
 export function createDM(userId: string) {
   return request<{
     id: string;
@@ -274,6 +280,37 @@ export function denyRequest(requestId: string) {
   return request<{ ok: boolean }>(`/admin/requests/${requestId}/deny`, {
     method: 'POST',
   });
+}
+
+// Admin: recovery tokens
+export function createRecoveryToken(userId: string, expiryHours = 24) {
+  return request<{ token: string }>('/admin/recovery-tokens', {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, expiry_hours: expiryHours }),
+  });
+}
+
+export function listRecoveryTokens() {
+  return request<
+    Array<{
+      id: string;
+      token: string;
+      created_by: string;
+      for_user: string;
+      for_user_id: string;
+      used: boolean;
+      expires_at: string;
+      created_at: string;
+    }>
+  >('/admin/recovery-tokens');
+}
+
+// Auth: recovery token redemption
+export function recoverAccount(token: string) {
+  return request<{ token: string; user: User; must_setup_key: boolean }>(
+    '/auth/recover-account',
+    { method: 'POST', body: JSON.stringify({ token }) },
+  );
 }
 
 // Profile
@@ -445,6 +482,137 @@ export function getPublicConfig() {
   return request<PublicConfig>('/config');
 }
 
+// Spaces
+export function listSpaces() {
+  return request<Space[]>('/spaces');
+}
+
+export function createSpace(
+  name: string,
+  description?: string,
+  icon?: string,
+  isPublic = true,
+  defaultRole = 'write',
+) {
+  return request<Space>('/spaces', {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      description,
+      icon,
+      is_public: isPublic,
+      default_role: defaultRole,
+    }),
+  });
+}
+
+export function getSpace(spaceId: string) {
+  return request<Space>(`/spaces/${spaceId}`);
+}
+
+export function updateSpaceSettings(
+  spaceId: string,
+  data: {
+    name?: string;
+    description?: string;
+    icon?: string;
+    is_public?: boolean;
+    default_role?: string;
+  },
+) {
+  return request<Partial<Space>>(`/spaces/${spaceId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function joinSpace(spaceId: string) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/join`, {
+    method: 'POST',
+  });
+}
+
+export function listPublicSpaces(search?: string) {
+  const params = new URLSearchParams();
+  if (search) params.set('search', search);
+  const qs = params.toString();
+  return request<Space[]>(`/spaces/public${qs ? '?' + qs : ''}`);
+}
+
+export function inviteToSpace(spaceId: string, userId: string, role?: string) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, role }),
+  });
+}
+
+export function kickFromSpace(spaceId: string, userId: string) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/members/${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function changeSpaceMemberRole(
+  spaceId: string,
+  userId: string,
+  role: string,
+) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/members/${userId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
+}
+
+export function listSpaceChannels(spaceId: string) {
+  return request<Channel[]>(`/spaces/${spaceId}/channels`);
+}
+
+export function createSpaceChannel(
+  spaceId: string,
+  name: string,
+  description?: string,
+  memberIds?: string[],
+  isPublic = true,
+  defaultRole = 'write',
+) {
+  return request<Channel>(`/spaces/${spaceId}/channels`, {
+    method: 'POST',
+    body: JSON.stringify({
+      name,
+      description,
+      member_ids: memberIds,
+      is_public: isPublic,
+      default_role: defaultRole,
+    }),
+  });
+}
+
+// Conversations (group messages)
+export function listConversations() {
+  return request<Channel[]>('/conversations');
+}
+
+export function createConversation(memberIds: string[], name?: string) {
+  return request<Channel>('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ member_ids: memberIds, name }),
+  });
+}
+
+export function addConversationMember(channelId: string, userId: string) {
+  return request<{ ok: boolean }>(`/conversations/${channelId}/members`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export function renameConversation(channelId: string, name: string) {
+  return request<{ ok: boolean }>(`/conversations/${channelId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ name }),
+  });
+}
+
 // PKI auth
 export function getPkiChallenge(publicKey?: string) {
   return request<{ challenge: string }>('/auth/pki/challenge', {
@@ -556,4 +724,143 @@ export function removePasskey(credentialId: string) {
     `/users/me/passkeys/${encodeURIComponent(credentialId)}`,
     { method: 'DELETE' },
   );
+}
+
+// Search
+export interface MessageSearchResult {
+  id: string;
+  channel_id: string;
+  channel_name: string;
+  space_name: string;
+  user_id: string;
+  username: string;
+  content: string;
+  created_at: string;
+  is_direct: boolean;
+}
+
+export interface FileSearchResult {
+  message_id: string;
+  channel_id: string;
+  channel_name: string;
+  user_id: string;
+  username: string;
+  file_id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  created_at: string;
+}
+
+export interface SearchResponse<T> {
+  type: string;
+  results: T[];
+}
+
+export interface SpaceSearchResult {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  is_public: boolean;
+}
+
+export interface ChannelSearchResult {
+  id: string;
+  name: string;
+  description: string;
+  space_name: string;
+  space_id: string;
+  is_public: boolean;
+}
+
+export interface SearchFilter {
+  type: string;
+  value: string;
+}
+
+export function searchUsers(query: string, limit = 20, offset = 0) {
+  const params = new URLSearchParams({
+    q: query,
+    type: 'users',
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<User>>(`/search?${params}`);
+}
+
+export function searchMessages(
+  query: string,
+  mode = 'and',
+  limit = 20,
+  offset = 0,
+) {
+  const params = new URLSearchParams({
+    q: query,
+    type: 'messages',
+    mode,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<MessageSearchResult>>(`/search?${params}`);
+}
+
+export function searchFiles(query: string, limit = 20, offset = 0) {
+  const params = new URLSearchParams({
+    q: query,
+    type: 'files',
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<FileSearchResult>>(`/search?${params}`);
+}
+
+export function searchSpaces(query: string, limit = 20, offset = 0) {
+  const params = new URLSearchParams({
+    q: query,
+    type: 'spaces',
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<SpaceSearchResult>>(`/search?${params}`);
+}
+
+export function searchChannels(query: string, limit = 20, offset = 0) {
+  const params = new URLSearchParams({
+    q: query,
+    type: 'channels',
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<ChannelSearchResult>>(`/search?${params}`);
+}
+
+export function searchComposite<T = MessageSearchResult>(
+  filters: SearchFilter[],
+  resultType: string,
+  mode = 'and',
+  limit = 20,
+  offset = 0,
+) {
+  const filtersStr = filters.map((f) => `${f.type}:${f.value}`).join(',');
+  const params = new URLSearchParams({
+    filters: filtersStr,
+    result_type: resultType,
+    mode,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<SearchResponse<T>>(`/search/composite?${params}`);
+}
+
+export function getMessagesAround(
+  channelId: string,
+  messageId: string,
+  limit = 50,
+) {
+  const params = new URLSearchParams({
+    message_id: messageId,
+    limit: String(limit),
+  });
+  return request<Message[]>(`/channels/${channelId}/messages/around?${params}`);
 }

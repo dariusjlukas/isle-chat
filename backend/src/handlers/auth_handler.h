@@ -97,6 +97,17 @@ struct AuthHandler {
             res->onAborted([]() {});
         });
 
+        // Recovery token (admin-generated) login
+        app.post("/api/auth/recover-account", [this](auto* res, auto* req) {
+            std::string body;
+            res->onData([this, res, body = std::move(body)](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                handle_recovery_token_login(res, body);
+            });
+            res->onAborted([]() {});
+        });
+
         // Join request routes
         app.post("/api/auth/request-access/options", [this](auto* res, auto* req) {
             std::string body;
@@ -629,6 +640,42 @@ private:
             std::string token = db.create_session(user->id, get_session_expiry());
             json resp = {
                 {"token", token},
+                {"user", make_user_json(*user)},
+                {"must_setup_key", true}
+            };
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        } catch (const std::exception& e) {
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
+        }
+    }
+
+    // --- Recovery token handler ---
+
+    void handle_recovery_token_login(uWS::HttpResponse<SSL>* res, const std::string& body) {
+        try {
+            auto j = json::parse(body);
+            std::string token = j.at("token");
+
+            auto user_id = db.get_recovery_token_user_id(token);
+            if (!user_id) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid or expired recovery token"})");
+                return;
+            }
+
+            auto user = db.find_user_by_id(*user_id);
+            if (!user) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"User not found"})");
+                return;
+            }
+
+            db.use_recovery_token(token);
+
+            std::string session = db.create_session(user->id, get_session_expiry());
+            json resp = {
+                {"token", session},
                 {"user", make_user_json(*user)},
                 {"must_setup_key", true}
             };
