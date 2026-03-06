@@ -45,11 +45,20 @@ export function SpaceSettings({ space, onClose }: Props) {
   const updateSpace = useChatStore((s) => s.updateSpace);
   const removeSpace = useChatStore((s) => s.removeSpace);
 
-  const canManage =
-    space.my_role === 'admin' ||
-    space.my_role === 'owner' ||
-    user?.role === 'admin' ||
-    user?.role === 'owner';
+  const SPACE_RANK: Record<string, number> = {
+    owner: 3,
+    admin: 2,
+    write: 1,
+    read: 0,
+  };
+
+  // Actor's effective rank is the higher of space role and server role
+  const spaceRoleRank = SPACE_RANK[space.my_role] ?? 0;
+  const serverRoleRank =
+    user?.role === 'owner' ? 3 : user?.role === 'admin' ? 2 : 0;
+  const actorRank = Math.max(spaceRoleRank, serverRoleRank);
+
+  const canManage = actorRank >= SPACE_RANK['admin'];
 
   const memberIds = useMemo(
     () => space.members.map((m) => m.id),
@@ -214,45 +223,52 @@ export function SpaceSettings({ space, onClose }: Props) {
                         </span>
                       </div>
                     </UserPopoverCard>
-                    {canManage ? (
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        <Select
-                          size="sm"
-                          variant="bordered"
-                          className="w-28"
-                          selectedKeys={[m.role]}
-                          onChange={(e) =>
-                            handleChangeRole(m.id, e.target.value)
-                          }
-                          aria-label="Role"
-                          items={[
-                            ...(space.my_role === 'owner' ||
-                            user?.role === 'owner'
-                              ? [{ key: 'owner', label: 'Owner' }]
-                              : []),
-                            { key: 'admin', label: 'Admin' },
-                            { key: 'write', label: 'Write' },
-                            { key: 'read', label: 'Read' },
-                          ]}
-                        >
-                          {(item) => (
-                            <SelectItem key={item.key}>{item.label}</SelectItem>
-                          )}
-                        </Select>
-                        <Button
-                          size="sm"
-                          variant="flat"
-                          color="danger"
-                          onPress={() => handleKick(m)}
-                        >
-                          Kick
-                        </Button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-default-400 flex-shrink-0">
-                        {m.role}
-                      </span>
-                    )}
+                    {(() => {
+                      const targetRank = SPACE_RANK[m.role] ?? 0;
+                      const canEditMember =
+                        canManage &&
+                        targetRank < actorRank &&
+                        m.id !== user?.id;
+                      const roleItems = [
+                        { key: 'owner', label: 'Owner', rank: 3 },
+                        { key: 'admin', label: 'Admin', rank: 2 },
+                        { key: 'write', label: 'Write', rank: 1 },
+                        { key: 'read', label: 'Read', rank: 0 },
+                      ].filter((r) => r.rank <= actorRank);
+                      return canEditMember ? (
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          <Select
+                            size="sm"
+                            variant="bordered"
+                            className="w-28"
+                            selectedKeys={[m.role]}
+                            onChange={(e) =>
+                              handleChangeRole(m.id, e.target.value)
+                            }
+                            aria-label="Role"
+                            items={roleItems}
+                          >
+                            {(item) => (
+                              <SelectItem key={item.key}>
+                                {item.label}
+                              </SelectItem>
+                            )}
+                          </Select>
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            color="danger"
+                            onPress={() => handleKick(m)}
+                          >
+                            Kick
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-default-400 flex-shrink-0 capitalize">
+                          {m.role}
+                        </span>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>

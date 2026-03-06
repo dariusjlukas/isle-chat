@@ -16,6 +16,8 @@ function getBuildInfo(): string {
   return randomUUID().split('-')[0]
 }
 
+const backendPort = process.env.VITE_BACKEND_PORT ?? '9001'
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
@@ -24,9 +26,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:9001',
+      '/api': `http://localhost:${backendPort}`,
       '/ws': {
-        target: 'ws://localhost:9001',
+        target: `ws://localhost:${backendPort}`,
         ws: true,
       },
     },

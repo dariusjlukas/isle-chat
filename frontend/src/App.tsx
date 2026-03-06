@@ -29,6 +29,7 @@ import { JoinRequests } from './components/admin/JoinRequests';
 import { ServerSettings } from './components/admin/ServerSettings';
 import { RecoveryTokenManager } from './components/admin/RecoveryTokenManager';
 import { SetupWizard } from './components/admin/SetupWizard';
+import { UserManager } from './components/admin/UserManager';
 import { UserSettings } from './components/settings/UserSettings';
 import { ConnectionLostModal } from './components/common/ConnectionLostModal';
 import { useConnectionState } from './hooks/useConnectionState';
@@ -101,14 +102,16 @@ function App() {
       }),
     ]);
 
-    // Check if admin needs to complete setup
-    if (user?.role === 'admin' || user?.role === 'owner') {
-      api.getPublicConfig().then((config) => {
-        if (!config.setup_completed) {
-          setShowSetupWizard(true);
-        }
-      });
-    }
+    // Load server status (archived, setup)
+    api.getPublicConfig().then((config) => {
+      useChatStore.getState().setServerArchived(config.server_archived);
+      if (
+        !config.setup_completed &&
+        (user?.role === 'admin' || user?.role === 'owner')
+      ) {
+        setShowSetupWizard(true);
+      }
+    });
   }, [
     isAuthenticated,
     setChannels,
@@ -275,6 +278,9 @@ function App() {
             >
               <AccordionItem key="server-settings" title="Server Settings">
                 <ServerSettings />
+              </AccordionItem>
+              <AccordionItem key="user-management" title="User Management">
+                <UserManager />
               </AccordionItem>
               <AccordionItem key="invite-tokens" title="Invite Tokens">
                 <InviteManager />

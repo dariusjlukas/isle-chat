@@ -359,8 +359,33 @@ struct ChannelHandler {
                         return;
                     }
 
-                    // Check if demoting last admin
+                    // Rank hierarchy: admin=2, write=1, read=0
+                    auto ch_rank = [](const std::string& r) -> int {
+                        if (r == "admin") return 2;
+                        if (r == "write") return 1;
+                        return 0;
+                    };
+
                     std::string current_role = db.get_member_role(channel_id, target_user_id);
+                    int actor_rank = ch_rank(role); // effective role (already "admin" if elevated)
+                    int target_rank = ch_rank(current_role);
+                    int new_rank = ch_rank(new_role);
+
+                    // Cannot promote above own rank
+                    if (new_rank > actor_rank) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Cannot promote above your own rank"})");
+                        return;
+                    }
+
+                    // Cannot demote someone of equal or higher rank
+                    if (new_rank < target_rank && target_rank >= actor_rank) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Cannot demote a user of equal or higher rank"})");
+                        return;
+                    }
+
+                    // Check if demoting last admin
                     if (current_role == "admin" && new_role != "admin") {
                         int admin_count = db.count_channel_members_with_role(channel_id, "admin");
                         if (admin_count <= 1) {

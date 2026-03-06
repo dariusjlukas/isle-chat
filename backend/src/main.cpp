@@ -87,6 +87,8 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
         auto uploads = db.get_setting("file_uploads_enabled");
         resp["file_uploads_enabled"] = (!uploads || *uploads == "true");
 
+        resp["server_archived"] = db.is_server_archived();
+
         res->writeHeader("Content-Type", "application/json")
             ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(resp.dump());

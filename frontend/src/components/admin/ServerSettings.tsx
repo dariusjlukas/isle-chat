@@ -12,6 +12,7 @@ import {
   Radio,
   Divider,
 } from '@heroui/react';
+import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
 
 const UNITS = [
@@ -44,6 +45,15 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [storageUsed, setStorageUsed] = useState(0);
+  const [serverArchived, setServerArchivedLocal] = useState(false);
+  const setServerArchivedGlobal = useChatStore((s) => s.setServerArchived);
+  const currentUser = useChatStore((s) => s.user);
+  const isOwner = currentUser?.role === 'owner';
+
+  const setServerArchived = (archived: boolean) => {
+    setServerArchivedLocal(archived);
+    setServerArchivedGlobal(archived);
+  };
 
   // File settings
   const [maxFileValue, setMaxFileValue] = useState('1024');
@@ -81,6 +91,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
     setRegistrationMode(data.registration_mode);
     setFileUploadsEnabled(data.file_uploads_enabled);
     setSessionExpiryHours(String(data.session_expiry_hours));
+    setServerArchived(data.server_archived);
   };
 
   useEffect(() => {
@@ -89,6 +100,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
       .then(applySettings)
       .catch(() => {})
       .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const buildSettingsPayload = () => {
@@ -346,6 +358,61 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
       >
         {isSetup ? 'Complete Setup' : 'Save Settings'}
       </Button>
+
+      {!isSetup && isOwner && (
+        <>
+          <Divider />
+          <div>
+            <p className="text-sm font-medium text-foreground mb-1">
+              {serverArchived ? 'Server Archived' : 'Archive Server'}
+            </p>
+            <p className="text-xs text-default-400 mb-3">
+              {serverArchived
+                ? 'The server is currently archived. Users cannot send messages or create channels.'
+                : 'Archiving the server will prevent all users from sending messages or creating channels.'}
+            </p>
+            {serverArchived ? (
+              <Button
+                color="success"
+                variant="flat"
+                size="sm"
+                onPress={async () => {
+                  try {
+                    await api.unarchiveServer();
+                    setServerArchived(false);
+                  } catch {
+                    /* ignored */
+                  }
+                }}
+              >
+                Unarchive Server
+              </Button>
+            ) : (
+              <Button
+                color="danger"
+                variant="flat"
+                size="sm"
+                onPress={async () => {
+                  if (
+                    !confirm(
+                      'Are you sure you want to archive the server? All messaging will be disabled.',
+                    )
+                  )
+                    return;
+                  try {
+                    await api.archiveServer();
+                    setServerArchived(true);
+                  } catch {
+                    /* ignored */
+                  }
+                }}
+              >
+                Archive Server
+              </Button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

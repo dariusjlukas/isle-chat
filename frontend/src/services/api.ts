@@ -486,6 +486,7 @@ export interface PublicConfig {
   registration_mode: string;
   setup_completed: boolean;
   file_uploads_enabled: boolean;
+  server_archived: boolean;
 }
 
 export function getPublicConfig() {
@@ -634,6 +635,19 @@ export function unarchiveServer() {
   return request<{ ok: boolean }>('/admin/unarchive-server', {
     method: 'POST',
   });
+}
+
+export function listAdminUsers() {
+  return request<
+    Array<{
+      id: string;
+      username: string;
+      display_name: string;
+      role: string;
+      is_online: boolean;
+      last_seen: string;
+    }>
+  >('/admin/users');
 }
 
 export function changeUserRole(userId: string, role: string) {

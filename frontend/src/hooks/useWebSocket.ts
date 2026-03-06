@@ -138,6 +138,11 @@ export function useWebSocket() {
           .updateUser({ role: role as 'owner' | 'admin' | 'user' });
       }),
 
+      wsService.on('server_archived_changed', (data: unknown) => {
+        const { archived } = data as { archived: boolean };
+        useChatStore.getState().setServerArchived(archived);
+      }),
+
       wsService.on('space_removed', (data: unknown) => {
         const { space_id } = data as { space_id: string };
         useChatStore.getState().removeSpace(space_id);

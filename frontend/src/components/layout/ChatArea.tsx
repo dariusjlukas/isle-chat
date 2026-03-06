@@ -71,9 +71,11 @@ export function ChatArea() {
         />
       ) : (
         <div className="border-t border-default-100 p-4 text-center text-default-400 text-sm">
-          {isArchived
-            ? 'This channel is archived — no new messages can be sent'
-            : 'You have read-only access to this channel'}
+          {serverArchived
+            ? 'The server is archived — no new messages can be sent'
+            : isArchived
+              ? 'This channel is archived — no new messages can be sent'
+              : 'You have read-only access to this channel'}
         </div>
       )}
     </div>

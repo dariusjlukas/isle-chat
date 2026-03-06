@@ -332,7 +332,7 @@ struct SpaceHandler {
 
             std::string role = db.get_space_member_role(space_id, user_id);
             auto user = db.find_user_by_id(user_id);
-            if (role != "admin" && !(user && user->role == "admin")) {
+            if (role != "admin" && role != "owner" && !(user && (user->role == "admin" || user->role == "owner"))) {
                 res->writeStatus("403")->writeHeader("Content-Type", "application/json")
                     ->writeHeader("Access-Control-Allow-Origin", "*")
                     ->end(R"({"error":"Admin permission required"})");
@@ -384,20 +384,39 @@ struct SpaceHandler {
                         return;
                     }
 
-                    // Only space/server owners can promote to owner
-                    if (new_role == "owner") {
-                        auto user = db.find_user_by_id(user_id);
-                        bool is_server_owner = user && user->role == "owner";
-                        if (role != "owner" && !is_server_owner) {
-                            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
-                                ->writeHeader("Access-Control-Allow-Origin", "*")
-                                ->end(R"({"error":"Only owners can promote to owner"})");
-                            return;
-                        }
+                    // Rank hierarchy: owner=3, admin=2, write=1, read=0
+                    auto space_rank = [](const std::string& r) -> int {
+                        if (r == "owner") return 3;
+                        if (r == "admin") return 2;
+                        if (r == "write") return 1;
+                        return 0;
+                    };
+
+                    // Actor's effective rank is the higher of space role and server role
+                    int actor_space_rank = space_rank(role);
+                    if (user && user->role == "owner") actor_space_rank = space_rank("owner");
+                    else if (user && user->role == "admin" && actor_space_rank < space_rank("admin"))
+                        actor_space_rank = space_rank("admin");
+
+                    std::string current_role = db.get_space_member_role(space_id, target_user_id);
+                    int target_rank = space_rank(current_role);
+                    int new_rank = space_rank(new_role);
+
+                    // Cannot promote anyone to a rank above your own
+                    if (new_rank > actor_space_rank) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->writeHeader("Access-Control-Allow-Origin", "*")
+                            ->end(R"({"error":"Cannot promote above your own rank"})");
+                        return;
                     }
 
-                    // Check if demoting last owner
-                    std::string current_role = db.get_space_member_role(space_id, target_user_id);
+                    // Cannot demote someone of equal or higher rank
+                    if (new_rank < target_rank && target_rank >= actor_space_rank) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->writeHeader("Access-Control-Allow-Origin", "*")
+                            ->end(R"({"error":"Cannot demote a user of equal or higher rank"})");
+                        return;
+                    }
                     if (current_role == "owner" && new_role != "owner") {
                         int owner_count = db.count_space_members_with_role(space_id, "owner");
                         if (owner_count <= 1) {

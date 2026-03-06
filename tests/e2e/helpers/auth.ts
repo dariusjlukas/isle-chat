@@ -1,0 +1,79 @@
+/**
+ * Playwright helpers for authenticating users via the browser.
+ *
+ * The app uses PKI (ECDSA P-256) keys stored in IndexedDB and session tokens
+ * in localStorage. For most tests we bypass the UI registration flow by:
+ * 1. Registering via the API (helpers/api.ts)
+ * 2. Injecting the session token into localStorage
+ *
+ * For tests that specifically test the registration/login UI flow, we drive
+ * the actual UI elements.
+ */
+
+import { type Page } from "@playwright/test";
+import {
+  apiRegisterUser,
+  promoteToOwner,
+  setRegistrationOpen,
+  completeSetup,
+} from "./api.js";
+
+export interface TestUser {
+  token: string;
+  userId: string;
+  username: string;
+  recoveryKeys: string[];
+}
+
+/**
+ * Set up an admin/owner user via the API and configure open registration.
+ * Returns the user info including auth token.
+ */
+export async function setupAdminUser(): Promise<TestUser> {
+  const data = await apiRegisterUser("admin", "Admin User");
+  promoteToOwner(data.userId);
+  await setRegistrationOpen(data.token);
+  await completeSetup(data.token);
+  return {
+    token: data.token,
+    userId: data.userId,
+    username: "admin",
+    recoveryKeys: data.recoveryKeys,
+  };
+}
+
+/**
+ * Register a regular user via the API.
+ */
+export async function setupRegularUser(
+  username: string = "testuser",
+  displayName: string = "Test User",
+): Promise<TestUser> {
+  const data = await apiRegisterUser(username, displayName);
+  return {
+    token: data.token,
+    userId: data.userId,
+    username,
+    recoveryKeys: data.recoveryKeys,
+  };
+}
+
+/**
+ * Inject a session token into the page's localStorage and navigate to the app.
+ * This bypasses the login UI for faster test setup.
+ */
+export async function loginViaToken(
+  page: Page,
+  token: string,
+): Promise<void> {
+  // Navigate to the app first to set the origin
+  await page.goto("/");
+  // Inject the session token
+  await page.evaluate((t) => {
+    localStorage.setItem("session_token", t);
+  }, token);
+  // Reload to pick up the token
+  await page.goto("/");
+  // Wait for the app to be loaded - look for the header with "Isle Chat"
+  await page.getByText("Isle Chat").first().waitFor({ timeout: 10_000 });
+}

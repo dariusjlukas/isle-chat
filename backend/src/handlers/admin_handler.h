@@ -182,6 +182,8 @@ struct AdminHandler {
             auto user_id = get_owner_id(res, req);
             if (user_id.empty()) return;
             db.set_server_archived(true);
+            json notify = {{"type", "server_archived_changed"}, {"archived", true}};
+            ws.broadcast_to_presence(notify.dump());
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
 
@@ -189,20 +191,37 @@ struct AdminHandler {
             auto user_id = get_owner_id(res, req);
             if (user_id.empty()) return;
             db.set_server_archived(false);
+            json notify = {{"type", "server_archived_changed"}, {"archived", false}};
+            ws.broadcast_to_presence(notify.dump());
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
 
-        // Change user role (owner only)
+        // List users (admin or owner)
+        app.get("/api/admin/users", [this](auto* res, auto* req) {
+            auto user_id = get_admin_id(res, req);
+            if (user_id.empty()) return;
+
+            auto users = db.list_users();
+            json arr = json::array();
+            for (const auto& u : users) {
+                arr.push_back({{"id", u.id}, {"username", u.username},
+                               {"display_name", u.display_name}, {"role", u.role},
+                               {"is_online", u.is_online}, {"last_seen", u.last_seen}});
+            }
+            res->writeHeader("Content-Type", "application/json")->end(arr.dump());
+        });
+
+        // Change user role (admin or owner, with hierarchy enforcement)
         app.put("/api/admin/users/:userId/role", [this](auto* res, auto* req) {
-            auto owner_id_copy = get_owner_id(res, req);
+            auto actor_id_copy = get_admin_id(res, req);
             std::string target_user_id(req->getParameter("userId"));
             std::string body;
-            res->onData([this, res, owner_id = std::move(owner_id_copy),
+            res->onData([this, res, actor_id = std::move(actor_id_copy),
                          target_user_id = std::move(target_user_id), body = std::move(body)](
                 std::string_view data, bool last) mutable {
                 body.append(data);
                 if (!last) return;
-                if (owner_id.empty()) return;
+                if (actor_id.empty()) return;
 
                 try {
                     auto j = json::parse(body);
@@ -213,13 +232,45 @@ struct AdminHandler {
                         return;
                     }
 
-                    // Check if demoting from owner would leave no owners
+                    auto actor = db.find_user_by_id(actor_id);
                     auto target = db.find_user_by_id(target_user_id);
-                    if (target && target->role == "owner" && new_role != "owner") {
+                    if (!actor || !target) {
+                        res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"User not found"})");
+                        return;
+                    }
+
+                    // Rank hierarchy: owner=2, admin=1, user=0
+                    auto server_rank = [](const std::string& r) -> int {
+                        if (r == "owner") return 2;
+                        if (r == "admin") return 1;
+                        return 0;
+                    };
+                    int actor_rank = server_rank(actor->role);
+                    int target_rank = server_rank(target->role);
+                    int new_rank = server_rank(new_role);
+
+                    // Cannot promote anyone to a rank above your own
+                    if (new_rank > actor_rank) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Cannot promote above your own rank"})");
+                        return;
+                    }
+
+                    // Cannot demote someone of equal or higher rank (unless self-demotion)
+                    if (new_rank < target_rank && target_rank >= actor_rank && actor_id != target_user_id) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Cannot demote a user of equal or higher rank"})");
+                        return;
+                    }
+
+                    // Prevent demoting the last owner
+                    if (target->role == "owner" && new_role != "owner") {
                         int owner_count = db.count_users_with_role("owner");
                         if (owner_count <= 1) {
-                            // Auto-archive server
-                            db.set_server_archived(true);
+                            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                                ->end(R"({"error":"Cannot demote the last owner. Assign a new owner or archive the server first.","last_owner":true})");
+                            return;
                         }
                     }
 
