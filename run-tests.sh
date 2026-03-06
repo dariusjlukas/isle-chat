@@ -38,6 +38,7 @@ run_check() {
 
 print_summary() {
     local order=("Frontend Lint" "Frontend Type Check" "Frontend Format Check"
+                 "Frontend E2E Tests"
                  "Backend Build" "Backend Unit Tests" "Backend Integration Tests")
 
     printf "\n${BOLD}========================================${NC}\n"
@@ -76,12 +77,14 @@ Options:
   --lint             Run frontend lint check only
   --typecheck        Run frontend type check only
   --format           Run frontend format check only
+  --e2e              Run Playwright UI tests only
   --no-build         Skip the backend CMake build step
   --help             Show this help message
 
 Examples:
   ./run-tests.sh                    # Run everything
-  ./run-tests.sh --frontend         # Frontend checks only
+  ./run-tests.sh --frontend         # Frontend checks only (lint, typecheck, format, e2e)
+  ./run-tests.sh --e2e              # Playwright UI tests only
   ./run-tests.sh --backend-unit     # Build and run backend unit tests
   ./run-tests.sh --lint --typecheck # Run specific frontend checks
 EOF
@@ -91,6 +94,7 @@ EOF
 RUN_LINT=false
 RUN_TYPECHECK=false
 RUN_FORMAT=false
+RUN_E2E=false
 RUN_BACKEND_UNIT=false
 RUN_BACKEND_INTEG=false
 SKIP_BUILD=false
@@ -99,11 +103,11 @@ ANY_FLAG=false
 for arg in "$@"; do
     case "$arg" in
         --all)
-            RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true
+            RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true; RUN_E2E=true
             RUN_BACKEND_UNIT=true; RUN_BACKEND_INTEG=true
             ANY_FLAG=true ;;
         --frontend)
-            RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true
+            RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true; RUN_E2E=true
             ANY_FLAG=true ;;
         --backend)
             RUN_BACKEND_UNIT=true; RUN_BACKEND_INTEG=true
@@ -118,6 +122,8 @@ for arg in "$@"; do
             RUN_TYPECHECK=true; ANY_FLAG=true ;;
         --format)
             RUN_FORMAT=true; ANY_FLAG=true ;;
+        --e2e)
+            RUN_E2E=true; ANY_FLAG=true ;;
         --no-build)
             SKIP_BUILD=true ;;
         --help)
@@ -130,7 +136,7 @@ done
 
 # Default: run everything
 if [ "$ANY_FLAG" = false ]; then
-    RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true
+    RUN_LINT=true; RUN_TYPECHECK=true; RUN_FORMAT=true; RUN_E2E=true
     RUN_BACKEND_UNIT=true; RUN_BACKEND_INTEG=true
 fi
 
@@ -150,6 +156,10 @@ fi
 
 if [ "$RUN_FORMAT" = true ]; then
     run_check "Frontend Format Check" bash -c "cd '$FRONTEND_DIR' && npm run format:check"
+fi
+
+if [ "$RUN_E2E" = true ]; then
+    run_check "Frontend E2E Tests" bash -c "cd '$FRONTEND_DIR' && npx playwright test"
 fi
 
 # --- Backend tests ---
