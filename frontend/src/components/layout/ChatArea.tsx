@@ -51,9 +51,9 @@ export function ChatArea() {
 
   if (!activeChannelId) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-background text-default-400">
-        <div className="text-center">
-          <p className="text-2xl mb-2">Welcome to Isle Chat</p>
+      <div className='flex-1 flex items-center justify-center bg-background text-default-400'>
+        <div className='text-center'>
+          <p className='text-2xl mb-2'>Welcome to Isle Chat</p>
           <p>Select a channel or start a conversation</p>
         </div>
       </div>
@@ -61,7 +61,7 @@ export function ChatArea() {
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-background">
+    <div className='flex-1 flex flex-col bg-background'>
       <MessageList
         channelId={activeChannelId}
         onEditMessage={editMessage}
@@ -79,7 +79,7 @@ export function ChatArea() {
           uploadError={uploadError}
         />
       ) : (
-        <div className="border-t border-default-100 p-4 text-center text-default-400 text-sm">
+        <div className='border-t border-default-100 p-4 text-center text-default-400 text-sm'>
           {serverArchived
             ? 'The server is archived — no new messages can be sent'
             : isArchived

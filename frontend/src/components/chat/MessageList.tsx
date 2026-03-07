@@ -134,9 +134,9 @@ export function MessageList({
   }, [channelId, setMessages]);
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 relative">
+    <div className='flex-1 overflow-y-auto p-4 relative'>
       {messages.length === 0 && (
-        <div className="flex items-center justify-center h-full text-default-400">
+        <div className='flex items-center justify-center h-full text-default-400'>
           No messages yet. Start the conversation!
         </div>
       )}
@@ -154,14 +154,14 @@ export function MessageList({
       <div ref={bottomRef} />
 
       {isViewingAround && (
-        <div className="sticky bottom-4 flex justify-center">
+        <div className='sticky bottom-4 flex justify-center'>
           <Button
-            size="sm"
-            color="primary"
-            variant="shadow"
+            size='sm'
+            color='primary'
+            variant='shadow'
             onPress={handleJumpToLatest}
             startContent={
-              <FontAwesomeIcon icon={faArrowDown} className="text-xs" />
+              <FontAwesomeIcon icon={faArrowDown} className='text-xs' />
             }
           >
             Jump to latest

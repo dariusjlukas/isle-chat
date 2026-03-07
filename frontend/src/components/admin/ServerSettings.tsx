@@ -142,7 +142,7 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
   };
 
   if (loading)
-    return <div className="text-default-500 text-sm">Loading settings...</div>;
+    return <div className='text-default-500 text-sm'>Loading settings...</div>;
 
   const storagePercent =
     maxStorageBytes > 0
@@ -150,16 +150,16 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
       : 0;
 
   return (
-    <div className="space-y-6">
+    <div className='space-y-6'>
       {/* Server Name */}
       <div>
-        <p className="text-sm font-medium text-foreground mb-2">Server Name</p>
+        <p className='text-sm font-medium text-foreground mb-2'>Server Name</p>
         <Input
           value={serverName}
           onValueChange={setServerName}
-          variant="bordered"
-          size="sm"
-          placeholder="Isle Chat"
+          variant='bordered'
+          size='sm'
+          placeholder='Isle Chat'
         />
       </div>
 
@@ -167,10 +167,10 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
 
       {/* Authentication Methods */}
       <div>
-        <p className="text-sm font-medium text-foreground mb-2">
+        <p className='text-sm font-medium text-foreground mb-2'>
           Authentication Methods
         </p>
-        <p className="text-xs text-default-400 mb-2">
+        <p className='text-xs text-default-400 mb-2'>
           At least one method must be enabled. Disabling a method prevents
           existing users of that method from logging in.
         </p>
@@ -180,8 +180,8 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
             if (v.length > 0) setAuthMethods(v);
           }}
         >
-          <Checkbox value="passkey">Passkeys (WebAuthn)</Checkbox>
-          <Checkbox value="pki">Browser Keys (PKI)</Checkbox>
+          <Checkbox value='passkey'>Passkeys (WebAuthn)</Checkbox>
+          <Checkbox value='pki'>Browser Keys (PKI)</Checkbox>
         </CheckboxGroup>
       </div>
 
@@ -189,28 +189,28 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
 
       {/* Registration Mode */}
       <div>
-        <p className="text-sm font-medium text-foreground mb-2">
+        <p className='text-sm font-medium text-foreground mb-2'>
           Registration Mode
         </p>
         <RadioGroup
           value={registrationMode}
           onValueChange={setRegistrationMode}
         >
-          <Radio value="invite">
+          <Radio value='invite'>
             Invite Tokens
-            <span className="text-xs text-default-400 ml-1">
+            <span className='text-xs text-default-400 ml-1'>
               - Users may use an invite token to join
             </span>
           </Radio>
-          <Radio value="approval">
+          <Radio value='approval'>
             Require Approval
-            <span className="text-xs text-default-400 ml-1">
+            <span className='text-xs text-default-400 ml-1'>
               - Admin must approve new users
             </span>
           </Radio>
-          <Radio value="open">
+          <Radio value='open'>
             Open Registration
-            <span className="text-xs text-default-400 ml-1">
+            <span className='text-xs text-default-400 ml-1'>
               - Anyone can register
             </span>
           </Radio>
@@ -221,17 +221,17 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
 
       {/* Session Expiry */}
       <div>
-        <p className="text-sm font-medium text-foreground mb-2">
+        <p className='text-sm font-medium text-foreground mb-2'>
           Session Duration (hours)
         </p>
         <Input
-          type="number"
+          type='number'
           value={sessionExpiryHours}
           onValueChange={setSessionExpiryHours}
-          variant="bordered"
-          size="sm"
-          className="w-32"
-          min="1"
+          variant='bordered'
+          size='sm'
+          className='w-32'
+          min='1'
         />
       </div>
 
@@ -239,24 +239,24 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
 
       {/* File Uploads */}
       <div>
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-sm font-medium text-foreground">File Uploads</p>
+        <div className='flex items-center justify-between mb-2'>
+          <p className='text-sm font-medium text-foreground'>File Uploads</p>
           <Switch
             isSelected={fileUploadsEnabled}
             onValueChange={setFileUploadsEnabled}
-            size="sm"
+            size='sm'
           />
         </div>
 
         {fileUploadsEnabled && (
-          <div className="space-y-4 pl-1">
+          <div className='space-y-4 pl-1'>
             {!isSetup && (
               <div>
-                <p className="text-sm font-medium text-foreground mb-2">
+                <p className='text-sm font-medium text-foreground mb-2'>
                   Storage Used
                 </p>
                 <Progress
-                  size="md"
+                  size='md'
                   value={
                     maxStorageBytes > 0
                       ? storagePercent
@@ -285,18 +285,18 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
             )}
 
             <div>
-              <p className="text-sm font-medium text-foreground mb-2">
+              <p className='text-sm font-medium text-foreground mb-2'>
                 Max File Upload Size
               </p>
-              <div className="flex gap-2">
+              <div className='flex gap-2'>
                 <Input
-                  type="number"
+                  type='number'
                   value={maxFileValue}
                   onValueChange={setMaxFileValue}
-                  variant="bordered"
-                  size="sm"
-                  className="w-28"
-                  min="1"
+                  variant='bordered'
+                  size='sm'
+                  className='w-28'
+                  min='1'
                 />
                 <Select
                   selectedKeys={new Set([maxFileUnit])}
@@ -304,9 +304,9 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                     const val = Array.from(keys)[0] as string;
                     if (val) setMaxFileUnit(val);
                   }}
-                  variant="bordered"
-                  size="sm"
-                  className="w-24"
+                  variant='bordered'
+                  size='sm'
+                  className='w-24'
                 >
                   {UNITS.map((u) => (
                     <SelectItem key={u.key}>{u.label}</SelectItem>
@@ -316,18 +316,18 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
             </div>
 
             <div>
-              <p className="text-sm font-medium text-foreground mb-2">
+              <p className='text-sm font-medium text-foreground mb-2'>
                 Max Total Storage (0 = unlimited)
               </p>
-              <div className="flex gap-2">
+              <div className='flex gap-2'>
                 <Input
-                  type="number"
+                  type='number'
                   value={maxStorageValue}
                   onValueChange={setMaxStorageValue}
-                  variant="bordered"
-                  size="sm"
-                  className="w-28"
-                  min="0"
+                  variant='bordered'
+                  size='sm'
+                  className='w-28'
+                  min='0'
                 />
                 <Select
                   selectedKeys={new Set([maxStorageUnit])}
@@ -335,9 +335,9 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
                     const val = Array.from(keys)[0] as string;
                     if (val) setMaxStorageUnit(val);
                   }}
-                  variant="bordered"
-                  size="sm"
-                  className="w-24"
+                  variant='bordered'
+                  size='sm'
+                  className='w-24'
                 >
                   {UNITS.map((u) => (
                     <SelectItem key={u.key}>{u.label}</SelectItem>
@@ -350,8 +350,8 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
       </div>
 
       <Button
-        color="primary"
-        size="sm"
+        color='primary'
+        size='sm'
         isLoading={saving}
         onPress={handleSave}
         fullWidth={isSetup}
@@ -363,19 +363,19 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
         <>
           <Divider />
           <div>
-            <p className="text-sm font-medium text-foreground mb-1">
+            <p className='text-sm font-medium text-foreground mb-1'>
               {serverArchived ? 'Server Archived' : 'Archive Server'}
             </p>
-            <p className="text-xs text-default-400 mb-3">
+            <p className='text-xs text-default-400 mb-3'>
               {serverArchived
                 ? 'The server is currently archived. Users cannot send messages or create channels.'
                 : 'Archiving the server will prevent all users from sending messages or creating channels.'}
             </p>
             {serverArchived ? (
               <Button
-                color="success"
-                variant="flat"
-                size="sm"
+                color='success'
+                variant='flat'
+                size='sm'
                 onPress={async () => {
                   try {
                     await api.unarchiveServer();
@@ -389,9 +389,9 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
               </Button>
             ) : (
               <Button
-                color="danger"
-                variant="flat"
-                size="sm"
+                color='danger'
+                variant='flat'
+                size='sm'
                 onPress={async () => {
                   if (
                     !confirm(

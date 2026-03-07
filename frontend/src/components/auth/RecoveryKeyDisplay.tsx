@@ -23,20 +23,20 @@ export function RecoveryKeyDisplay({ keys, onDone }: Props) {
   };
 
   return (
-    <Modal isOpen isDismissable={false} hideCloseButton size="lg">
+    <Modal isOpen isDismissable={false} hideCloseButton size='lg'>
       <ModalContent>
         <ModalHeader>Recovery Keys</ModalHeader>
         <ModalBody>
-          <Alert color="warning" variant="flat" className="mb-4">
+          <Alert color='warning' variant='flat' className='mb-4'>
             These keys will only be shown once. Each key can only be used once.
             Save them somewhere safe.
           </Alert>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className='grid grid-cols-2 gap-2'>
             {keys.map((key, i) => (
               <div
                 key={i}
-                className="font-mono text-sm bg-default-100 rounded-lg px-3 py-2 text-center"
+                className='font-mono text-sm bg-default-100 rounded-lg px-3 py-2 text-center'
               >
                 {key}
               </div>
@@ -44,10 +44,10 @@ export function RecoveryKeyDisplay({ keys, onDone }: Props) {
           </div>
 
           <Button
-            variant="bordered"
+            variant='bordered'
             fullWidth
             onPress={handleCopy}
-            className="mt-3"
+            className='mt-3'
           >
             Copy all to clipboard
           </Button>
@@ -55,14 +55,14 @@ export function RecoveryKeyDisplay({ keys, onDone }: Props) {
           <Checkbox
             isSelected={saved}
             onValueChange={setSaved}
-            className="mt-2"
+            className='mt-2'
           >
             I have saved these recovery keys
           </Checkbox>
         </ModalBody>
         <ModalFooter>
           <Button
-            color="primary"
+            color='primary'
             isDisabled={!saved}
             onPress={onDone}
             fullWidth

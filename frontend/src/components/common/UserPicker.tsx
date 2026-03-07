@@ -61,16 +61,16 @@ export function UserPicker({
   return (
     <div>
       {label && (
-        <p className="text-sm font-medium text-default-600 mb-2">{label}</p>
+        <p className='text-sm font-medium text-default-600 mb-2'>{label}</p>
       )}
 
       {mode === 'multi' && selectedUsers.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-2">
+        <div className='flex flex-wrap gap-1 mb-2'>
           {selectedUsers.map((u) => (
             <Chip
               key={u.id}
-              size="sm"
-              variant="flat"
+              size='sm'
+              variant='flat'
               onClose={() => toggle(u.id)}
             >
               {u.display_name || u.username}
@@ -81,16 +81,16 @@ export function UserPicker({
 
       <Input
         placeholder={placeholder}
-        variant="bordered"
-        size="sm"
+        variant='bordered'
+        size='sm'
         value={search}
         onValueChange={setSearch}
         isClearable
         onClear={() => setSearch('')}
-        className="mb-2"
+        className='mb-2'
       />
 
-      <div className="max-h-48 overflow-y-auto space-y-0.5">
+      <div className='max-h-48 overflow-y-auto space-y-0.5'>
         {filtered.map((u) => (
           <div
             key={u.id}
@@ -103,32 +103,32 @@ export function UserPicker({
               <Checkbox
                 isSelected={selectedSet.has(u.id)}
                 onValueChange={() => toggle(u.id)}
-                size="sm"
+                size='sm'
               />
             )}
             <OnlineStatusDot isOnline={u.is_online} lastSeen={u.last_seen} />
-            <span className="text-sm truncate">
+            <span className='text-sm truncate'>
               {u.display_name}{' '}
-              <span className="text-default-400">@{u.username}</span>
+              <span className='text-default-400'>@{u.username}</span>
             </span>
             <UserPopoverCard user={u}>
               <button
-                type="button"
-                className="ml-auto flex-shrink-0 text-default-400 hover:text-primary transition-colors"
+                type='button'
+                className='ml-auto flex-shrink-0 text-default-400 hover:text-primary transition-colors'
                 onClick={(e) => e.stopPropagation()}
               >
-                <FontAwesomeIcon icon={faCircleInfo} className="text-sm" />
+                <FontAwesomeIcon icon={faCircleInfo} className='text-sm' />
               </button>
             </UserPopoverCard>
             {mode === 'single' && selectedSet.has(u.id) && (
-              <span className="flex-shrink-0 text-primary text-xs">
+              <span className='flex-shrink-0 text-primary text-xs'>
                 Selected
               </span>
             )}
           </div>
         ))}
         {filtered.length === 0 && (
-          <p className="text-sm text-default-400 py-4 text-center">
+          <p className='text-sm text-default-400 py-4 text-center'>
             No users found
           </p>
         )}

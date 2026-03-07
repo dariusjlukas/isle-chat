@@ -68,38 +68,38 @@ export function SpaceBrowser({ onClose, onCreateSpace }: Props) {
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      size="lg"
-      scrollBehavior="inside"
-      backdrop="opaque"
+      size='lg'
+      scrollBehavior='inside'
+      backdrop='opaque'
     >
       <ModalContent>
         <ModalHeader>Browse Spaces</ModalHeader>
-        <ModalBody className="pb-4">
+        <ModalBody className='pb-4'>
           <Input
-            placeholder="Search spaces..."
+            placeholder='Search spaces...'
             value={search}
             onValueChange={setSearch}
-            variant="bordered"
+            variant='bordered'
           />
-          <div className="space-y-2">
+          <div className='space-y-2'>
             {spaces.map((sp) => (
-              <Card key={sp.id} shadow="sm">
-                <CardBody className="flex flex-row items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-foreground">
-                      {sp.icon && <span className="mr-1">{sp.icon}</span>}
+              <Card key={sp.id} shadow='sm'>
+                <CardBody className='flex flex-row items-center justify-between gap-4'>
+                  <div className='min-w-0'>
+                    <p className='font-semibold text-foreground'>
+                      {sp.icon && <span className='mr-1'>{sp.icon}</span>}
                       {sp.name}
                     </p>
                     {sp.description && (
-                      <p className="text-sm text-default-400 truncate">
+                      <p className='text-sm text-default-400 truncate'>
                         {sp.description}
                       </p>
                     )}
                   </div>
                   <Button
-                    size="sm"
-                    color="primary"
-                    className="flex-shrink-0"
+                    size='sm'
+                    color='primary'
+                    className='flex-shrink-0'
                     onPress={() => handleJoin(sp.id)}
                   >
                     Join
@@ -109,18 +109,18 @@ export function SpaceBrowser({ onClose, onCreateSpace }: Props) {
             ))}
           </div>
           {spaces.length === 0 && !loading && (
-            <p className="text-center text-default-400 py-4">
+            <p className='text-center text-default-400 py-4'>
               No public spaces available to join
             </p>
           )}
         </ModalBody>
         <ModalFooter>
-          <Button variant="light" color="default" onPress={onClose}>
+          <Button variant='light' color='default' onPress={onClose}>
             Close
           </Button>
           <Button
-            color="primary"
-            variant="ghost"
+            color='primary'
+            variant='ghost'
             onPress={() => {
               onClose();
               onCreateSpace();

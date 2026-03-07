@@ -29,27 +29,27 @@ export function ChannelList({
   );
 
   return (
-    <div className="mb-4">
-      <div className="flex items-center justify-between px-3 py-2">
-        <h3 className="text-xs font-semibold text-default-500 uppercase tracking-wider">
+    <div className='mb-4'>
+      <div className='flex items-center justify-between px-3 py-2'>
+        <h3 className='text-xs font-semibold text-default-500 uppercase tracking-wider'>
           Channels
         </h3>
-        <div className="flex gap-0.5">
+        <div className='flex gap-0.5'>
           <Button
             isIconOnly
-            variant="light"
-            size="sm"
+            variant='light'
+            size='sm'
             onPress={onBrowseChannels}
-            title="Browse public channels"
+            title='Browse public channels'
           >
             <FontAwesomeIcon icon={faMagnifyingGlass} />
           </Button>
           <Button
             isIconOnly
-            variant="light"
-            size="sm"
+            variant='light'
+            size='sm'
             onPress={onCreateChannel}
-            title="Create channel"
+            title='Create channel'
           >
             +
           </Button>
@@ -71,12 +71,12 @@ export function ChannelList({
           <span>
             <FontAwesomeIcon
               icon={ch.is_public ? faHashtag : faLock}
-              className="text-xs mr-1.5"
+              className='text-xs mr-1.5'
             />
             {ch.name}
           </span>
           {ch.my_role === 'read' && (
-            <span className="ml-1 text-xs text-default-400">(read-only)</span>
+            <span className='ml-1 text-xs text-default-400'>(read-only)</span>
           )}
         </button>
       ))}

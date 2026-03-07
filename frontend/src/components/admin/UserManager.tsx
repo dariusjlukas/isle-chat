@@ -63,38 +63,38 @@ export function UserManager() {
 
   return (
     <div>
-      {error && <p className="text-xs text-danger mb-2">{error}</p>}
-      <div className="space-y-2">
+      {error && <p className='text-xs text-danger mb-2'>{error}</p>}
+      <div className='space-y-2'>
         {users.map((u) => {
           const canEdit = canEditUser(u);
           return (
             <div
               key={u.id}
-              className="flex items-center justify-between p-2 rounded-lg bg-content1"
+              className='flex items-center justify-between p-2 rounded-lg bg-content1'
             >
               <UserPopoverCard userId={u.id}>
-                <div className="flex items-center gap-2 min-w-0 cursor-pointer">
+                <div className='flex items-center gap-2 min-w-0 cursor-pointer'>
                   <OnlineStatusDot
                     isOnline={u.is_online}
                     lastSeen={u.last_seen}
                   />
-                  <span className="text-sm truncate hover:underline">
+                  <span className='text-sm truncate hover:underline'>
                     {u.display_name}
                   </span>
-                  <span className="text-xs text-default-400">
+                  <span className='text-xs text-default-400'>
                     @{u.username}
                   </span>
                 </div>
               </UserPopoverCard>
-              <div className="flex items-center gap-2 flex-shrink-0">
+              <div className='flex items-center gap-2 flex-shrink-0'>
                 {canEdit ? (
                   <Select
-                    size="sm"
-                    variant="bordered"
-                    className="w-28"
+                    size='sm'
+                    variant='bordered'
+                    className='w-28'
                     selectedKeys={[u.role]}
                     onChange={(e) => handleChangeRole(u.id, e.target.value)}
-                    aria-label="Role"
+                    aria-label='Role'
                     items={roleItems}
                   >
                     {(item) => (
@@ -102,7 +102,7 @@ export function UserManager() {
                     )}
                   </Select>
                 ) : (
-                  <span className="text-xs text-default-400 capitalize">
+                  <span className='text-xs text-default-400 capitalize'>
                     {u.role}
                   </span>
                 )}
@@ -111,7 +111,7 @@ export function UserManager() {
           );
         })}
         {users.length === 0 && (
-          <p className="text-default-500 text-sm">No users found.</p>
+          <p className='text-default-500 text-sm'>No users found.</p>
         )}
       </div>
     </div>

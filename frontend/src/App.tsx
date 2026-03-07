@@ -169,8 +169,8 @@ function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Spinner size="lg" />
+      <div className='min-h-screen flex items-center justify-center bg-background'>
+        <Spinner size='lg' />
       </div>
     );
   }
@@ -192,7 +192,7 @@ function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-background">
+    <div className='h-screen flex flex-col bg-background'>
       <Header
         onShowAdmin={() => setShowAdmin(true)}
         onShowSettings={() => setShowSettings(true)}
@@ -200,7 +200,7 @@ function App() {
         onShowChannelSettings={() => setShowChannelSettings(true)}
         adminNotificationCount={pendingRequestCount}
       />
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className='flex flex-1 overflow-hidden relative'>
         <NewSidebar
           onCreateConversation={() => setShowCreateConversation(true)}
           onCreateChannel={() => setShowCreateChannel(true)}
@@ -264,37 +264,37 @@ function App() {
       <Modal
         isOpen={showAdmin}
         onOpenChange={setShowAdmin}
-        size="3xl"
-        scrollBehavior="inside"
-        backdrop="opaque"
+        size='3xl'
+        scrollBehavior='inside'
+        backdrop='opaque'
       >
         <ModalContent>
           <ModalHeader>Admin Panel</ModalHeader>
-          <ModalBody className="pb-6">
+          <ModalBody className='pb-6'>
             <Accordion
-              variant="splitted"
-              selectionMode="multiple"
+              variant='splitted'
+              selectionMode='multiple'
               defaultExpandedKeys={[]}
             >
-              <AccordionItem key="server-settings" title="Server Settings">
+              <AccordionItem key='server-settings' title='Server Settings'>
                 <ServerSettings />
               </AccordionItem>
-              <AccordionItem key="user-management" title="User Management">
+              <AccordionItem key='user-management' title='User Management'>
                 <UserManager />
               </AccordionItem>
-              <AccordionItem key="invite-tokens" title="Invite Tokens">
+              <AccordionItem key='invite-tokens' title='Invite Tokens'>
                 <InviteManager />
               </AccordionItem>
-              <AccordionItem key="recovery-tokens" title="Account Recovery">
+              <AccordionItem key='recovery-tokens' title='Account Recovery'>
                 <RecoveryTokenManager />
               </AccordionItem>
               <AccordionItem
-                key="join-requests"
+                key='join-requests'
                 title={
-                  <div className="flex items-center justify-between w-full">
+                  <div className='flex items-center justify-between w-full'>
                     <span>Join Requests</span>
                     {pendingRequestCount > 0 && (
-                      <span className="bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                      <span className='bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1'>
                         {pendingRequestCount}
                       </span>
                     )}
@@ -316,30 +316,30 @@ function App() {
 
       <SpaceInviteNotification />
       <ConnectionLostModal />
-      <div className="shrink-0 flex items-center justify-between px-3 py-0.5 text-[10px] text-default-400 bg-content1 border-t border-divider">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-default-500">Isle Chat</span>
+      <div className='shrink-0 flex items-center justify-between px-3 py-0.5 text-[10px] text-default-400 bg-content1 border-t border-divider'>
+        <div className='flex items-center gap-2'>
+          <span className='font-medium text-default-500'>Isle Chat</span>
           <span>·</span>
           <a
-            href="https://github.com/dariusjlukas/isle-chat"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hover:text-default-500"
+            href='https://github.com/dariusjlukas/isle-chat'
+            target='_blank'
+            rel='noopener noreferrer'
+            className='hover:text-default-500'
           >
             GitHub
           </a>
           <span>·</span>
           <a
-            href="https://github.com/dariusjlukas/isle-chat/blob/main/LICENSE"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hover:text-default-500"
+            href='https://github.com/dariusjlukas/isle-chat/blob/main/LICENSE'
+            target='_blank'
+            rel='noopener noreferrer'
+            className='hover:text-default-500'
           >
             License
           </a>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative" ref={connectionCardRef}>
+        <div className='flex items-center gap-2'>
+          <div className='relative' ref={connectionCardRef}>
             <span
               className={`inline-block w-2 h-2 rounded-full cursor-pointer ${
                 connectionState === 'connected'
@@ -351,11 +351,11 @@ function App() {
               onClick={() => setShowConnectionCard((v) => !v)}
             />
             {showConnectionCard && (
-              <div className="absolute bottom-5 right-0 w-52 p-3 rounded-lg shadow-lg bg-content2 border border-divider text-[11px] text-default-600 z-50">
-                <div className="font-semibold mb-1.5 text-default-700">
+              <div className='absolute bottom-5 right-0 w-52 p-3 rounded-lg shadow-lg bg-content2 border border-divider text-[11px] text-default-600 z-50'>
+                <div className='font-semibold mb-1.5 text-default-700'>
                   Connection
                 </div>
-                <div className="flex justify-between mb-1">
+                <div className='flex justify-between mb-1'>
                   <span>Status</span>
                   <span
                     className={
@@ -373,7 +373,7 @@ function App() {
                         : 'Disconnected'}
                   </span>
                 </div>
-                <div className="flex justify-between mb-1">
+                <div className='flex justify-between mb-1'>
                   <span>Ping</span>
                   <span>
                     {heartbeatInfo.lastPingMs !== null
@@ -381,7 +381,7 @@ function App() {
                       : '—'}
                   </span>
                 </div>
-                <div className="flex justify-between">
+                <div className='flex justify-between'>
                   <span>Last heartbeat</span>
                   <span>
                     {heartbeatInfo.lastHeartbeat
@@ -396,7 +396,7 @@ function App() {
             <span>Built {new Date(__BUILD_TIME__).toLocaleString()}</span>
           )}
           <span
-            className="cursor-pointer select-none hover:text-default-500"
+            className='cursor-pointer select-none hover:text-default-500'
             onClick={() => setShowBuildTime((v) => !v)}
           >
             {__BUILD_INFO__}

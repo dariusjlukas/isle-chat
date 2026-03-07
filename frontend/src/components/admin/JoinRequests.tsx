@@ -52,30 +52,30 @@ export function JoinRequests() {
 
   return (
     <div>
-      <div className="space-y-2">
+      <div className='space-y-2'>
         {requests.map((req) => (
           <Card key={req.id}>
-            <CardBody className="flex-row items-center justify-between py-3">
+            <CardBody className='flex-row items-center justify-between py-3'>
               <div>
-                <p className="text-foreground font-medium">
+                <p className='text-foreground font-medium'>
                   {req.display_name}
                 </p>
-                <p className="text-sm text-default-500">@{req.username}</p>
-                <p className="text-xs text-default-400 mt-1">
+                <p className='text-sm text-default-500'>@{req.username}</p>
+                <p className='text-xs text-default-400 mt-1'>
                   {new Date(req.created_at).toLocaleString()}
                 </p>
               </div>
-              <div className="flex gap-2">
+              <div className='flex gap-2'>
                 <Button
-                  color="success"
-                  size="sm"
+                  color='success'
+                  size='sm'
                   onPress={() => handleApprove(req.id)}
                 >
                   Approve
                 </Button>
                 <Button
-                  color="danger"
-                  size="sm"
+                  color='danger'
+                  size='sm'
                   onPress={() => handleDeny(req.id)}
                 >
                   Deny
@@ -85,7 +85,7 @@ export function JoinRequests() {
           </Card>
         ))}
         {requests.length === 0 && (
-          <p className="text-default-500 text-sm">No pending requests.</p>
+          <p className='text-default-500 text-sm'>No pending requests.</p>
         )}
       </div>
     </div>

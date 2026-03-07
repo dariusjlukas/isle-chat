@@ -33,45 +33,45 @@ export function ConnectionLostModal() {
       isOpen={showModal}
       isDismissable={false}
       hideCloseButton
-      backdrop="blur"
-      size="sm"
+      backdrop='blur'
+      size='sm'
       classNames={{ wrapper: '!items-center !pt-0' }}
     >
       <ModalContent>
-        <ModalBody className="py-10 text-center">
-          <div className="flex justify-center mb-5">
+        <ModalBody className='py-10 text-center'>
+          <div className='flex justify-center mb-5'>
             <div
-              className="relative"
+              className='relative'
               style={{ animation: 'float 2s ease-in-out infinite' }}
             >
               <FontAwesomeIcon
                 icon={faWifi}
-                className="text-5xl text-danger"
+                className='text-5xl text-danger'
                 style={{ animation: 'pulse-glow 1.5s ease-in-out infinite' }}
               />
               <div
-                className="absolute inset-[-6px] flex items-center justify-center"
+                className='absolute inset-[-6px] flex items-center justify-center'
                 style={{ transform: 'rotate(-45deg)' }}
               >
-                <div className="w-full h-[3px] rounded-full bg-danger" />
+                <div className='w-full h-[3px] rounded-full bg-danger' />
               </div>
             </div>
           </div>
-          <h3 className="text-lg font-semibold text-foreground mb-2">
+          <h3 className='text-lg font-semibold text-foreground mb-2'>
             Connection Lost
           </h3>
-          <p className="text-default-500 text-sm mb-4">
+          <p className='text-default-500 text-sm mb-4'>
             Hang tight! Reconnecting in{' '}
-            <span className="font-mono font-semibold text-foreground">
+            <span className='font-mono font-semibold text-foreground'>
               {countdown}s
             </span>
             ...
           </p>
-          <div className="flex justify-center gap-1.5">
+          <div className='flex justify-center gap-1.5'>
             {[0, 1, 2].map((i) => (
               <span
                 key={i}
-                className="w-2 h-2 rounded-full bg-primary"
+                className='w-2 h-2 rounded-full bg-primary'
                 style={{
                   animation: 'bounce-dot 1.2s ease-in-out infinite',
                   animationDelay: `${i * 0.2}s`,

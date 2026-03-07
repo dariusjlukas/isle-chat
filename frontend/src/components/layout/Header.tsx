@@ -66,62 +66,62 @@ export function Header({
   };
 
   return (
-    <header className="bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] items-center gap-2">
-      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+    <header className='bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] items-center gap-2'>
+      <div className='flex items-center gap-2 sm:gap-3 min-w-0'>
         <Button
           isIconOnly
-          variant="light"
-          size="sm"
-          className="md:hidden flex-shrink-0"
+          variant='light'
+          size='sm'
+          className='md:hidden flex-shrink-0'
           onPress={onToggleSidebar}
         >
           <FontAwesomeIcon icon={faBars} />
         </Button>
         <img
           src={logoSmall}
-          alt="Isle Chat"
-          className="h-7 w-7 flex-shrink-0 dark:hidden"
+          alt='Isle Chat'
+          className='h-7 w-7 flex-shrink-0 dark:hidden'
         />
         <img
           src={logoSmallDark}
-          alt="Isle Chat"
-          className="h-7 w-7 flex-shrink-0 hidden dark:block"
+          alt='Isle Chat'
+          className='h-7 w-7 flex-shrink-0 hidden dark:block'
         />
-        <span className="text-foreground font-bold hidden sm:inline flex-shrink-0">
+        <span className='text-foreground font-bold hidden sm:inline flex-shrink-0'>
           Isle Chat
         </span>
         {activeChannel && (
-          <h2 className="text-foreground font-semibold truncate">
+          <h2 className='text-foreground font-semibold truncate'>
             {activeSpace && (
-              <span className="text-default-400 font-normal">
+              <span className='text-default-400 font-normal'>
                 {activeSpace.icon && (
-                  <span className="mr-1">{activeSpace.icon}</span>
+                  <span className='mr-1'>{activeSpace.icon}</span>
                 )}
                 {activeSpace.name}
-                <span className="mx-1.5">/</span>
+                <span className='mx-1.5'>/</span>
               </span>
             )}
             {!activeChannel.is_direct && (
               <FontAwesomeIcon
                 icon={activeChannel.is_public ? faHashtag : faLock}
-                className="text-xs mr-1.5"
+                className='text-xs mr-1.5'
               />
             )}
             {getChannelDisplayName()}
           </h2>
         )}
         {activeChannel?.description && !activeChannel.is_direct && (
-          <span className="text-default-500 text-sm hidden md:inline">
+          <span className='text-default-500 text-sm hidden md:inline'>
             | {activeChannel.description}
           </span>
         )}
         {showChannelSettings && (
           <Button
             isIconOnly
-            variant="light"
-            size="sm"
+            variant='light'
+            size='sm'
             onPress={onShowChannelSettings}
-            title="Channel Settings"
+            title='Channel Settings'
           >
             <FontAwesomeIcon icon={faGear} />
           </Button>
@@ -130,36 +130,36 @@ export function Header({
 
       <GlobalSearch />
 
-      <div className="flex items-center gap-1 sm:gap-2 justify-end">
+      <div className='flex items-center gap-1 sm:gap-2 justify-end'>
         {(user?.role === 'admin' || user?.role === 'owner') && (
-          <Tooltip content="Admin Panel">
+          <Tooltip content='Admin Panel'>
             <Button
               isIconOnly
-              variant="light"
-              size="sm"
+              variant='light'
+              size='sm'
               onPress={onShowAdmin}
-              className="relative overflow-visible"
+              className='relative overflow-visible'
             >
               <FontAwesomeIcon icon={faShieldHalved} />
               {adminNotificationCount > 0 && (
-                <span className="absolute -bottom-1 -right-1 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+                <span className='absolute -bottom-1 -right-1 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1'>
                   {adminNotificationCount}
                 </span>
               )}
             </Button>
           </Tooltip>
         )}
-        <Tooltip content="User Settings">
-          <Button isIconOnly variant="light" size="sm" onPress={onShowSettings}>
+        <Tooltip content='User Settings'>
+          <Button isIconOnly variant='light' size='sm' onPress={onShowSettings}>
             <FontAwesomeIcon icon={faSliders} />
           </Button>
         </Tooltip>
-        <Tooltip content="Logout">
+        <Tooltip content='Logout'>
           <Button
             isIconOnly
-            variant="light"
-            size="sm"
-            color="default"
+            variant='light'
+            size='sm'
+            color='default'
             onPress={handleLogout}
           >
             <FontAwesomeIcon icon={faRightFromBracket} />

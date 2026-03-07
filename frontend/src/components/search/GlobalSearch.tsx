@@ -367,8 +367,8 @@ export function GlobalSearch() {
   const renderResults = () => {
     if (loading) {
       return (
-        <div className="flex items-center justify-center py-8">
-          <Spinner size="sm" />
+        <div className='flex items-center justify-center py-8'>
+          <Spinner size='sm' />
         </div>
       );
     }
@@ -379,7 +379,7 @@ export function GlobalSearch() {
         const filtered = userResults.filter((u) => u.id !== currentUser?.id);
         if (filtered.length === 0)
           return (
-            <p className="text-sm text-default-400 text-center py-8">
+            <p className='text-sm text-default-400 text-center py-8'>
               No results found
             </p>
           );
@@ -394,7 +394,7 @@ export function GlobalSearch() {
       case 'messages':
         if (messageResults.length === 0)
           return (
-            <p className="text-sm text-default-400 text-center py-8">
+            <p className='text-sm text-default-400 text-center py-8'>
               No results found
             </p>
           );
@@ -408,7 +408,7 @@ export function GlobalSearch() {
       case 'files':
         if (fileResults.length === 0)
           return (
-            <p className="text-sm text-default-400 text-center py-8">
+            <p className='text-sm text-default-400 text-center py-8'>
               No results found
             </p>
           );
@@ -423,7 +423,7 @@ export function GlobalSearch() {
       case 'channels':
         if (channelResults.length === 0)
           return (
-            <p className="text-sm text-default-400 text-center py-8">
+            <p className='text-sm text-default-400 text-center py-8'>
               No results found
             </p>
           );
@@ -439,7 +439,7 @@ export function GlobalSearch() {
       case 'spaces':
         if (spaceResults.length === 0)
           return (
-            <p className="text-sm text-default-400 text-center py-8">
+            <p className='text-sm text-default-400 text-center py-8'>
               No results found
             </p>
           );
@@ -454,14 +454,14 @@ export function GlobalSearch() {
   };
 
   return (
-    <div ref={containerRef} className="relative w-full max-w-xl mx-auto">
+    <div ref={containerRef} className='relative w-full max-w-xl mx-auto'>
       <Input
         ref={inputRef}
         placeholder={
           chips.length > 0 ? `Add ${activeTab} filter...` : 'Search...'
         }
-        variant="bordered"
-        size="sm"
+        variant='bordered'
+        size='sm'
         value={inputValue}
         onValueChange={handleInputChange}
         onKeyDown={handleKeyDown}
@@ -471,7 +471,7 @@ export function GlobalSearch() {
         startContent={
           <FontAwesomeIcon
             icon={faMagnifyingGlass}
-            className="text-default-400 text-sm"
+            className='text-default-400 text-sm'
           />
         }
         classNames={{
@@ -479,24 +479,24 @@ export function GlobalSearch() {
           input: 'text-sm',
         }}
         endContent={
-          <div className="flex items-center gap-1">
+          <div className='flex items-center gap-1'>
             {inputValue.trim() && (
               <Button
-                size="sm"
-                variant="flat"
-                className="h-5 min-w-0 px-1.5 gap-1 text-[10px]"
+                size='sm'
+                variant='flat'
+                className='h-5 min-w-0 px-1.5 gap-1 text-[10px]'
                 onPress={addChipFromInput}
               >
                 Add Filter{' '}
                 <Kbd
-                  className="text-[10px] px-1 py-0 min-h-0 h-3.5 bg-default-100"
+                  className='text-[10px] px-1 py-0 min-h-0 h-3.5 bg-default-100'
                   keys={['enter']}
                 />
               </Button>
             )}
             {(inputValue || chips.length > 0) && (
               <button
-                className="text-default-400 hover:text-default-600 text-sm px-0.5"
+                className='text-default-400 hover:text-default-600 text-sm px-0.5'
                 onClick={() => {
                   setInputValue('');
                   setChips([]);
@@ -512,24 +512,24 @@ export function GlobalSearch() {
       />
 
       {isOpen && hasContent && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-content1 border border-default-200 rounded-xl shadow-lg z-50 overflow-hidden">
+        <div className='absolute top-full left-0 right-0 mt-1 bg-content1 border border-default-200 rounded-xl shadow-lg z-50 overflow-hidden'>
           {/* Chips area */}
           {chips.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 px-3 pt-2">
+            <div className='flex flex-wrap items-center gap-1 px-3 pt-2'>
               {chips.map((chip, i) => (
-                <div key={chip.id} className="flex items-center gap-1">
+                <div key={chip.id} className='flex items-center gap-1'>
                   {i > 0 && (
-                    <span className="text-[10px] font-semibold text-default-400 px-0.5">
+                    <span className='text-[10px] font-semibold text-default-400 px-0.5'>
                       {mode.toUpperCase()}
                     </span>
                   )}
                   <Chip
-                    size="sm"
-                    variant="flat"
+                    size='sm'
+                    variant='flat'
                     onClose={() => removeChip(chip.id)}
                     classNames={{ base: 'h-6' }}
                   >
-                    <span className="text-[10px] font-semibold text-primary mr-0.5">
+                    <span className='text-[10px] font-semibold text-primary mr-0.5'>
                       {TAB_LABELS[chip.type]}:
                     </span>
                     {chip.value}
@@ -540,21 +540,21 @@ export function GlobalSearch() {
           )}
 
           {/* Tabs + AND/OR toggle */}
-          <div className="flex items-center justify-between px-3 pt-2 pb-1">
+          <div className='flex items-center justify-between px-3 pt-2 pb-1'>
             <Tabs
-              size="sm"
-              variant="underlined"
+              size='sm'
+              variant='underlined'
               selectedKey={activeTab}
               onSelectionChange={(key) => handleTabChange(key as SearchTab)}
               classNames={{ tabList: 'gap-2' }}
             >
-              <Tab key="messages" title="Messages" />
-              <Tab key="users" title="Users" />
-              <Tab key="files" title="Files" />
-              <Tab key="channels" title="Channels" />
-              <Tab key="spaces" title="Spaces" />
+              <Tab key='messages' title='Messages' />
+              <Tab key='users' title='Users' />
+              <Tab key='files' title='Files' />
+              <Tab key='channels' title='Channels' />
+              <Tab key='spaces' title='Spaces' />
             </Tabs>
-            <div className="flex items-center gap-0 flex-shrink-0 border border-default-200 rounded-lg overflow-hidden">
+            <div className='flex items-center gap-0 flex-shrink-0 border border-default-200 rounded-lg overflow-hidden'>
               <button
                 className={`px-2 py-0.5 text-[11px] font-medium transition-colors ${mode === 'and' ? 'bg-primary text-primary-foreground' : 'text-default-500 hover:bg-default-100'}`}
                 onClick={() => handleModeToggle(false)}
@@ -571,7 +571,7 @@ export function GlobalSearch() {
           </div>
 
           {/* Results */}
-          <div className="max-h-80 overflow-y-auto px-1 pb-1">
+          <div className='max-h-80 overflow-y-auto px-1 pb-1'>
             {renderResults()}
           </div>
         </div>
@@ -588,23 +588,23 @@ function UserResultItem({
   onStartDM: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors">
+    <div className='flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors'>
       <OnlineStatusDot isOnline={user.is_online} lastSeen={user.last_seen} />
-      <div className="flex-1 min-w-0">
+      <div className='flex-1 min-w-0'>
         <UserPopoverCard user={user}>
-          <span className="text-sm font-medium cursor-pointer hover:underline truncate">
+          <span className='text-sm font-medium cursor-pointer hover:underline truncate'>
             {user.display_name}
           </span>
         </UserPopoverCard>
-        <span className="text-xs text-default-400 ml-1.5">
+        <span className='text-xs text-default-400 ml-1.5'>
           @{user.username}
         </span>
       </div>
       <Button
-        size="sm"
-        variant="flat"
+        size='sm'
+        variant='flat'
         onPress={onStartDM}
-        startContent={<FontAwesomeIcon icon={faMessage} className="text-xs" />}
+        startContent={<FontAwesomeIcon icon={faMessage} className='text-xs' />}
       >
         Message
       </Button>
@@ -627,19 +627,19 @@ function MessageResultItem({
 
   return (
     <div
-      className="p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer"
+      className='p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer'
       onClick={onJump}
     >
-      <div className="flex items-center gap-2 mb-0.5">
-        <Chip size="sm" variant="flat" className="h-5 text-[10px]">
+      <div className='flex items-center gap-2 mb-0.5'>
+        <Chip size='sm' variant='flat' className='h-5 text-[10px]'>
           {breadcrumb}
         </Chip>
-        <span className="text-xs text-default-400">@{result.username}</span>
-        <span className="text-xs text-default-300 ml-auto flex-shrink-0">
+        <span className='text-xs text-default-400'>@{result.username}</span>
+        <span className='text-xs text-default-300 ml-auto flex-shrink-0'>
           {relativeTime(result.created_at)}
         </span>
       </div>
-      <p className="text-sm text-foreground line-clamp-2">{result.content}</p>
+      <p className='text-sm text-foreground line-clamp-2'>{result.content}</p>
     </div>
   );
 }
@@ -660,35 +660,35 @@ function FileResultItem({
   };
 
   return (
-    <div className="flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors">
+    <div className='flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors'>
       <FontAwesomeIcon
         icon={faFile}
-        className="text-default-400 flex-shrink-0"
+        className='text-default-400 flex-shrink-0'
       />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{result.file_name}</p>
-        <p className="text-xs text-default-400">
+      <div className='flex-1 min-w-0'>
+        <p className='text-sm font-medium truncate'>{result.file_name}</p>
+        <p className='text-xs text-default-400'>
           {formatSize(result.file_size)} &middot; @{result.username} &middot;{' '}
           {result.channel_name}
         </p>
       </div>
       <Button
         isIconOnly
-        size="sm"
-        variant="light"
+        size='sm'
+        variant='light'
         onPress={onDownload}
-        title="Download"
+        title='Download'
       >
-        <FontAwesomeIcon icon={faDownload} className="text-xs" />
+        <FontAwesomeIcon icon={faDownload} className='text-xs' />
       </Button>
       <Button
         isIconOnly
-        size="sm"
-        variant="light"
+        size='sm'
+        variant='light'
         onPress={onJump}
-        title="Jump to message"
+        title='Jump to message'
       >
-        <FontAwesomeIcon icon={faArrowUpRightFromSquare} className="text-xs" />
+        <FontAwesomeIcon icon={faArrowUpRightFromSquare} className='text-xs' />
       </Button>
     </div>
   );
@@ -703,21 +703,21 @@ function ChannelResultItem({
 }) {
   return (
     <div
-      className="flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer"
+      className='flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer'
       onClick={onNavigate}
     >
       <FontAwesomeIcon
         icon={faHashtag}
-        className="text-default-400 flex-shrink-0 text-sm"
+        className='text-default-400 flex-shrink-0 text-sm'
       />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">
+      <div className='flex-1 min-w-0'>
+        <p className='text-sm font-medium truncate'>
           {result.space_name
             ? `${result.space_name} / #${result.name}`
             : `#${result.name}`}
         </p>
         {result.description && (
-          <p className="text-xs text-default-400 truncate">
+          <p className='text-xs text-default-400 truncate'>
             {result.description}
           </p>
         )}
@@ -735,20 +735,20 @@ function SpaceResultItem({
 }) {
   return (
     <div
-      className="flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer"
+      className='flex items-center gap-2 p-2 mx-1 rounded-lg hover:bg-content2/50 transition-colors cursor-pointer'
       onClick={onNavigate}
     >
       {result.icon ? (
-        <span className="text-sm flex-shrink-0">{result.icon}</span>
+        <span className='text-sm flex-shrink-0'>{result.icon}</span>
       ) : (
-        <span className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary flex-shrink-0">
+        <span className='w-5 h-5 rounded bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary flex-shrink-0'>
           {result.name[0]?.toUpperCase()}
         </span>
       )}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{result.name}</p>
+      <div className='flex-1 min-w-0'>
+        <p className='text-sm font-medium truncate'>{result.name}</p>
         {result.description && (
-          <p className="text-xs text-default-400 truncate">
+          <p className='text-xs text-default-400 truncate'>
             {result.description}
           </p>
         )}

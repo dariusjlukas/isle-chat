@@ -74,41 +74,41 @@ export function ChannelBrowser({ onClose, spaceId }: Props) {
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      size="lg"
-      scrollBehavior="inside"
-      backdrop="opaque"
+      size='lg'
+      scrollBehavior='inside'
+      backdrop='opaque'
     >
       <ModalContent>
         <ModalHeader>
           {spaceId ? 'Browse Channels' : 'Browse Public Channels'}
         </ModalHeader>
-        <ModalBody className="pb-6">
+        <ModalBody className='pb-6'>
           <Input
-            placeholder="Search channels..."
+            placeholder='Search channels...'
             value={search}
             onValueChange={setSearch}
-            variant="bordered"
+            variant='bordered'
           />
-          <div className="space-y-2">
+          <div className='space-y-2'>
             {channels.map((ch) => (
-              <Card key={ch.id} shadow="sm">
-                <CardBody className="flex flex-row items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-foreground flex items-center gap-1.5">
+              <Card key={ch.id} shadow='sm'>
+                <CardBody className='flex flex-row items-center justify-between gap-4'>
+                  <div className='min-w-0'>
+                    <p className='font-semibold text-foreground flex items-center gap-1.5'>
                       <FontAwesomeIcon
                         icon={ch.is_public ? faHashtag : faLock}
-                        className="text-xs"
+                        className='text-xs'
                       />
                       {ch.name}
                       {ch.is_archived && (
                         <Chip
-                          size="sm"
-                          variant="flat"
-                          color="warning"
+                          size='sm'
+                          variant='flat'
+                          color='warning'
                           startContent={
                             <FontAwesomeIcon
                               icon={faBoxArchive}
-                              className="text-[10px]"
+                              className='text-[10px]'
                             />
                           }
                         >
@@ -117,18 +117,18 @@ export function ChannelBrowser({ onClose, spaceId }: Props) {
                       )}
                     </p>
                     {ch.description && (
-                      <p className="text-sm text-default-400 truncate">
+                      <p className='text-sm text-default-400 truncate'>
                         {ch.description}
                       </p>
                     )}
-                    <p className="text-xs text-default-300">
+                    <p className='text-xs text-default-300'>
                       Default role: {ch.default_role}
                     </p>
                   </div>
                   <Button
-                    size="sm"
-                    color="primary"
-                    className="flex-shrink-0"
+                    size='sm'
+                    color='primary'
+                    className='flex-shrink-0'
                     onPress={() => handleJoin(ch.id)}
                   >
                     Join
@@ -138,7 +138,7 @@ export function ChannelBrowser({ onClose, spaceId }: Props) {
             ))}
           </div>
           {channels.length === 0 && !loading && (
-            <p className="text-center text-default-400 py-4">
+            <p className='text-center text-default-400 py-4'>
               No channels available to join
             </p>
           )}

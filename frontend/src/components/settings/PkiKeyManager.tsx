@@ -107,35 +107,35 @@ export function PkiKeyManager() {
 
   if (loading)
     return (
-      <div className="flex justify-center py-4">
-        <Spinner size="sm" />
+      <div className='flex justify-center py-4'>
+        <Spinner size='sm' />
       </div>
     );
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold text-foreground">Browser Keys</h3>
+    <div className='space-y-4'>
+      <h3 className='text-lg font-semibold text-foreground'>Browser Keys</h3>
 
       {error && (
-        <Alert color="danger" variant="flat">
+        <Alert color='danger' variant='flat'>
           {error}
         </Alert>
       )}
 
-      <div className="space-y-2">
+      <div className='space-y-2'>
         {keys.map((key) => (
           <Card key={key.id}>
-            <CardBody className="flex-row items-center justify-between py-2">
+            <CardBody className='flex-row items-center justify-between py-2'>
               <div>
-                <div className="text-sm text-foreground">{key.device_name}</div>
-                <div className="text-xs text-default-500">
+                <div className='text-sm text-foreground'>{key.device_name}</div>
+                <div className='text-xs text-default-500'>
                   Added {new Date(key.created_at).toLocaleDateString()}
                 </div>
               </div>
               <Button
-                color="danger"
-                variant="light"
-                size="sm"
+                color='danger'
+                variant='light'
+                size='sm'
                 onPress={() => handleRemoveKey(key.id)}
               >
                 Remove
@@ -144,12 +144,12 @@ export function PkiKeyManager() {
           </Card>
         ))}
         {keys.length === 0 && (
-          <p className="text-sm text-default-400">No browser keys registered</p>
+          <p className='text-sm text-default-400'>No browser keys registered</p>
         )}
       </div>
 
       <Button
-        color="primary"
+        color='primary'
         fullWidth
         onPress={handleAddKey}
         isLoading={adding}
@@ -158,15 +158,15 @@ export function PkiKeyManager() {
       </Button>
 
       {recoveryCount > 0 && (
-        <div className="pt-2 border-t border-divider">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-default-500">
+        <div className='pt-2 border-t border-divider'>
+          <div className='flex items-center justify-between'>
+            <span className='text-sm text-default-500'>
               {recoveryCount} recovery key{recoveryCount !== 1 ? 's' : ''}{' '}
               remaining
             </span>
             <Button
-              variant="bordered"
-              size="sm"
+              variant='bordered'
+              size='sm'
               onPress={handleRegenerateRecovery}
               isLoading={regenerating}
             >

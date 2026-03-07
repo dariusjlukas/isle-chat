@@ -46,9 +46,9 @@ export function MentionAutocomplete({
   }
 
   return (
-    <div className="absolute bottom-full left-0 right-0 mb-1 z-50">
+    <div className='absolute bottom-full left-0 right-0 mb-1 z-50'>
       <div
-        className="bg-content1 border border-divider rounded-lg shadow-lg max-h-48 overflow-y-auto"
+        className='bg-content1 border border-divider rounded-lg shadow-lg max-h-48 overflow-y-auto'
         ref={listRef}
       >
         {options.map((option, i) => (
@@ -63,9 +63,9 @@ export function MentionAutocomplete({
           >
             {option.type === 'channel' ? (
               <>
-                <span className="w-2.5 h-2.5 rounded-full bg-warning inline-block flex-shrink-0" />
-                <span className="font-medium">@channel</span>
-                <span className="text-default-400 text-xs ml-auto">
+                <span className='w-2.5 h-2.5 rounded-full bg-warning inline-block flex-shrink-0' />
+                <span className='font-medium'>@channel</span>
+                <span className='text-default-400 text-xs ml-auto'>
                   Notify everyone
                 </span>
               </>
@@ -75,9 +75,9 @@ export function MentionAutocomplete({
                   isOnline={option.member!.is_online}
                   lastSeen={option.member!.last_seen}
                 />
-                <span className="truncate">
+                <span className='truncate'>
                   {option.member!.display_name}{' '}
-                  <span className="text-default-400">
+                  <span className='text-default-400'>
                     @{option.member!.username}
                   </span>
                 </span>

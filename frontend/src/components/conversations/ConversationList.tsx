@@ -78,22 +78,22 @@ export function ConversationList({ onCreateConversation, onSelect }: Props) {
   const [showArchived, setShowArchived] = useState(false);
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="p-3 border-b border-default-100">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-foreground">Messages</h3>
+    <div className='flex flex-col h-full'>
+      <div className='p-3 border-b border-default-100'>
+        <div className='flex items-center justify-between'>
+          <h3 className='text-sm font-semibold text-foreground'>Messages</h3>
           <Button
             isIconOnly
-            variant="light"
-            size="sm"
+            variant='light'
+            size='sm'
             onPress={onCreateConversation}
-            title="New conversation"
+            title='New conversation'
           >
             +
           </Button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className='flex-1 overflow-y-auto p-2'>
         {conversations.map((ch) => (
           <button
             key={ch.id}
@@ -124,26 +124,26 @@ export function ConversationList({ onCreateConversation, onSelect }: Props) {
               </span>
             )}
             {isGroupChat(ch) && (
-              <span className="text-xs text-default-400 flex-shrink-0">
+              <span className='text-xs text-default-400 flex-shrink-0'>
                 ({ch.members?.length})
               </span>
             )}
             {(unreadCounts[ch.id] || 0) > 0 && (
-              <span className="ml-auto flex-shrink-0 min-w-[20px] h-5 rounded-full bg-danger text-white text-[11px] font-bold flex items-center justify-center px-1.5">
+              <span className='ml-auto flex-shrink-0 min-w-[20px] h-5 rounded-full bg-danger text-white text-[11px] font-bold flex items-center justify-center px-1.5'>
                 {unreadCounts[ch.id] > 99 ? '99+' : unreadCounts[ch.id]}
               </span>
             )}
           </button>
         ))}
         {conversations.length === 0 && archivedConversations.length === 0 && (
-          <p className="text-center text-default-400 text-sm py-8">
+          <p className='text-center text-default-400 text-sm py-8'>
             No conversations yet
           </p>
         )}
         {archivedConversations.length > 0 && (
-          <div className="mt-2">
+          <div className='mt-2'>
             <button
-              className="w-full text-left px-3 py-1.5 text-xs font-semibold text-default-400 uppercase tracking-wider hover:text-default-500"
+              className='w-full text-left px-3 py-1.5 text-xs font-semibold text-default-400 uppercase tracking-wider hover:text-default-500'
               onClick={() => setShowArchived((v) => !v)}
             >
               Archived ({archivedConversations.length}){' '}
@@ -164,9 +164,9 @@ export function ConversationList({ onCreateConversation, onSelect }: Props) {
                   }`}
                 >
                   <OnlineStatusDot {...getOnlineInfo(ch)} />
-                  <span className="truncate">{getConversationName(ch)}</span>
+                  <span className='truncate'>{getConversationName(ch)}</span>
                   {isGroupChat(ch) && (
-                    <span className="text-xs text-default-400 flex-shrink-0">
+                    <span className='text-xs text-default-400 flex-shrink-0'>
                       ({ch.members?.length})
                     </span>
                   )}

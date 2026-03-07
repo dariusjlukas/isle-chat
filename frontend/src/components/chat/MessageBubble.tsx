@@ -62,7 +62,7 @@ function renderTextWithMentions(
     parts.push(
       <span
         key={match.index}
-        className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium align-baseline"
+        className='inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium align-baseline'
       >
         @{name}
       </span>,
@@ -177,10 +177,10 @@ function ImageViewer({
   }, []);
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className='flex flex-col h-full min-h-0'>
       <div
         ref={containerRef}
-        className="flex-1 min-h-0 overflow-hidden bg-black/20 rounded-lg relative"
+        className='flex-1 min-h-0 overflow-hidden bg-black/20 rounded-lg relative'
         style={{
           cursor: dragging ? 'grabbing' : zoom > 1 ? 'grab' : 'default',
         }}
@@ -190,7 +190,7 @@ function ImageViewer({
         onPointerUp={handlePointerUp}
       >
         <div
-          className="w-full h-full flex items-center justify-center"
+          className='w-full h-full flex items-center justify-center'
           style={{
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
             transformOrigin: 'center center',
@@ -200,28 +200,28 @@ function ImageViewer({
           <img
             src={fileUrl}
             alt={fileName}
-            className="max-w-full max-h-full object-contain select-none pointer-events-none"
+            className='max-w-full max-h-full object-contain select-none pointer-events-none'
             draggable={false}
           />
         </div>
       </div>
-      <div className="flex items-center justify-center gap-1 pt-2">
+      <div className='flex items-center justify-center gap-1 pt-2'>
         <Button
           isIconOnly
-          size="sm"
-          variant="flat"
+          size='sm'
+          variant='flat'
           onPress={() => handleZoom(-ZOOM_STEP)}
           isDisabled={zoom <= MIN_ZOOM}
         >
           <FontAwesomeIcon icon={faMagnifyingGlassMinus} />
         </Button>
-        <span className="text-xs text-default-500 w-14 text-center">
+        <span className='text-xs text-default-500 w-14 text-center'>
           {Math.round(zoom * 100)}%
         </span>
         <Button
           isIconOnly
-          size="sm"
-          variant="flat"
+          size='sm'
+          variant='flat'
           onPress={() => handleZoom(ZOOM_STEP)}
           isDisabled={zoom >= MAX_ZOOM}
         >
@@ -229,10 +229,10 @@ function ImageViewer({
         </Button>
         <Button
           isIconOnly
-          size="sm"
-          variant="flat"
+          size='sm'
+          variant='flat'
           onPress={resetView}
-          className="ml-1"
+          className='ml-1'
         >
           <FontAwesomeIcon icon={faArrowsRotate} />
         </Button>
@@ -276,9 +276,9 @@ function FilePreviewModal({
     <Modal
       isOpen={isOpen}
       onOpenChange={(open) => !open && onClose()}
-      size="5xl"
-      scrollBehavior="inside"
-      backdrop="opaque"
+      size='5xl'
+      scrollBehavior='inside'
+      backdrop='opaque'
       classNames={
         isImage
           ? {
@@ -289,8 +289,8 @@ function FilePreviewModal({
       }
     >
       <ModalContent className={isImage ? 'h-[90vh] max-h-[90vh]' : ''}>
-        <ModalHeader className="flex-col items-start gap-1 flex-shrink-0">
-          <span className="truncate max-w-full">{fileName}</span>
+        <ModalHeader className='flex-col items-start gap-1 flex-shrink-0'>
+          <span className='truncate max-w-full'>{fileName}</span>
         </ModalHeader>
         <ModalBody
           className={isImage ? 'overflow-hidden min-h-0' : 'items-center'}
@@ -301,24 +301,24 @@ function FilePreviewModal({
             <iframe
               src={fileUrl}
               title={fileName}
-              className="w-full rounded-lg border border-divider"
+              className='w-full rounded-lg border border-divider'
               style={{ height: '80vh' }}
             />
           )}
         </ModalBody>
-        <ModalFooter className="flex-shrink-0">
+        <ModalFooter className='flex-shrink-0'>
           {isDownloading && (
             <Progress
-              size="sm"
+              size='sm'
               value={downloadProgress}
-              className="flex-1 mr-2"
+              className='flex-1 mr-2'
             />
           )}
-          <Button variant="flat" onPress={onClose}>
+          <Button variant='flat' onPress={onClose}>
             Close
           </Button>
           <Button
-            color="primary"
+            color='primary'
             onPress={handleDownload}
             isDisabled={isDownloading}
             startContent={<FontAwesomeIcon icon={faDownload} />}
@@ -366,11 +366,11 @@ function FileAttachment({
   if (isImage) {
     return (
       <>
-        <div className="mt-2">
+        <div className='mt-2'>
           <img
             src={getFileUrl(message.file_id!)}
             alt={message.file_name}
-            className="max-w-full max-h-64 rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+            className='max-w-full max-h-64 rounded-lg cursor-pointer hover:opacity-90 transition-opacity'
             onClick={() => setPreviewOpen(true)}
             onError={() => setImageError(true)}
           />
@@ -395,25 +395,25 @@ function FileAttachment({
         } ${isPreviewable ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
         onClick={isPreviewable ? () => setPreviewOpen(true) : undefined}
       >
-        <FontAwesomeIcon icon={faFile} className="text-lg flex-shrink-0" />
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{message.file_name}</p>
+        <FontAwesomeIcon icon={faFile} className='text-lg flex-shrink-0' />
+        <div className='flex-1 min-w-0'>
+          <p className='text-sm font-medium truncate'>{message.file_name}</p>
           <p className={`text-xs text-default-400`}>
             {formatFileSize(message.file_size || 0)}
           </p>
           {isDownloading && (
             <Progress
-              size="sm"
+              size='sm'
               value={downloadProgress}
               color={isOwn ? 'default' : 'primary'}
-              className="mt-1"
+              className='mt-1'
             />
           )}
         </div>
         <Button
           isIconOnly
-          size="sm"
-          variant="light"
+          size='sm'
+          variant='light'
           onPress={handleDownload}
           isDisabled={isDownloading}
         >
@@ -461,15 +461,15 @@ function ReactionBadges({
   if (grouped.length === 0) return null;
 
   return (
-    <div className="flex flex-wrap gap-1 mt-1 items-center">
+    <div className='flex flex-wrap gap-1 mt-1 items-center'>
       {grouped.map((g) => {
         const iReacted = g.users.some((u) => u.user_id === currentUserId);
         const tooltipText = g.users.map((u) => u.username).join(', ');
         return (
           <Tooltip
             key={g.emoji}
-            content={<span className="text-xs">{tooltipText}</span>}
-            placement="top"
+            content={<span className='text-xs'>{tooltipText}</span>}
+            placement='top'
             delay={200}
           >
             <button
@@ -519,7 +519,7 @@ function AddReactionButton({ onAdd }: { onAdd: (emoji: string) => void }) {
   }, []);
 
   return (
-    <div className="relative" ref={pickerRef}>
+    <div className='relative' ref={pickerRef}>
       {pickerOpen && (
         <div
           className={`absolute left-0 z-50 ${openAbove ? 'bottom-full mb-1' : 'top-full mt-1'}`}
@@ -530,20 +530,20 @@ function AddReactionButton({ onAdd }: { onAdd: (emoji: string) => void }) {
               onAdd(emoji.native);
               setPickerOpen(false);
             }}
-            theme="auto"
-            previewPosition="none"
-            skinTonePosition="search"
+            theme='auto'
+            previewPosition='none'
+            skinTonePosition='search'
             maxFrequentRows={2}
           />
         </div>
       )}
       <button
         ref={buttonRef}
-        className="inline-flex items-center gap-0.5 text-default-400 hover:text-foreground transition-colors"
+        className='inline-flex items-center gap-0.5 text-default-400 hover:text-foreground transition-colors'
         onClick={togglePicker}
       >
-        <FontAwesomeIcon icon={faFaceSmile} className="text-[10px]" />
-        <FontAwesomeIcon icon={faPlus} className="text-[8px]" />
+        <FontAwesomeIcon icon={faFaceSmile} className='text-[10px]' />
+        <FontAwesomeIcon icon={faPlus} className='text-[8px]' />
       </button>
     </div>
   );
@@ -601,12 +601,12 @@ export function MessageBubble({
   if (message.is_deleted) {
     return (
       <div className={`flex ${isOwn ? 'justify-end' : 'justify-start'} mb-2`}>
-        <div className="max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2 bg-content1 border border-divider rounded-br-md">
+        <div className='max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2 bg-content1 border border-divider rounded-br-md'>
           {!isOwn && (
-            <p className="text-xs font-semibold text-default-400 mb-1">
+            <p className='text-xs font-semibold text-default-400 mb-1'>
               {author ? (
                 <UserPopoverCard user={author}>
-                  <span className="cursor-pointer hover:underline">
+                  <span className='cursor-pointer hover:underline'>
                     {message.username}
                   </span>
                 </UserPopoverCard>
@@ -615,10 +615,10 @@ export function MessageBubble({
               )}
             </p>
           )}
-          <p className="text-sm italic text-default-400">
+          <p className='text-sm italic text-default-400'>
             This message was deleted
           </p>
-          <p className="text-xs mt-1 text-default-300">{time}</p>
+          <p className='text-xs mt-1 text-default-300'>{time}</p>
         </div>
       </div>
     );
@@ -635,10 +635,10 @@ export function MessageBubble({
         }`}
       >
         {!isOwn && (
-          <p className="text-xs font-semibold text-primary mb-1">
+          <p className='text-xs font-semibold text-primary mb-1'>
             {author ? (
               <UserPopoverCard user={author}>
-                <span className="cursor-pointer hover:underline">
+                <span className='cursor-pointer hover:underline'>
                   {message.username}
                 </span>
               </UserPopoverCard>
@@ -649,14 +649,14 @@ export function MessageBubble({
         )}
 
         {editing ? (
-          <div className="space-y-2">
+          <div className='space-y-2'>
             <Textarea
-              variant="bordered"
+              variant='bordered'
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
               minRows={1}
               maxRows={4}
-              size="sm"
+              size='sm'
               classNames={{
                 input: 'text-sm',
                 inputWrapper: 'bg-background/50',
@@ -673,18 +673,18 @@ export function MessageBubble({
               }}
               autoFocus
             />
-            <div className="flex gap-1">
+            <div className='flex gap-1'>
               <Button
-                size="sm"
-                color="primary"
-                variant="solid"
+                size='sm'
+                color='primary'
+                variant='solid'
                 onPress={handleSaveEdit}
               >
                 Save
               </Button>
               <Button
-                size="sm"
-                variant="flat"
+                size='sm'
+                variant='flat'
                 onPress={() => {
                   setEditing(false);
                   setEditContent(message.content);
@@ -714,10 +714,10 @@ export function MessageBubble({
           </>
         )}
 
-        <div className="text-xs mt-1 text-default-400 flex items-center gap-1">
+        <div className='text-xs mt-1 text-default-400 flex items-center gap-1'>
           <span>
             {time}
-            {message.edited_at && <span className="ml-1">(edited)</span>}
+            {message.edited_at && <span className='ml-1'>(edited)</span>}
           </span>
           {isOwn &&
             !editing &&
@@ -743,15 +743,15 @@ export function MessageBubble({
               return (
                 <Tooltip
                   content={
-                    <span className="whitespace-pre-line text-xs">
+                    <span className='whitespace-pre-line text-xs'>
                       {tooltipContent}
                     </span>
                   }
-                  placement="top"
+                  placement='top'
                   delay={200}
                 >
-                  <span className="text-primary/70 cursor-default">
-                    <FontAwesomeIcon icon={faEye} className="text-[10px]" />
+                  <span className='text-primary/70 cursor-default'>
+                    <FontAwesomeIcon icon={faEye} className='text-[10px]' />
                   </span>
                 </Tooltip>
               );
@@ -783,17 +783,17 @@ export function MessageBubble({
             className={`absolute -bottom-2 -right-3 ${menuOpen ? 'block' : 'hidden group-hover:block'}`}
           >
             <Dropdown
-              placement="bottom-end"
+              placement='bottom-end'
               isOpen={menuOpen}
               onOpenChange={setMenuOpen}
             >
               <DropdownTrigger>
-                <button className="w-6 h-6 rounded-full bg-content1 border border-divider flex items-center justify-center text-xs hover:bg-content2 text-foreground shadow-sm">
+                <button className='w-6 h-6 rounded-full bg-content1 border border-divider flex items-center justify-center text-xs hover:bg-content2 text-foreground shadow-sm'>
                   <FontAwesomeIcon icon={faEllipsis} />
                 </button>
               </DropdownTrigger>
               <DropdownMenu
-                aria-label="Message actions"
+                aria-label='Message actions'
                 onAction={(key) => {
                   if (key === 'edit') {
                     setEditContent(message.content);
@@ -805,16 +805,16 @@ export function MessageBubble({
               >
                 {!message.file_id ? (
                   <DropdownItem
-                    key="edit"
+                    key='edit'
                     startContent={<FontAwesomeIcon icon={faPencil} />}
                   >
                     Edit
                   </DropdownItem>
                 ) : null}
                 <DropdownItem
-                  key="delete"
-                  className="text-danger"
-                  color="danger"
+                  key='delete'
+                  className='text-danger'
+                  color='danger'
                   startContent={<FontAwesomeIcon icon={faTrashCan} />}
                 >
                   Delete

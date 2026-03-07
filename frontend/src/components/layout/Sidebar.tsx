@@ -20,7 +20,7 @@ export function Sidebar({
     <>
       {open && (
         <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          className='fixed inset-0 bg-black/50 z-30 md:hidden'
           onClick={onClose}
         />
       )}
@@ -29,10 +29,10 @@ export function Sidebar({
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="p-4 border-b border-default-100">
-          <h1 className="text-xl font-bold text-foreground">Chat</h1>
+        <div className='p-4 border-b border-default-100'>
+          <h1 className='text-xl font-bold text-foreground'>Chat</h1>
         </div>
-        <div className="flex-1 overflow-y-auto p-2">
+        <div className='flex-1 overflow-y-auto p-2'>
           <ChannelList
             onCreateChannel={onCreateChannel}
             onBrowseChannels={onBrowseChannels}

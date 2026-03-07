@@ -24,7 +24,7 @@ export function NewSidebar({
     <>
       {open && (
         <div
-          className="fixed inset-0 bg-black/50 z-30 md:hidden"
+          className='fixed inset-0 bg-black/50 z-30 md:hidden'
           onClick={onClose}
         />
       )}
@@ -34,7 +34,7 @@ export function NewSidebar({
         }`}
       >
         <IconRail onBrowseSpaces={onBrowseSpaces} />
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className='flex-1 flex flex-col overflow-hidden'>
           <SidePanel
             onCreateConversation={onCreateConversation}
             onCreateChannel={onCreateChannel}

@@ -23,7 +23,7 @@ export function OnlineStatusDot({
 
   if (!isOnline && lastSeen) {
     return (
-      <Tooltip content={`Last seen ${relativeTime(lastSeen)}`} size="sm">
+      <Tooltip content={`Last seen ${relativeTime(lastSeen)}`} size='sm'>
         {dot}
       </Tooltip>
     );

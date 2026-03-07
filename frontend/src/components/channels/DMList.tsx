@@ -34,17 +34,17 @@ export function DMList({ onStartDM, onSelect }: Props) {
   };
 
   return (
-    <div className="mb-4">
-      <div className="flex items-center justify-between px-3 py-2">
-        <h3 className="text-xs font-semibold text-default-500 uppercase tracking-wider">
+    <div className='mb-4'>
+      <div className='flex items-center justify-between px-3 py-2'>
+        <h3 className='text-xs font-semibold text-default-500 uppercase tracking-wider'>
           Direct Messages
         </h3>
         <Button
           isIconOnly
-          variant="light"
-          size="sm"
+          variant='light'
+          size='sm'
           onPress={onStartDM}
-          title="New direct message"
+          title='New direct message'
         >
           +
         </Button>

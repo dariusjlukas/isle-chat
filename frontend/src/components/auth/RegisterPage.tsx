@@ -233,50 +233,50 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
     registrationMode === 'invite' || registrationMode === 'approval';
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background">
+    <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
       <img
         src={logoLarge}
-        alt="Isle Chat"
-        className="w-24 h-24 mb-4 dark:hidden"
+        alt='Isle Chat'
+        className='w-24 h-24 mb-4 dark:hidden'
       />
       <img
         src={logoLargeDark}
-        alt="Isle Chat"
-        className="w-24 h-24 mb-4 hidden dark:block"
+        alt='Isle Chat'
+        className='w-24 h-24 mb-4 hidden dark:block'
       />
-      <Card className="w-full max-w-md mx-4 sm:mx-auto shadow-2xl">
-        <CardBody className="p-5 sm:p-8">
-          <h1 className="text-3xl font-bold text-foreground mb-2">Register</h1>
-          <p className="text-default-500 mb-6">Create your account</p>
+      <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
+        <CardBody className='p-5 sm:p-8'>
+          <h1 className='text-3xl font-bold text-foreground mb-2'>Register</h1>
+          <p className='text-default-500 mb-6'>Create your account</p>
 
           {error && (
-            <Alert color="danger" variant="flat" className="mb-4">
+            <Alert color='danger' variant='flat' className='mb-4'>
               {error}
             </Alert>
           )}
 
           {configLoading ? (
-            <div className="flex justify-center py-4">
-              <Spinner size="sm" />
+            <div className='flex justify-center py-4'>
+              <Spinner size='sm' />
             </div>
           ) : phase === 'waiting' ? (
-            <div className="text-center space-y-4 py-4">
-              <Spinner size="lg" />
-              <p className="text-foreground font-medium">
+            <div className='text-center space-y-4 py-4'>
+              <Spinner size='lg' />
+              <p className='text-foreground font-medium'>
                 Waiting for admin approval...
               </p>
-              <p className="text-sm text-default-500">
+              <p className='text-sm text-default-500'>
                 Your request has been submitted. This page will automatically
                 sign you in once an admin approves your request.
               </p>
               <Button
-                variant="light"
-                color="default"
+                variant='light'
+                color='default'
                 onPress={() => {
                   if (pollRef.current) clearInterval(pollRef.current);
                   setPhase('form');
                 }}
-                size="sm"
+                size='sm'
               >
                 Cancel
               </Button>
@@ -287,51 +287,51 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
                 <Tabs
                   selectedKey={selectedMethod}
                   onSelectionChange={(key) => setSelectedMethod(key as string)}
-                  className="mb-4"
-                  color="primary"
-                  variant="bordered"
+                  className='mb-4'
+                  color='primary'
+                  variant='bordered'
                   fullWidth
                 >
-                  <Tab key="passkey" title="Passkey" />
-                  <Tab key="pki" title="Browser Key" />
+                  <Tab key='passkey' title='Passkey' />
+                  <Tab key='pki' title='Browser Key' />
                 </Tabs>
               )}
 
-              <form onSubmit={handleDirectRegister} className="space-y-4">
+              <form onSubmit={handleDirectRegister} className='space-y-4'>
                 <Input
-                  label="Username"
-                  variant="bordered"
+                  label='Username'
+                  variant='bordered'
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="johndoe"
+                  placeholder='johndoe'
                 />
                 <Input
-                  label="Display Name"
-                  variant="bordered"
+                  label='Display Name'
+                  variant='bordered'
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="John Doe"
+                  placeholder='John Doe'
                 />
 
                 {canDirectRegister && registrationMode === 'invite' && (
                   <Input
-                    label="Invite Token"
-                    description="Not needed for first user"
-                    variant="bordered"
+                    label='Invite Token'
+                    description='Not needed for first user'
+                    variant='bordered'
                     value={inviteToken}
                     onChange={(e) => setInviteToken(e.target.value)}
-                    placeholder="Paste invite token here"
+                    placeholder='Paste invite token here'
                   />
                 )}
 
                 {canDirectRegister && (
                   <Button
-                    type="submit"
-                    color="primary"
+                    type='submit'
+                    color='primary'
                     fullWidth
                     isLoading={loading}
                     isDisabled={loading}
-                    size="lg"
+                    size='lg'
                   >
                     {loading
                       ? 'Creating account...'
@@ -343,7 +343,7 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
 
                 {canRequestAccess && (
                   <Button
-                    type="button"
+                    type='button'
                     color={canDirectRegister ? 'default' : 'primary'}
                     variant={canDirectRegister ? 'bordered' : 'solid'}
                     fullWidth
@@ -357,19 +357,19 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
                 )}
               </form>
 
-              <p className="mt-4 text-center text-sm text-default-500">
+              <p className='mt-4 text-center text-sm text-default-500'>
                 {selectedMethod === 'pki'
                   ? 'A cryptographic key will be generated and stored securely in your browser.'
                   : 'A passkey will be created and stored securely by your device.'}
               </p>
 
               <Button
-                variant="light"
-                color="primary"
+                variant='light'
+                color='primary'
                 fullWidth
                 onPress={onSwitchToLogin}
-                className="mt-4"
-                size="sm"
+                className='mt-4'
+                size='sm'
               >
                 Already registered? Sign in
               </Button>

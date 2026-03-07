@@ -21,7 +21,7 @@ export function SidePanel({
 
   if (!activeView) {
     return (
-      <div className="flex-1 flex items-center justify-center text-default-400 text-sm p-4 text-center">
+      <div className='flex-1 flex items-center justify-center text-default-400 text-sm p-4 text-center'>
         Select a space or messages
       </div>
     );

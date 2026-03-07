@@ -126,73 +126,73 @@ export function SpaceSettings({ space, onClose }: Props) {
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      size="3xl"
-      scrollBehavior="inside"
-      backdrop="opaque"
+      size='3xl'
+      scrollBehavior='inside'
+      backdrop='opaque'
     >
       <ModalContent>
         <ModalHeader>
           Space Settings —{' '}
-          {space.icon && <span className="mr-1">{space.icon}</span>}
+          {space.icon && <span className='mr-1'>{space.icon}</span>}
           {space.name}
         </ModalHeader>
-        <ModalBody className="pb-6">
-          <Tabs color="primary" classNames={{ tabList: 'bg-content2' }}>
+        <ModalBody className='pb-6'>
+          <Tabs color='primary' classNames={{ tabList: 'bg-content2' }}>
             {canManage && (
-              <Tab key="settings" title="Settings">
-                <div className="space-y-4 pt-2">
+              <Tab key='settings' title='Settings'>
+                <div className='space-y-4 pt-2'>
                   <Input
-                    label="Space Name"
-                    variant="bordered"
+                    label='Space Name'
+                    variant='bordered'
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                   />
                   <Input
-                    label="Description"
-                    variant="bordered"
+                    label='Description'
+                    variant='bordered'
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />
                   <Input
-                    label="Icon"
-                    description="Emoji or short text"
-                    variant="bordered"
+                    label='Icon'
+                    description='Emoji or short text'
+                    variant='bordered'
                     value={icon}
                     onChange={(e) => setIcon(e.target.value)}
                     maxLength={10}
                   />
-                  <div className="flex items-center justify-between">
+                  <div className='flex items-center justify-between'>
                     <div>
-                      <p className="text-sm font-medium text-foreground">
+                      <p className='text-sm font-medium text-foreground'>
                         Public Space
                       </p>
-                      <p className="text-xs text-default-400">
+                      <p className='text-xs text-default-400'>
                         {isPublic ? 'Anyone can find and join' : 'Invite only'}
                       </p>
                     </div>
                     <Switch
                       isSelected={isPublic}
                       onValueChange={setIsPublic}
-                      size="sm"
+                      size='sm'
                     />
                   </div>
                   <Select
-                    label="Default Role for New Members"
-                    variant="bordered"
+                    label='Default Role for New Members'
+                    variant='bordered'
                     selectedKeys={[defaultRole]}
                     onChange={(e) =>
                       setDefaultRole(e.target.value as ChannelRole)
                     }
                   >
-                    <SelectItem key="write">
+                    <SelectItem key='write'>
                       Write (can send messages)
                     </SelectItem>
-                    <SelectItem key="read">
+                    <SelectItem key='read'>
                       Read Only (can view only)
                     </SelectItem>
                   </Select>
                   <Button
-                    color="primary"
+                    color='primary'
                     onPress={handleSave}
                     isLoading={saving}
                   >
@@ -202,23 +202,23 @@ export function SpaceSettings({ space, onClose }: Props) {
               </Tab>
             )}
 
-            <Tab key="members" title={`Members (${space.members.length})`}>
-              <div className="space-y-2 pt-2">
+            <Tab key='members' title={`Members (${space.members.length})`}>
+              <div className='space-y-2 pt-2'>
                 {space.members.map((m) => (
                   <div
                     key={m.id}
-                    className="flex items-center justify-between p-2 rounded-lg bg-content1"
+                    className='flex items-center justify-between p-2 rounded-lg bg-content1'
                   >
                     <UserPopoverCard userId={m.id}>
-                      <div className="flex items-center gap-2 min-w-0 cursor-pointer">
+                      <div className='flex items-center gap-2 min-w-0 cursor-pointer'>
                         <OnlineStatusDot
                           isOnline={m.is_online}
                           lastSeen={m.last_seen}
                         />
-                        <span className="text-sm truncate hover:underline">
+                        <span className='text-sm truncate hover:underline'>
                           {m.display_name}
                         </span>
-                        <span className="text-xs text-default-400">
+                        <span className='text-xs text-default-400'>
                           @{m.username}
                         </span>
                       </div>
@@ -235,16 +235,16 @@ export function SpaceSettings({ space, onClose }: Props) {
                         { key: 'read', label: 'Read', rank: 0 },
                       ].filter((r) => r.rank <= actorRank);
                       return canEditMember ? (
-                        <div className="flex items-center gap-2 flex-shrink-0">
+                        <div className='flex items-center gap-2 flex-shrink-0'>
                           <Select
-                            size="sm"
-                            variant="bordered"
-                            className="w-28"
+                            size='sm'
+                            variant='bordered'
+                            className='w-28'
                             selectedKeys={[m.role]}
                             onChange={(e) =>
                               handleChangeRole(m.id, e.target.value)
                             }
-                            aria-label="Role"
+                            aria-label='Role'
                             items={roleItems}
                           >
                             {(item) => (
@@ -255,9 +255,9 @@ export function SpaceSettings({ space, onClose }: Props) {
                           </Select>
                           {!isSelf && (
                             <Button
-                              size="sm"
-                              variant="flat"
-                              color="danger"
+                              size='sm'
+                              variant='flat'
+                              color='danger'
                               onPress={() => handleKick(m)}
                             >
                               Kick
@@ -265,7 +265,7 @@ export function SpaceSettings({ space, onClose }: Props) {
                           )}
                         </div>
                       ) : (
-                        <span className="text-xs text-default-400 flex-shrink-0 capitalize">
+                        <span className='text-xs text-default-400 flex-shrink-0 capitalize'>
                           {m.role}
                         </span>
                       );
@@ -276,28 +276,28 @@ export function SpaceSettings({ space, onClose }: Props) {
             </Tab>
 
             {canManage && (
-              <Tab key="invite" title="Invite">
-                <div className="space-y-4 pt-2">
+              <Tab key='invite' title='Invite'>
+                <div className='space-y-4 pt-2'>
                   <UserPicker
-                    mode="single"
+                    mode='single'
                     selected={inviteUserId}
                     onChange={setInviteUserId}
                     excludeIds={memberIds}
-                    label="Select user"
-                    placeholder="Search users..."
+                    label='Select user'
+                    placeholder='Search users...'
                   />
                   <Select
-                    label="Role"
-                    variant="bordered"
+                    label='Role'
+                    variant='bordered'
                     selectedKeys={[inviteRole]}
                     onChange={(e) => setInviteRole(e.target.value)}
                   >
-                    <SelectItem key="admin">Admin</SelectItem>
-                    <SelectItem key="write">Write</SelectItem>
-                    <SelectItem key="read">Read Only</SelectItem>
+                    <SelectItem key='admin'>Admin</SelectItem>
+                    <SelectItem key='write'>Write</SelectItem>
+                    <SelectItem key='read'>Read Only</SelectItem>
                   </Select>
                   <Button
-                    color="primary"
+                    color='primary'
                     onPress={handleInvite}
                     isLoading={inviting}
                     isDisabled={inviteUserId.length === 0}
@@ -305,24 +305,24 @@ export function SpaceSettings({ space, onClose }: Props) {
                     Send Invite
                   </Button>
                   {inviteSent && (
-                    <p className="text-xs text-success">
+                    <p className='text-xs text-success'>
                       Invite sent successfully!
                     </p>
                   )}
                   {inviteError && (
-                    <p className="text-xs text-danger">{inviteError}</p>
+                    <p className='text-xs text-danger'>{inviteError}</p>
                   )}
                 </div>
               </Tab>
             )}
           </Tabs>
 
-          <div className="border-t border-divider pt-4 mt-2 space-y-3">
-            {leaveError && <p className="text-xs text-danger">{leaveError}</p>}
-            <div className="flex gap-2">
+          <div className='border-t border-divider pt-4 mt-2 space-y-3'>
+            {leaveError && <p className='text-xs text-danger'>{leaveError}</p>}
+            <div className='flex gap-2'>
               <Button
-                variant="flat"
-                color="warning"
+                variant='flat'
+                color='warning'
                 onPress={async () => {
                   try {
                     setLeaveError(null);
@@ -339,8 +339,8 @@ export function SpaceSettings({ space, onClose }: Props) {
               </Button>
               {canManage && !space.is_archived && (
                 <Button
-                  variant="flat"
-                  color="danger"
+                  variant='flat'
+                  color='danger'
                   onPress={async () => {
                     if (
                       !confirm(
@@ -364,8 +364,8 @@ export function SpaceSettings({ space, onClose }: Props) {
               )}
               {canManage && space.is_archived && (
                 <Button
-                  variant="flat"
-                  color="success"
+                  variant='flat'
+                  color='success'
                   onPress={async () => {
                     try {
                       await api.unarchiveSpace(space.id);

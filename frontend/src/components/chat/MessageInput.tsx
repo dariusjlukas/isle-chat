@@ -293,63 +293,63 @@ export function MessageInput({
   }, []);
 
   return (
-    <div className="border-t border-default-100 p-2 sm:p-4">
+    <div className='border-t border-default-100 p-2 sm:p-4'>
       {selectedFile && (
-        <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-content2 rounded-lg text-sm">
+        <div className='flex items-center gap-2 mb-2 px-2 py-1.5 bg-content2 rounded-lg text-sm'>
           <FontAwesomeIcon
             icon={faPaperclip}
-            className="text-default-400 text-xs"
+            className='text-default-400 text-xs'
           />
-          <span className="truncate flex-1">{selectedFile.name}</span>
-          <span className="text-default-400 text-xs">
+          <span className='truncate flex-1'>{selectedFile.name}</span>
+          <span className='text-default-400 text-xs'>
             {formatFileSize(selectedFile.size)}
           </span>
           <button
             onClick={removeFile}
-            className="text-default-400 hover:text-danger"
+            className='text-default-400 hover:text-danger'
           >
             <FontAwesomeIcon icon={faXmark} />
           </button>
         </div>
       )}
       {uploadError && (
-        <div className="mb-2 px-2 py-1.5 bg-danger-50 dark:bg-danger-50/10 text-danger text-sm rounded-lg">
+        <div className='mb-2 px-2 py-1.5 bg-danger-50 dark:bg-danger-50/10 text-danger text-sm rounded-lg'>
           {uploadError}
         </div>
       )}
       {isUploading && (
-        <div className="mb-2 px-2">
+        <div className='mb-2 px-2'>
           <Progress
-            size="sm"
+            size='sm'
             value={uploadProgress}
-            color="primary"
-            label="Uploading..."
+            color='primary'
+            label='Uploading...'
             showValueLabel
             classNames={{ label: 'text-xs', value: 'text-xs' }}
           />
         </div>
       )}
-      <div className="flex gap-2 items-end">
+      <div className='flex gap-2 items-end'>
         <input
           ref={fileInputRef}
-          type="file"
-          className="hidden"
+          type='file'
+          className='hidden'
           onChange={handleFileSelect}
         />
-        <div className="flex items-end">
-          <Tooltip content="Attach file" placement="top" delay={400}>
+        <div className='flex items-end'>
+          <Tooltip content='Attach file' placement='top' delay={400}>
             <Button
               isIconOnly
-              variant="light"
-              size="sm"
+              variant='light'
+              size='sm'
               onPress={() => fileInputRef.current?.click()}
               isDisabled={isUploading}
-              className="mb-1"
+              className='mb-1'
             >
               <FontAwesomeIcon icon={faPaperclip} />
             </Button>
           </Tooltip>
-          <div className="relative">
+          <div className='relative'>
             {emojiPickerOpen && (
               <EmojiPickerPopup
                 onSelect={(emoji) => {
@@ -359,21 +359,21 @@ export function MessageInput({
                 onClose={() => setEmojiPickerOpen(false)}
               />
             )}
-            <Tooltip content="Emoji" placement="top" delay={400}>
+            <Tooltip content='Emoji' placement='top' delay={400}>
               <Button
                 isIconOnly
-                variant="light"
-                size="sm"
+                variant='light'
+                size='sm'
                 onPress={() => setEmojiPickerOpen((o) => !o)}
                 isDisabled={isUploading}
-                className="mb-1"
+                className='mb-1'
               >
                 <FontAwesomeIcon icon={faFaceSmile} />
               </Button>
             </Tooltip>
           </div>
         </div>
-        <div className="flex-1 relative">
+        <div className='flex-1 relative'>
           {mentionState && (
             <MentionAutocomplete
               query={mentionState.query}
@@ -383,12 +383,12 @@ export function MessageInput({
               selectedIndex={selectedIndex}
             />
           )}
-          <div className="relative">
+          <div className='relative'>
             <div
               ref={editorRef}
               contentEditable={!isUploading}
-              role="textbox"
-              aria-multiline="true"
+              role='textbox'
+              aria-multiline='true'
               data-placeholder={
                 selectedFile
                   ? 'Add a message (optional)...'
@@ -402,7 +402,7 @@ export function MessageInput({
               suppressContentEditableWarning
             />
             {isEmpty && (
-              <div className="absolute top-0 left-0 px-3 py-2 text-sm text-default-400 pointer-events-none select-none">
+              <div className='absolute top-0 left-0 px-3 py-2 text-sm text-default-400 pointer-events-none select-none'>
                 {selectedFile
                   ? 'Add a message (optional)...'
                   : 'Type a message...'}
@@ -411,7 +411,7 @@ export function MessageInput({
           </div>
         </div>
         <Button
-          color="primary"
+          color='primary'
           isDisabled={(isEmpty && !selectedFile) || isUploading}
           onPress={handleSubmit}
         >

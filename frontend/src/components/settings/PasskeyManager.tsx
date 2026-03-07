@@ -63,38 +63,38 @@ export function PasskeyManager() {
 
   if (loading)
     return (
-      <div className="flex justify-center py-4">
-        <Spinner size="sm" />
+      <div className='flex justify-center py-4'>
+        <Spinner size='sm' />
       </div>
     );
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-lg font-semibold text-foreground">Passkeys</h3>
+    <div className='space-y-4'>
+      <h3 className='text-lg font-semibold text-foreground'>Passkeys</h3>
 
       {error && (
-        <Alert color="danger" variant="flat">
+        <Alert color='danger' variant='flat'>
           {error}
         </Alert>
       )}
 
-      <div className="space-y-2">
+      <div className='space-y-2'>
         {passkeys.map((passkey) => (
           <Card key={passkey.id}>
-            <CardBody className="flex-row items-center justify-between py-2">
+            <CardBody className='flex-row items-center justify-between py-2'>
               <div>
-                <div className="text-sm text-foreground">
+                <div className='text-sm text-foreground'>
                   {passkey.device_name}
                 </div>
-                <div className="text-xs text-default-500">
+                <div className='text-xs text-default-500'>
                   Added {new Date(passkey.created_at).toLocaleDateString()}
                 </div>
               </div>
               {passkeys.length > 1 && (
                 <Button
-                  color="danger"
-                  variant="light"
-                  size="sm"
+                  color='danger'
+                  variant='light'
+                  size='sm'
                   onPress={() => handleRemovePasskey(passkey.id)}
                 >
                   Remove
@@ -106,7 +106,7 @@ export function PasskeyManager() {
       </div>
 
       <Button
-        color="primary"
+        color='primary'
         fullWidth
         onPress={handleAddPasskey}
         isLoading={adding}

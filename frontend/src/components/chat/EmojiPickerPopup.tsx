@@ -24,13 +24,13 @@ export function EmojiPickerPopup({ onSelect, onClose }: Props) {
   }, [onClose]);
 
   return (
-    <div ref={containerRef} className="absolute bottom-full left-0 mb-2 z-50">
+    <div ref={containerRef} className='absolute bottom-full left-0 mb-2 z-50'>
       <Picker
         data={data}
         onEmojiSelect={(emoji: { native: string }) => onSelect(emoji.native)}
-        theme="auto"
-        previewPosition="none"
-        skinTonePosition="search"
+        theme='auto'
+        previewPosition='none'
+        skinTonePosition='search'
         maxFrequentRows={2}
       />
     </div>

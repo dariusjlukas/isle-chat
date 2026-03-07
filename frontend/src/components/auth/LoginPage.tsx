@@ -94,52 +94,52 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   const webauthnSupported = browserSupportsWebAuthn();
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background">
+    <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
       <img
         src={logoLarge}
         alt={serverName}
-        className="w-24 h-24 mb-4 dark:hidden"
+        className='w-24 h-24 mb-4 dark:hidden'
       />
       <img
         src={logoLargeDark}
         alt={serverName}
-        className="w-24 h-24 mb-4 hidden dark:block"
+        className='w-24 h-24 mb-4 hidden dark:block'
       />
-      <Card className="w-full max-w-md mx-4 sm:mx-auto shadow-2xl">
-        <CardBody className="p-5 sm:p-8">
-          <h1 className="text-3xl font-bold text-foreground mb-2">
+      <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
+        <CardBody className='p-5 sm:p-8'>
+          <h1 className='text-3xl font-bold text-foreground mb-2'>
             {serverName}
           </h1>
-          <p className="text-default-500 mb-6">Sign in to continue</p>
+          <p className='text-default-500 mb-6'>Sign in to continue</p>
 
           {error && (
-            <Alert color="danger" variant="flat" className="mb-4">
+            <Alert color='danger' variant='flat' className='mb-4'>
               {error}
             </Alert>
           )}
 
           {serverDown ? (
-            <Alert color="danger" variant="flat" className="mb-4">
+            <Alert color='danger' variant='flat' className='mb-4'>
               Unable to reach the server. Retrying...
             </Alert>
           ) : configLoading ? (
-            <div className="text-center text-default-500 py-4">Loading...</div>
+            <div className='text-center text-default-500 py-4'>Loading...</div>
           ) : (
-            <div className="space-y-3">
+            <div className='space-y-3'>
               {passkeysEnabled && (
                 <>
                   {!webauthnSupported ? (
-                    <Alert color="warning" variant="flat">
+                    <Alert color='warning' variant='flat'>
                       Your browser does not support passkeys.
                     </Alert>
                   ) : (
                     <Button
-                      color="primary"
+                      color='primary'
                       fullWidth
                       isLoading={loading === 'passkey'}
                       isDisabled={!!loading}
                       onPress={handlePasskeyLogin}
-                      size="lg"
+                      size='lg'
                     >
                       {loading === 'passkey'
                         ? 'Authenticating...'
@@ -151,12 +151,12 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
 
               {pkiEnabled && hasLocalKey && (
                 <Button
-                  color="secondary"
+                  color='secondary'
                   fullWidth
                   isLoading={loading === 'pki'}
                   isDisabled={!!loading}
                   onPress={handlePkiLogin}
-                  size="lg"
+                  size='lg'
                 >
                   {loading === 'pki'
                     ? 'Authenticating...'
@@ -165,33 +165,33 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
               )}
 
               {pkiEnabled && !hasLocalKey && (
-                <p className="text-sm text-default-400 text-center">
+                <p className='text-sm text-default-400 text-center'>
                   No browser key on this device
                 </p>
               )}
             </div>
           )}
 
-          <Divider className="my-4" />
+          <Divider className='my-4' />
 
-          <div className="flex flex-col gap-2 text-center">
+          <div className='flex flex-col gap-2 text-center'>
             <Button
-              variant="light"
-              color="primary"
+              variant='light'
+              color='primary'
               fullWidth
               onPress={onSwitchToRegister}
               isDisabled={serverDown || configLoading}
-              size="sm"
+              size='sm'
             >
               Create an account
             </Button>
             <Button
-              variant="light"
-              color="default"
+              variant='light'
+              color='default'
               fullWidth
               onPress={onSwitchToRecovery}
               isDisabled={serverDown || configLoading}
-              size="sm"
+              size='sm'
             >
               Use a recovery key
             </Button>

@@ -54,38 +54,38 @@ export function RecoveryTokenManager() {
 
   return (
     <div>
-      <div className="mb-4">
+      <div className='mb-4'>
         <UserPicker
-          mode="single"
+          mode='single'
           selected={selectedUserId}
           onChange={setSelectedUserId}
-          label="Select user"
-          placeholder="Search users..."
+          label='Select user'
+          placeholder='Search users...'
         />
         <Button
-          color="primary"
-          size="sm"
+          color='primary'
+          size='sm'
           isLoading={loading}
           isDisabled={selectedUserId.length === 0}
           onPress={handleCreate}
-          className="mt-2"
+          className='mt-2'
         >
           Generate
         </Button>
       </div>
 
-      <div className="space-y-2">
+      <div className='space-y-2'>
         {tokens.map((t) => (
           <Card key={t.id} className={t.used ? 'opacity-50' : ''}>
-            <CardBody className="flex-row items-center justify-between py-3">
+            <CardBody className='flex-row items-center justify-between py-3'>
               <div>
-                <p className="text-sm text-default-700">
-                  For <span className="font-medium">{t.for_user}</span>
+                <p className='text-sm text-default-700'>
+                  For <span className='font-medium'>{t.for_user}</span>
                 </p>
-                <code className="text-xs text-success font-mono">
+                <code className='text-xs text-success font-mono'>
                   {t.token.substring(0, 16)}...
                 </code>
-                <p className="text-xs text-default-500 mt-1">
+                <p className='text-xs text-default-500 mt-1'>
                   {t.used
                     ? 'Used'
                     : `Expires: ${new Date(t.expires_at).toLocaleString()}`}
@@ -93,9 +93,9 @@ export function RecoveryTokenManager() {
               </div>
               {!t.used && (
                 <Button
-                  variant="light"
-                  color="primary"
-                  size="sm"
+                  variant='light'
+                  color='primary'
+                  size='sm'
                   onPress={() => copyToken(t.token)}
                 >
                   Copy
@@ -105,7 +105,7 @@ export function RecoveryTokenManager() {
           </Card>
         ))}
         {tokens.length === 0 && (
-          <p className="text-default-500 text-sm">
+          <p className='text-default-500 text-sm'>
             No recovery tokens generated yet.
           </p>
         )}
