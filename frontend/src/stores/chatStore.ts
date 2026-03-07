@@ -3,6 +3,7 @@ import type {
   User,
   Channel,
   Message,
+  Reaction,
   Space,
   SpaceInvite,
   SidebarView,
@@ -85,6 +86,17 @@ interface ChatState {
   removeSpaceInvite: (inviteId: string) => void;
   setJumpToMessage: (channelId: string, messageId: string) => void;
   clearJumpToMessage: () => void;
+  addReaction: (
+    channelId: string,
+    messageId: string,
+    reaction: Reaction,
+  ) => void;
+  removeReaction: (
+    channelId: string,
+    messageId: string,
+    emoji: string,
+    userId: string,
+  ) => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -335,4 +347,47 @@ export const useChatStore = create<ChatState>((set) => ({
 
   clearJumpToMessage: () =>
     set({ jumpToChannelId: null, jumpToMessageId: null }),
+
+  addReaction: (channelId, messageId, reaction) =>
+    set((state) => {
+      const msgs = state.messages[channelId];
+      if (!msgs) return state;
+      return {
+        messages: {
+          ...state.messages,
+          [channelId]: msgs.map((m) => {
+            if (m.id !== messageId) return m;
+            const existing = m.reactions || [];
+            if (
+              existing.some(
+                (r) =>
+                  r.emoji === reaction.emoji && r.user_id === reaction.user_id,
+              )
+            )
+              return m;
+            return { ...m, reactions: [...existing, reaction] };
+          }),
+        },
+      };
+    }),
+
+  removeReaction: (channelId, messageId, emoji, userId) =>
+    set((state) => {
+      const msgs = state.messages[channelId];
+      if (!msgs) return state;
+      return {
+        messages: {
+          ...state.messages,
+          [channelId]: msgs.map((m) => {
+            if (m.id !== messageId) return m;
+            return {
+              ...m,
+              reactions: (m.reactions || []).filter(
+                (r) => !(r.emoji === emoji && r.user_id === userId),
+              ),
+            };
+          }),
+        },
+      };
+    }),
 }));

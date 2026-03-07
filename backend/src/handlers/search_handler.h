@@ -247,6 +247,11 @@ struct SearchHandler {
 
             try {
                 auto msgs = db.get_messages_around(channel_id, message_id, limit);
+
+                std::vector<std::string> msg_ids;
+                for (const auto& msg : msgs) msg_ids.push_back(msg.id);
+                auto reactions_map = db.get_reactions_for_messages(msg_ids);
+
                 json arr = json::array();
                 for (const auto& msg : msgs) {
                     json j = {{"id", msg.id}, {"channel_id", msg.channel_id},
@@ -259,6 +264,14 @@ struct SearchHandler {
                         j["file_name"] = msg.file_name;
                         j["file_size"] = msg.file_size;
                         j["file_type"] = msg.file_type;
+                    }
+                    auto it = reactions_map.find(msg.id);
+                    if (it != reactions_map.end() && !it->second.empty()) {
+                        json rarr = json::array();
+                        for (const auto& r : it->second) {
+                            rarr.push_back({{"emoji", r.emoji}, {"user_id", r.user_id}, {"username", r.username}});
+                        }
+                        j["reactions"] = rarr;
                     }
                     arr.push_back(j);
                 }

@@ -52,6 +52,12 @@ export type SidebarView =
   | { type: 'space'; spaceId: string }
   | { type: 'messages' };
 
+export interface Reaction {
+  emoji: string;
+  user_id: string;
+  username: string;
+}
+
 export interface Message {
   id: string;
   channel_id: string;
@@ -65,6 +71,7 @@ export interface Message {
   file_name?: string;
   file_size?: number;
   file_type?: string;
+  reactions?: Reaction[];
 }
 
 export interface ReadReceiptInfo {

@@ -23,6 +23,11 @@ test.beforeEach(async () => {
   await apiCreateSpaceChannel(space.id, "general", admin.token);
 });
 
+/** Helper to get the message input (contentEditable div) */
+function getMessageInput(page: import("@playwright/test").Page) {
+  return page.locator('[role="textbox"][aria-multiline="true"]');
+}
+
 test.describe("Channel navigation", () => {
   test("user can see channels in the sidebar", async ({ page }) => {
     await loginViaToken(page, admin.token);
@@ -55,8 +60,10 @@ test.describe("Sending messages", () => {
       .first()
       .click();
 
-    // Type a message
-    await page.getByPlaceholder("Type a message...").fill("Hello world!");
+    // Type a message into the contentEditable input
+    const input = getMessageInput(page);
+    await input.click();
+    await input.pressSequentially("Hello world!");
 
     // Send it
     await page.getByRole("button", { name: "Send" }).click();
@@ -67,7 +74,7 @@ test.describe("Sending messages", () => {
     });
 
     // Input should be cleared
-    await expect(page.getByPlaceholder("Type a message...")).toHaveValue("");
+    await expect(input).toHaveText("");
   });
 
   test("user can send a message with Enter key", async ({ page }) => {
@@ -78,8 +85,9 @@ test.describe("Sending messages", () => {
       .first()
       .click();
 
-    const input = page.getByPlaceholder("Type a message...");
-    await input.fill("Message via Enter");
+    const input = getMessageInput(page);
+    await input.click();
+    await input.pressSequentially("Message via Enter");
     await input.press("Enter");
 
     await expect(page.getByText("Message via Enter")).toBeVisible({
@@ -97,15 +105,16 @@ test.describe("Sending messages", () => {
       .first()
       .click();
 
-    const input = page.getByPlaceholder("Type a message...");
-    await input.fill("Line 1");
+    const input = getMessageInput(page);
+    await input.click();
+    await input.pressSequentially("Line 1");
     await input.press("Shift+Enter");
-    await input.type("Line 2");
+    await input.pressSequentially("Line 2");
 
-    // Message should NOT have been sent yet (textarea should still have content)
-    const value = await input.inputValue();
-    expect(value).toContain("Line 1");
-    expect(value).toContain("Line 2");
+    // Message should NOT have been sent yet (editor should still have content)
+    const text = await input.innerText();
+    expect(text).toContain("Line 1");
+    expect(text).toContain("Line 2");
   });
 
   test("multiple messages appear in order", async ({ page }) => {
@@ -117,9 +126,10 @@ test.describe("Sending messages", () => {
       .click();
 
     // Send multiple messages
-    const input = page.getByPlaceholder("Type a message...");
+    const input = getMessageInput(page);
     for (const msg of ["First message", "Second message", "Third message"]) {
-      await input.fill(msg);
+      await input.click();
+      await input.pressSequentially(msg);
       await input.press("Enter");
       await expect(page.getByText(msg)).toBeVisible({ timeout: 10_000 });
     }

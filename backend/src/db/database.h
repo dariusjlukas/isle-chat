@@ -1,6 +1,7 @@
 #pragma once
 #include <pqxx/pqxx>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <string>
@@ -114,6 +115,17 @@ public:
     Message delete_message(const std::string& message_id, const std::string& user_id);
     struct FileInfo { std::string file_name, file_type; };
     std::optional<FileInfo> get_file_info(const std::string& file_id);
+
+    // Reactions
+    struct Reaction { std::string emoji, user_id, username; };
+    void add_reaction(const std::string& message_id, const std::string& user_id,
+                      const std::string& emoji);
+    void remove_reaction(const std::string& message_id, const std::string& user_id,
+                         const std::string& emoji);
+    std::vector<Reaction> get_reactions(const std::string& message_id);
+    std::map<std::string, std::vector<Reaction>> get_reactions_for_messages(
+        const std::vector<std::string>& message_ids);
+    std::string get_message_channel_id(const std::string& message_id);
 
     // Read state / unread counts
     void update_read_state(const std::string& channel_id, const std::string& user_id,

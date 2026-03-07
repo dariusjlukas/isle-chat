@@ -61,6 +61,31 @@ export function useWebSocket() {
         useChatStore.getState().updateMessage(message);
       }),
 
+      wsService.on('reaction_added', (data: unknown) => {
+        const { message_id, channel_id, emoji, user_id, username } = data as {
+          message_id: string;
+          channel_id: string;
+          emoji: string;
+          user_id: string;
+          username: string;
+        };
+        useChatStore
+          .getState()
+          .addReaction(channel_id, message_id, { emoji, user_id, username });
+      }),
+
+      wsService.on('reaction_removed', (data: unknown) => {
+        const { message_id, channel_id, emoji, user_id } = data as {
+          message_id: string;
+          channel_id: string;
+          emoji: string;
+          user_id: string;
+        };
+        useChatStore
+          .getState()
+          .removeReaction(channel_id, message_id, emoji, user_id);
+      }),
+
       wsService.on('channel_added', (data: unknown) => {
         const { channel } = data as { channel: Channel };
         useChatStore.getState().addChannel(channel);
@@ -292,5 +317,21 @@ export function useWebSocket() {
     [],
   );
 
-  return { sendMessage, sendTyping, editMessage, deleteMessage, markRead };
+  const addReaction = useCallback((messageId: string, emoji: string) => {
+    wsService.send({ type: 'add_reaction', message_id: messageId, emoji });
+  }, []);
+
+  const removeReaction = useCallback((messageId: string, emoji: string) => {
+    wsService.send({ type: 'remove_reaction', message_id: messageId, emoji });
+  }, []);
+
+  return {
+    sendMessage,
+    sendTyping,
+    editMessage,
+    deleteMessage,
+    markRead,
+    addReaction,
+    removeReaction,
+  };
 }

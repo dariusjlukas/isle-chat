@@ -16,6 +16,8 @@ interface Props {
     messageId: string,
     timestamp: string,
   ) => void;
+  onAddReaction?: (messageId: string, emoji: string) => void;
+  onRemoveReaction?: (messageId: string, emoji: string) => void;
 }
 
 const EMPTY_MESSAGES: Array<import('../../types').Message> = [];
@@ -25,6 +27,8 @@ export function MessageList({
   onEditMessage,
   onDeleteMessage,
   onMarkRead,
+  onAddReaction,
+  onRemoveReaction,
 }: Props) {
   const storeMessages = useChatStore((s) => s.messages[channelId]);
   const messages = storeMessages ?? EMPTY_MESSAGES;
@@ -142,6 +146,8 @@ export function MessageList({
           message={msg}
           onEdit={onEditMessage}
           onDelete={onDeleteMessage}
+          onAddReaction={onAddReaction}
+          onRemoveReaction={onRemoveReaction}
         />
       ))}
       <TypingIndicator channelId={channelId} />

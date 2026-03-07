@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import {
   Button,
   Textarea,
@@ -25,14 +25,97 @@ import {
   faMagnifyingGlassMinus,
   faArrowsRotate,
   faEye,
+  faFaceSmile,
+  faPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Message } from '../../types';
+import type { Components } from 'react-markdown';
+import Picker from '@emoji-mart/react';
+import data from '@emoji-mart/data';
+import type { Message, Reaction, ChannelMemberInfo } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 import { getFileUrl, downloadFile } from '../../services/api';
 import { UserPopoverCard } from '../common/UserPopoverCard';
 import { formatFileSize } from '../../utils/format';
+
+const MENTION_RE = /@(\w[\w-]*)/g;
+
+function renderTextWithMentions(
+  text: string,
+  memberUsernames: Set<string>,
+): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  MENTION_RE.lastIndex = 0;
+  while ((match = MENTION_RE.exec(text)) !== null) {
+    const name = match[1];
+    const isMention = name === 'channel' || memberUsernames.has(name);
+    if (!isMention) continue;
+
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+
+    parts.push(
+      <span
+        key={match.index}
+        className="inline-flex items-center px-1.5 py-0.5 mx-0.5 rounded-full bg-primary/15 text-primary text-xs font-medium align-baseline"
+      >
+        @{name}
+      </span>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : [text];
+}
+
+function useMentionMarkdownComponents(
+  members: ChannelMemberInfo[],
+): Components {
+  return useMemo(() => {
+    const memberUsernames = new Set(members.map((m) => m.username));
+    return {
+      p: ({ children, ...props }) => (
+        <p {...props}>{processChildren(children, memberUsernames)}</p>
+      ),
+      li: ({ children, ...props }) => (
+        <li {...props}>{processChildren(children, memberUsernames)}</li>
+      ),
+    };
+  }, [members]);
+}
+
+function processChildren(
+  children: React.ReactNode,
+  memberUsernames: Set<string>,
+): React.ReactNode {
+  if (!children) return children;
+  if (typeof children === 'string') {
+    return renderTextWithMentions(children, memberUsernames);
+  }
+  if (Array.isArray(children)) {
+    return children.map((child, i) => {
+      if (typeof child === 'string') {
+        const parts = renderTextWithMentions(child, memberUsernames);
+        return parts.length === 1 && typeof parts[0] === 'string' ? (
+          child
+        ) : (
+          <span key={i}>{parts}</span>
+        );
+      }
+      return child;
+    });
+  }
+  return children;
+}
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 10;
@@ -351,21 +434,150 @@ function FileAttachment({
   );
 }
 
+interface GroupedReaction {
+  emoji: string;
+  users: { user_id: string; username: string }[];
+}
+
+function groupReactions(reactions: Reaction[]): GroupedReaction[] {
+  const map = new Map<string, { user_id: string; username: string }[]>();
+  for (const r of reactions) {
+    if (!map.has(r.emoji)) map.set(r.emoji, []);
+    map.get(r.emoji)!.push({ user_id: r.user_id, username: r.username });
+  }
+  return Array.from(map.entries()).map(([emoji, users]) => ({ emoji, users }));
+}
+
+function ReactionBadges({
+  reactions,
+  currentUserId,
+  onToggle,
+}: {
+  reactions: Reaction[];
+  currentUserId: string;
+  onToggle?: (emoji: string, hasReacted: boolean) => void;
+}) {
+  const grouped = useMemo(() => groupReactions(reactions), [reactions]);
+  if (grouped.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-1 mt-1 items-center">
+      {grouped.map((g) => {
+        const iReacted = g.users.some((u) => u.user_id === currentUserId);
+        const tooltipText = g.users.map((u) => u.username).join(', ');
+        return (
+          <Tooltip
+            key={g.emoji}
+            content={<span className="text-xs">{tooltipText}</span>}
+            placement="top"
+            delay={200}
+          >
+            <button
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs border transition-colors ${
+                iReacted
+                  ? 'bg-primary/15 border-primary/30 text-primary'
+                  : 'bg-content1 border-divider text-foreground hover:bg-content2'
+              }`}
+              onClick={() => onToggle?.(g.emoji, iReacted)}
+            >
+              <span>{g.emoji}</span>
+              <span>{g.users.length}</span>
+            </button>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+function AddReactionButton({ onAdd }: { onAdd: (emoji: string) => void }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [openAbove, setOpenAbove] = useState(true);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [pickerOpen]);
+
+  const togglePicker = useCallback(() => {
+    setPickerOpen((prev) => {
+      if (!prev && buttonRef.current) {
+        const rect = buttonRef.current.getBoundingClientRect();
+        // emoji-mart picker is roughly 435px tall
+        setOpenAbove(rect.top > 500);
+      }
+      return !prev;
+    });
+  }, []);
+
+  return (
+    <div className="relative" ref={pickerRef}>
+      {pickerOpen && (
+        <div
+          className={`absolute left-0 z-50 ${openAbove ? 'bottom-full mb-1' : 'top-full mt-1'}`}
+        >
+          <Picker
+            data={data}
+            onEmojiSelect={(emoji: { native: string }) => {
+              onAdd(emoji.native);
+              setPickerOpen(false);
+            }}
+            theme="auto"
+            previewPosition="none"
+            skinTonePosition="search"
+            maxFrequentRows={2}
+          />
+        </div>
+      )}
+      <button
+        ref={buttonRef}
+        className="inline-flex items-center gap-0.5 text-default-400 hover:text-foreground transition-colors"
+        onClick={togglePicker}
+      >
+        <FontAwesomeIcon icon={faFaceSmile} className="text-[10px]" />
+        <FontAwesomeIcon icon={faPlus} className="text-[8px]" />
+      </button>
+    </div>
+  );
+}
+
 interface Props {
   message: Message;
   onEdit?: (messageId: string, content: string) => void;
   onDelete?: (messageId: string) => void;
+  onAddReaction?: (messageId: string, emoji: string) => void;
+  onRemoveReaction?: (messageId: string, emoji: string) => void;
 }
 
-export function MessageBubble({ message, onEdit, onDelete }: Props) {
+export function MessageBubble({
+  message,
+  onEdit,
+  onDelete,
+  onAddReaction,
+  onRemoveReaction,
+}: Props) {
   const currentUser = useChatStore((s) => s.user);
   const isOwn = currentUser?.id === message.user_id;
   const receipts = useChatStore((s) => s.readReceipts[message.channel_id]);
   const users = useChatStore((s) => s.users);
+  const channels = useChatStore((s) => s.channels);
   const author = !isOwn ? users.find((u) => u.id === message.user_id) : null;
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState(message.content);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const activeChannel = channels.find((c) => c.id === message.channel_id);
+  const mentionComponents = useMentionMarkdownComponents(
+    activeChannel?.members || [],
+  );
 
   const time = new Date(message.created_at).toLocaleTimeString([], {
     hour: '2-digit',
@@ -490,7 +702,10 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
                   isOwn ? 'prose-pre:bg-black/20' : 'prose-pre:bg-content1'
                 }`}
               >
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={mentionComponents}
+                >
                   {message.content}
                 </ReactMarkdown>
               </div>
@@ -499,7 +714,7 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
           </>
         )}
 
-        <p className={`text-xs mt-1 text-default-400 flex items-center gap-1`}>
+        <div className="text-xs mt-1 text-default-400 flex items-center gap-1">
           <span>
             {time}
             {message.edited_at && <span className="ml-1">(edited)</span>}
@@ -541,7 +756,27 @@ export function MessageBubble({ message, onEdit, onDelete }: Props) {
                 </Tooltip>
               );
             })()}
-        </p>
+          {!isOwn && !editing && (
+            <AddReactionButton
+              onAdd={(emoji) => onAddReaction?.(message.id, emoji)}
+            />
+          )}
+        </div>
+
+        {!editing && (
+          <ReactionBadges
+            reactions={message.reactions || []}
+            currentUserId={currentUser?.id || ''}
+            onToggle={(emoji, hasReacted) => {
+              if (isOwn) return;
+              if (hasReacted) {
+                onRemoveReaction?.(message.id, emoji);
+              } else {
+                onAddReaction?.(message.id, emoji);
+              }
+            }}
+          />
+        )}
 
         {isOwn && !editing && (
           <div

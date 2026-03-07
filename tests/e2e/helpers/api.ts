@@ -252,6 +252,38 @@ export async function apiSendMessage(
 }
 
 /**
+ * Join a public space via the API.
+ */
+export async function apiJoinSpace(
+  spaceId: string,
+  token: string,
+): Promise<void> {
+  const res = await apiPost(`/api/spaces/${spaceId}/join`, {}, token);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `apiJoinSpace failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+}
+
+/**
+ * Join a public channel via the API.
+ */
+export async function apiJoinChannel(
+  channelId: string,
+  token: string,
+): Promise<void> {
+  const res = await apiPost(`/api/channels/${channelId}/join`, {}, token);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `apiJoinChannel failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+}
+
+/**
  * Get channels list via the API.
  */
 export async function apiGetChannels(

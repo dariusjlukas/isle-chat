@@ -349,6 +349,19 @@ void Database::run_migrations() {
         );
     )SQL");
 
+    // Reactions table
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS reactions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            emoji TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(message_id, user_id, emoji)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
+    )SQL");
+
     txn.commit();
     std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -1250,6 +1263,81 @@ std::optional<Database::FileInfo> Database::get_file_info(const std::string& fil
     txn.commit();
     if (r.empty()) return std::nullopt;
     return FileInfo{r[0][0].as<std::string>(), r[0][1].as<std::string>()};
+}
+
+// --- Reactions ---
+
+void Database::add_reaction(const std::string& message_id, const std::string& user_id,
+                             const std::string& emoji) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) "
+        "ON CONFLICT (message_id, user_id, emoji) DO NOTHING",
+        message_id, user_id, emoji);
+    txn.commit();
+}
+
+void Database::remove_reaction(const std::string& message_id, const std::string& user_id,
+                                const std::string& emoji) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
+        message_id, user_id, emoji);
+    txn.commit();
+}
+
+std::vector<Database::Reaction> Database::get_reactions(const std::string& message_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT r.emoji, r.user_id, u.username FROM reactions r "
+        "JOIN users u ON r.user_id = u.id WHERE r.message_id = $1 ORDER BY r.created_at",
+        message_id);
+    txn.commit();
+    std::vector<Reaction> reactions;
+    for (const auto& row : r) {
+        reactions.push_back({row[0].as<std::string>(), row[1].as<std::string>(), row[2].as<std::string>()});
+    }
+    return reactions;
+}
+
+std::map<std::string, std::vector<Database::Reaction>> Database::get_reactions_for_messages(
+    const std::vector<std::string>& message_ids) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+
+    std::map<std::string, std::vector<Reaction>> result;
+    if (message_ids.empty()) return result;
+
+    // Build IN clause
+    std::string ids;
+    for (size_t i = 0; i < message_ids.size(); ++i) {
+        if (i > 0) ids += ',';
+        ids += txn.quote(message_ids[i]);
+    }
+
+    auto r = txn.exec(
+        "SELECT r.message_id, r.emoji, r.user_id, u.username FROM reactions r "
+        "JOIN users u ON r.user_id = u.id WHERE r.message_id IN (" + ids + ") ORDER BY r.created_at");
+    txn.commit();
+
+    for (const auto& row : r) {
+        auto mid = row[0].as<std::string>();
+        result[mid].push_back({row[1].as<std::string>(), row[2].as<std::string>(), row[3].as<std::string>()});
+    }
+    return result;
+}
+
+std::string Database::get_message_channel_id(const std::string& message_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT channel_id FROM messages WHERE id = $1", message_id);
+    txn.commit();
+    if (r.empty()) throw std::runtime_error("Message not found");
+    return r[0][0].as<std::string>();
 }
 
 // --- Invites ---

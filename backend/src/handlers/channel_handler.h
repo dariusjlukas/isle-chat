@@ -138,6 +138,12 @@ struct ChannelHandler {
             }
 
             auto messages = db.get_messages(channel_id, limit, before);
+
+            // Batch-load reactions for all messages
+            std::vector<std::string> msg_ids;
+            for (const auto& msg : messages) msg_ids.push_back(msg.id);
+            auto reactions_map = db.get_reactions_for_messages(msg_ids);
+
             json arr = json::array();
             for (const auto& msg : messages) {
                 json m = {{"id", msg.id}, {"channel_id", msg.channel_id},
@@ -150,6 +156,14 @@ struct ChannelHandler {
                     m["file_name"] = msg.file_name;
                     m["file_size"] = msg.file_size;
                     m["file_type"] = msg.file_type;
+                }
+                auto it = reactions_map.find(msg.id);
+                if (it != reactions_map.end() && !it->second.empty()) {
+                    json rarr = json::array();
+                    for (const auto& r : it->second) {
+                        rarr.push_back({{"emoji", r.emoji}, {"user_id", r.user_id}, {"username", r.username}});
+                    }
+                    m["reactions"] = rarr;
                 }
                 arr.push_back(m);
             }

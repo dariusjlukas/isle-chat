@@ -308,6 +308,10 @@ private:
                 handle_typing(ws, data, j);
             } else if (type == "mark_read") {
                 handle_mark_read(ws, data, j);
+            } else if (type == "add_reaction") {
+                handle_add_reaction(ws, data, j);
+            } else if (type == "remove_reaction") {
+                handle_remove_reaction(ws, data, j);
             } else if (type == "ping") {
                 json pong = {{"type", "pong"}};
                 ws->send(pong.dump(), uWS::OpCode::TEXT);
@@ -437,6 +441,46 @@ private:
             {"last_read_at", timestamp}
         };
         ws->publish("channel:" + channel_id, broadcast.dump());
+    }
+
+    void handle_add_reaction(uWS::WebSocket<SSL, true, WsUserData>* ws,
+                              WsUserData* data, const json& j) {
+        std::string message_id = j.at("message_id");
+        std::string emoji = j.at("emoji");
+
+        auto channel_id = db.get_message_channel_id(message_id);
+        db.add_reaction(message_id, data->user_id, emoji);
+
+        json broadcast = {
+            {"type", "reaction_added"},
+            {"message_id", message_id},
+            {"channel_id", channel_id},
+            {"emoji", emoji},
+            {"user_id", data->user_id},
+            {"username", data->username}
+        };
+        ws->publish("channel:" + channel_id, broadcast.dump());
+        ws->send(broadcast.dump(), uWS::OpCode::TEXT);
+    }
+
+    void handle_remove_reaction(uWS::WebSocket<SSL, true, WsUserData>* ws,
+                                 WsUserData* data, const json& j) {
+        std::string message_id = j.at("message_id");
+        std::string emoji = j.at("emoji");
+
+        auto channel_id = db.get_message_channel_id(message_id);
+        db.remove_reaction(message_id, data->user_id, emoji);
+
+        json broadcast = {
+            {"type", "reaction_removed"},
+            {"message_id", message_id},
+            {"channel_id", channel_id},
+            {"emoji", emoji},
+            {"user_id", data->user_id},
+            {"username", data->username}
+        };
+        ws->publish("channel:" + channel_id, broadcast.dump());
+        ws->send(broadcast.dump(), uWS::OpCode::TEXT);
     }
 
     static std::vector<std::string> parse_mentions(const std::string& content,

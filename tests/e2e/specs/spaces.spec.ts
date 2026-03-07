@@ -103,7 +103,9 @@ test.describe("Space with channels - messaging", () => {
       .click();
 
     // Send a message
-    await page.getByPlaceholder("Type a message...").fill("Hello from space!");
+    const msgInput = page.locator('[role="textbox"][aria-multiline="true"]');
+    await msgInput.click();
+    await msgInput.pressSequentially("Hello from space!");
     await page.getByRole("button", { name: "Send" }).click();
 
     // Verify message appears
