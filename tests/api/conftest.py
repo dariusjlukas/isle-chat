@@ -2,6 +2,9 @@
 
 The test suite expects a running backend server and PostgreSQL instance.
 Configure via environment variables (see SERVER_URL / DB vars below).
+
+When running with pytest-xdist (-n N), each worker gets its own database
+and backend server for full isolation.
 """
 
 import base64
@@ -36,6 +39,9 @@ PG_PORT = os.environ.get("POSTGRES_PORT", "5433")
 PG_USER = os.environ.get("POSTGRES_USER", "chatapp_test")
 PG_PASS = os.environ.get("POSTGRES_PASSWORD", "testpassword")
 PG_DB = os.environ.get("POSTGRES_DB", "chatapp_test")
+
+# Base port for xdist workers (worker 0 gets BASE+0, worker 1 gets BASE+1, etc.)
+XDIST_PORT_BASE = int(os.environ.get("TEST_XDIST_PORT_BASE", "9200"))
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +130,13 @@ def auth_header(token: str) -> dict:
 # ---------------------------------------------------------------------------
 # Database helpers
 # ---------------------------------------------------------------------------
-def get_pg_dsn() -> str:
-    return f"host={PG_HOST} port={PG_PORT} dbname={PG_DB} user={PG_USER} password={PG_PASS}"
+def _get_pg_dsn(dbname: str = PG_DB) -> str:
+    return f"host={PG_HOST} port={PG_PORT} dbname={dbname} user={PG_USER} password={PG_PASS}"
 
 
-def reset_database():
+def _reset_database(dbname: str = PG_DB):
     """Drop all user-created data between test modules."""
-    conn = psycopg2.connect(get_pg_dsn())
+    conn = psycopg2.connect(_get_pg_dsn(dbname))
     conn.autocommit = True
     cur = conn.cursor()
     # Truncate all application tables (preserve schema).
@@ -151,6 +157,47 @@ def reset_database():
     conn.close()
 
 
+# Keep old names for backwards compatibility with test files that import them
+def get_pg_dsn() -> str:
+    return _get_pg_dsn()
+
+
+def reset_database():
+    _reset_database()
+
+
+# ---------------------------------------------------------------------------
+# xdist worker helpers
+# ---------------------------------------------------------------------------
+def _worker_index(worker_id: str) -> int | None:
+    """Extract numeric index from xdist worker_id like 'gw0', 'gw1', etc.
+    Returns None when not running under xdist ('master')."""
+    if worker_id == "master":
+        return None
+    return int(worker_id.replace("gw", ""))
+
+
+def _create_worker_db(dbname: str):
+    """Create a fresh database for this xdist worker."""
+    conn = psycopg2.connect(_get_pg_dsn("postgres"))
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(f"DROP DATABASE IF EXISTS {dbname}")
+    cur.execute(f"CREATE DATABASE {dbname} OWNER {PG_USER}")
+    cur.close()
+    conn.close()
+
+
+def _drop_worker_db(dbname: str):
+    """Drop the worker's database."""
+    conn = psycopg2.connect(_get_pg_dsn("postgres"))
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(f"DROP DATABASE IF EXISTS {dbname}")
+    cur.close()
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Server lifecycle
 # ---------------------------------------------------------------------------
@@ -166,34 +213,68 @@ def _wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 15.0):
 
 
 @pytest.fixture(scope="session")
-def server_process():
-    """Start the backend binary if TEST_BACKEND_BINARY is set, otherwise assume it's already running."""
+def worker_db(worker_id):
+    """Per-worker database. Under xdist each worker gets an isolated DB;
+    without xdist falls back to the default PG_DB."""
+    idx = _worker_index(worker_id)
+    if idx is None:
+        yield PG_DB
+        return
+
+    dbname = f"chatapp_apitest_w{idx}"
+    _create_worker_db(dbname)
+    yield dbname
+    _drop_worker_db(dbname)
+
+
+@pytest.fixture(scope="session")
+def worker_port(worker_id):
+    """Per-worker backend port."""
+    idx = _worker_index(worker_id)
+    if idx is None:
+        return BACKEND_PORT
+    return XDIST_PORT_BASE + idx
+
+
+@pytest.fixture(scope="session")
+def server_process(worker_db, worker_port):
+    """Start a backend server for this worker (or use the externally-started one)."""
     proc = None
-    if BACKEND_BINARY:
+    if BACKEND_BINARY or _worker_index(os.environ.get("PYTEST_XDIST_WORKER", "master")) is not None:
+        binary = BACKEND_BINARY or os.environ.get("TEST_BUILD_DIR", "") + "/chat-server"
+        if not binary or not os.path.isfile(binary):
+            # No binary available — assume externally managed server
+            _wait_for_port(worker_port)
+            yield None
+            return
+
+        import tempfile
+        upload_dir = tempfile.mkdtemp()
         env = {
             **os.environ,
-            "BACKEND_PORT": str(BACKEND_PORT),
+            "BACKEND_PORT": str(worker_port),
             "POSTGRES_HOST": PG_HOST,
             "POSTGRES_PORT": PG_PORT,
             "POSTGRES_USER": PG_USER,
             "POSTGRES_PASSWORD": PG_PASS,
-            "POSTGRES_DB": PG_DB,
+            "POSTGRES_DB": worker_db,
+            "UPLOAD_DIR": upload_dir,
             "SESSION_EXPIRY_HOURS": "168",
         }
         proc = subprocess.Popen(
-            [BACKEND_BINARY],
+            [binary],
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
         try:
-            _wait_for_port(BACKEND_PORT)
+            _wait_for_port(worker_port)
         except TimeoutError:
             proc.kill()
             stdout = proc.stdout.read().decode() if proc.stdout else ""
-            raise RuntimeError(f"Backend failed to start:\n{stdout}")
+            raise RuntimeError(f"Backend failed to start on port {worker_port}:\n{stdout}")
     else:
-        _wait_for_port(BACKEND_PORT)
+        _wait_for_port(worker_port)
 
     yield proc
 
@@ -203,14 +284,16 @@ def server_process():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+        import shutil
+        shutil.rmtree(upload_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # HTTP client fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session")
-def base_url():
-    return SERVER_URL
+def base_url(worker_port):
+    return f"http://127.0.0.1:{worker_port}"
 
 
 @pytest.fixture(scope="session")
@@ -221,22 +304,22 @@ def client(server_process, base_url):
 
 
 @pytest.fixture(autouse=True)
-def _clean_db():
+def _clean_db(worker_db):
     """Reset database before each test function."""
-    reset_database()
+    _reset_database(worker_db)
 
 
 # ---------------------------------------------------------------------------
 # Convenience fixtures for common user setups
 # ---------------------------------------------------------------------------
 @pytest.fixture()
-def admin_user(client):
+def admin_user(client, worker_db):
     """Register the first user and promote to owner via DB. Return auth info."""
     data = pki_register(client, "admin", "Admin User")
     headers = auth_header(data["token"])
     # The first PKI user gets role "admin", promote to "owner" via DB
     # so tests can exercise owner-only endpoints.
-    conn = psycopg2.connect(get_pg_dsn())
+    conn = psycopg2.connect(_get_pg_dsn(worker_db))
     conn.autocommit = True
     cur = conn.cursor()
     cur.execute("UPDATE users SET role = 'owner' WHERE id = %s",

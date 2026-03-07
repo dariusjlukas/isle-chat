@@ -2,7 +2,7 @@
  * E2E tests for messaging: channels, sending/receiving messages.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures.js";
 import { resetDatabase } from "../helpers/db.js";
 import {
   setupAdminUser,
@@ -13,14 +13,14 @@ import { apiCreateSpace, apiCreateSpaceChannel } from "../helpers/api.js";
 
 let admin: TestUser;
 
-test.beforeEach(async () => {
-  resetDatabase();
-  admin = await setupAdminUser();
+test.beforeEach(async ({ workerConfig }) => {
+  resetDatabase(workerConfig.dbConfig);
+  admin = await setupAdminUser(workerConfig.apiConfig);
   // Create a space with a channel for messaging tests
   const space = await apiCreateSpace("Test Space", admin.token, {
     is_public: true,
-  });
-  await apiCreateSpaceChannel(space.id, "general", admin.token);
+  }, workerConfig.apiConfig);
+  await apiCreateSpaceChannel(space.id, "general", admin.token, undefined, workerConfig.apiConfig);
 });
 
 /** Helper to get the message input (contentEditable div) */

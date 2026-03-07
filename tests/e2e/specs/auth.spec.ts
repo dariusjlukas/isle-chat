@@ -2,7 +2,7 @@
  * E2E tests for authentication flows: registration, login, logout, recovery.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures.js";
 import { resetDatabase } from "../helpers/db.js";
 import {
   setupAdminUser,
@@ -11,8 +11,8 @@ import {
   type TestUser,
 } from "../helpers/auth.js";
 
-test.beforeEach(() => {
-  resetDatabase();
+test.beforeEach(({ workerConfig }) => {
+  resetDatabase(workerConfig.dbConfig);
 });
 
 test.describe("Registration via UI", () => {
@@ -64,9 +64,10 @@ test.describe("Registration via UI", () => {
 
   test("second user can register when registration is open", async ({
     page,
+    workerConfig,
   }) => {
     // Set up admin and open registration via API
-    await setupAdminUser();
+    await setupAdminUser(workerConfig.apiConfig);
 
     await page.goto("/");
     await page.getByText("Create an account").click();
@@ -93,8 +94,11 @@ test.describe("Registration via UI", () => {
 });
 
 test.describe("Login via token injection", () => {
-  test("user can access app with valid session token", async ({ page }) => {
-    const admin = await setupAdminUser();
+  test("user can access app with valid session token", async ({
+    page,
+    workerConfig,
+  }) => {
+    const admin = await setupAdminUser(workerConfig.apiConfig);
     await loginViaToken(page, admin.token);
 
     // Should see the app with "Welcome to Isle Chat" or sidebar
@@ -103,8 +107,11 @@ test.describe("Login via token injection", () => {
 });
 
 test.describe("Logout", () => {
-  test("user can log out via header button", async ({ page }) => {
-    const admin = await setupAdminUser();
+  test("user can log out via header button", async ({
+    page,
+    workerConfig,
+  }) => {
+    const admin = await setupAdminUser(workerConfig.apiConfig);
     await loginViaToken(page, admin.token);
 
     // Click the logout button - last button in the header right section
@@ -121,9 +128,16 @@ test.describe("Logout", () => {
 });
 
 test.describe("Recovery key login", () => {
-  test("user can log in with a recovery key", async ({ page }) => {
-    const admin = await setupAdminUser();
-    const user = await setupRegularUser("recoverable", "Recoverable User");
+  test("user can log in with a recovery key", async ({
+    page,
+    workerConfig,
+  }) => {
+    const admin = await setupAdminUser(workerConfig.apiConfig);
+    const user = await setupRegularUser(
+      "recoverable",
+      "Recoverable User",
+      workerConfig.apiConfig,
+    );
 
     await page.goto("/");
     // Click "Use a recovery key"

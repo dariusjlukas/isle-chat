@@ -1,72 +1,84 @@
 /**
  * Direct API helpers for E2E test setup.
  * Used to set up preconditions (create users, set settings) without going through the UI.
+ *
+ * All functions accept an optional ApiConfig for per-worker isolation.
+ * If not provided, they fall back to env-var defaults (single-worker mode).
  */
-
-const BACKEND_PORT = process.env.TEST_BACKEND_PORT ?? "9099";
-const API_BASE = `http://localhost:${BACKEND_PORT}`;
-
-const PG_USER = process.env.POSTGRES_USER ?? "chatapp_test";
-const PG_DB = process.env.POSTGRES_DB ?? "chatapp_test";
-const PG_CONTAINER =
-  process.env.TEST_PG_CONTAINER ?? "chatapp-test-postgres";
 
 import { execSync } from "child_process";
 
-async function apiPost(
+export interface ApiConfig {
+  apiBase: string;
+  pgUser: string;
+  pgDb: string;
+  pgContainer: string;
+}
+
+const defaultConfig: ApiConfig = {
+  apiBase: `http://localhost:${process.env.TEST_BACKEND_PORT ?? "9099"}`,
+  pgUser: process.env.POSTGRES_USER ?? "chatapp_test",
+  pgDb: process.env.POSTGRES_DB ?? "chatapp_test",
+  pgContainer: process.env.TEST_PG_CONTAINER ?? "chatapp-test-postgres",
+};
+
+function apiPost(
   path: string,
   body: unknown,
   token?: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${API_BASE}${path}`, {
+  return fetch(`${config.apiBase}${path}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
 }
 
-async function apiPut(
+function apiPut(
   path: string,
   body: unknown,
   token?: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${API_BASE}${path}`, {
+  return fetch(`${config.apiBase}${path}`, {
     method: "PUT",
     headers,
     body: JSON.stringify(body),
   });
 }
 
-async function apiGet(path: string, token?: string): Promise<Response> {
+function apiGet(
+  path: string,
+  token?: string,
+  config: ApiConfig = defaultConfig,
+): Promise<Response> {
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${API_BASE}${path}`, { headers });
+  return fetch(`${config.apiBase}${path}`, { headers });
 }
 
 /**
  * Register a user via the API using PKI auth.
- * This bypasses the UI for faster test setup.
- * We use the SubtleCrypto-compatible approach via Node's crypto module.
  */
 export async function apiRegisterUser(
   username: string,
   displayName: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<{ token: string; userId: string; recoveryKeys: string[] }> {
-  // Generate ECDSA P-256 key pair using Node crypto
   const { generateKeyPairSync, createSign } = await import("crypto");
   const { privateKey, publicKey } = generateKeyPairSync("ec", {
     namedCurve: "prime256v1",
   });
 
-  // Export public key as SPKI DER, then base64url encode
   const spkiDer = publicKey.export({ type: "spki", format: "der" });
   const pubKeyB64url = spkiDer
     .toString("base64")
@@ -74,31 +86,35 @@ export async function apiRegisterUser(
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  // Get a challenge
-  const challengeRes = await apiPost("/api/auth/pki/challenge", {});
+  const challengeRes = await apiPost(
+    "/api/auth/pki/challenge",
+    {},
+    undefined,
+    config,
+  );
   const { challenge } = (await challengeRes.json()) as { challenge: string };
 
-  // Sign the challenge (DER format, need to convert to raw r||s)
   const signer = createSign("SHA256");
   signer.update(challenge);
   const derSig = signer.sign(privateKey);
 
-  // Parse DER signature to extract r and s
-  // DER: 0x30 <len> 0x02 <rlen> <r> 0x02 <slen> <s>
-  let offset = 2; // skip 0x30 <len>
-  offset += 1; // skip 0x02
+  let offset = 2;
+  offset += 1;
   const rLen = derSig[offset++];
   const rBytes = derSig.subarray(offset, offset + rLen);
   offset += rLen;
-  offset += 1; // skip 0x02
+  offset += 1;
   const sLen = derSig[offset++];
   const sBytes = derSig.subarray(offset, offset + sLen);
 
-  // Pad/trim to 32 bytes each
   const r = Buffer.alloc(32);
   const s = Buffer.alloc(32);
-  rBytes.subarray(rBytes.length > 32 ? rBytes.length - 32 : 0).copy(r, Math.max(0, 32 - rBytes.length));
-  sBytes.subarray(sBytes.length > 32 ? sBytes.length - 32 : 0).copy(s, Math.max(0, 32 - sBytes.length));
+  rBytes
+    .subarray(rBytes.length > 32 ? rBytes.length - 32 : 0)
+    .copy(r, Math.max(0, 32 - rBytes.length));
+  sBytes
+    .subarray(sBytes.length > 32 ? sBytes.length - 32 : 0)
+    .copy(s, Math.max(0, 32 - sBytes.length));
   const rawSig = Buffer.concat([r, s]);
   const sigB64url = rawSig
     .toString("base64")
@@ -106,14 +122,18 @@ export async function apiRegisterUser(
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  // Register
-  const regRes = await apiPost("/api/auth/pki/register", {
-    username,
-    display_name: displayName,
-    public_key: pubKeyB64url,
-    challenge,
-    signature: sigB64url,
-  });
+  const regRes = await apiPost(
+    "/api/auth/pki/register",
+    {
+      username,
+      display_name: displayName,
+      public_key: pubKeyB64url,
+      challenge,
+      signature: sigB64url,
+    },
+    undefined,
+    config,
+  );
   const data = (await regRes.json()) as {
     token: string;
     user: { id: string };
@@ -129,10 +149,13 @@ export async function apiRegisterUser(
 /**
  * Promote a user to "owner" role via direct DB update.
  */
-export function promoteToOwner(userId: string): void {
+export function promoteToOwner(
+  userId: string,
+  config: ApiConfig = defaultConfig,
+): void {
   const sql = `UPDATE users SET role = 'owner' WHERE id = '${userId}'`;
   execSync(
-    `docker exec ${PG_CONTAINER} psql -U "${PG_USER}" -d "${PG_DB}" -c "${sql}"`,
+    `docker exec ${config.pgContainer} psql -U "${config.pgUser}" -d "${config.pgDb}" -c "${sql}"`,
     { stdio: "pipe" },
   );
 }
@@ -140,18 +163,30 @@ export function promoteToOwner(userId: string): void {
 /**
  * Set registration mode to "open" so new users can register freely.
  */
-export async function setRegistrationOpen(token: string): Promise<void> {
-  await apiPut("/api/admin/settings", { registration_mode: "open" }, token);
+export async function setRegistrationOpen(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  await apiPut(
+    "/api/admin/settings",
+    { registration_mode: "open" },
+    token,
+    config,
+  );
 }
 
 /**
  * Complete the server setup wizard so it doesn't appear on login.
  */
-export async function completeSetup(token: string): Promise<void> {
+export async function completeSetup(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
   await apiPost(
     "/api/admin/setup",
     { registration_mode: "open" },
     token,
+    config,
   );
 }
 
@@ -162,8 +197,14 @@ export async function apiChangeUserRole(
   userId: string,
   role: string,
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<Response> {
-  return apiPut(`/api/admin/users/${userId}/role`, { role }, token);
+  return apiPut(
+    `/api/admin/users/${userId}/role`,
+    { role },
+    token,
+    config,
+  );
 }
 
 /**
@@ -171,8 +212,9 @@ export async function apiChangeUserRole(
  */
 export async function apiGetAdminUsers(
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<Array<{ id: string; username: string; role: string }>> {
-  const res = await apiGet("/api/admin/users", token);
+  const res = await apiGet("/api/admin/users", token, config);
   return (await res.json()) as Array<{
     id: string;
     username: string;
@@ -187,11 +229,13 @@ export async function apiCreateChannel(
   name: string,
   token: string,
   options?: { is_public?: boolean; description?: string },
+  config: ApiConfig = defaultConfig,
 ): Promise<{ id: string; name: string }> {
   const res = await apiPost(
     "/api/channels",
     { name, ...options },
     token,
+    config,
   );
   return (await res.json()) as { id: string; name: string };
 }
@@ -204,11 +248,13 @@ export async function apiCreateSpaceChannel(
   name: string,
   token: string,
   options?: { is_public?: boolean; description?: string },
+  config: ApiConfig = defaultConfig,
 ): Promise<{ id: string; name: string }> {
   const res = await apiPost(
     `/api/spaces/${spaceId}/channels`,
     { name, ...options },
     token,
+    config,
   );
   return (await res.json()) as { id: string; name: string };
 }
@@ -220,11 +266,13 @@ export async function apiCreateSpace(
   name: string,
   token: string,
   options?: { is_public?: boolean; description?: string },
+  config: ApiConfig = defaultConfig,
 ): Promise<{ id: string; name: string }> {
   const res = await apiPost(
     "/api/spaces",
     { name, ...options },
     token,
+    config,
   );
   return (await res.json()) as { id: string; name: string };
 }
@@ -236,11 +284,13 @@ export async function apiSendMessage(
   channelId: string,
   content: string,
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<{ id: string }> {
   const res = await apiPost(
     `/api/channels/${channelId}/messages`,
     { content },
     token,
+    config,
   );
   if (!res.ok) {
     const text = await res.text();
@@ -257,8 +307,14 @@ export async function apiSendMessage(
 export async function apiJoinSpace(
   spaceId: string,
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<void> {
-  const res = await apiPost(`/api/spaces/${spaceId}/join`, {}, token);
+  const res = await apiPost(
+    `/api/spaces/${spaceId}/join`,
+    {},
+    token,
+    config,
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
@@ -273,8 +329,14 @@ export async function apiJoinSpace(
 export async function apiJoinChannel(
   channelId: string,
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<void> {
-  const res = await apiPost(`/api/channels/${channelId}/join`, {}, token);
+  const res = await apiPost(
+    `/api/channels/${channelId}/join`,
+    {},
+    token,
+    config,
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new Error(
@@ -288,7 +350,8 @@ export async function apiJoinChannel(
  */
 export async function apiGetChannels(
   token: string,
+  config: ApiConfig = defaultConfig,
 ): Promise<Array<{ id: string; name: string }>> {
-  const res = await apiGet("/api/channels", token);
+  const res = await apiGet("/api/channels", token, config);
   return (await res.json()) as Array<{ id: string; name: string }>;
 }

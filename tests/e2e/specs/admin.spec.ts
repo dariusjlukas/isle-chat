@@ -2,7 +2,7 @@
  * E2E tests for admin panel: settings, invites.
  */
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "../fixtures.js";
 import { resetDatabase } from "../helpers/db.js";
 import {
   setupAdminUser,
@@ -13,13 +13,16 @@ import {
 
 let admin: TestUser;
 
-test.beforeEach(async () => {
-  resetDatabase();
-  admin = await setupAdminUser();
+test.beforeEach(async ({ workerConfig }) => {
+  resetDatabase(workerConfig.dbConfig);
+  admin = await setupAdminUser(workerConfig.apiConfig);
 });
 
 /** Click the Nth button (0-indexed) in the header's right button group. */
-async function clickHeaderButton(page: Page, index: number) {
+async function clickHeaderButton(
+  page: import("@playwright/test").Page,
+  index: number,
+) {
   const buttons = page.locator(
     "header .flex.items-center.justify-end button",
   );
@@ -36,24 +39,27 @@ test.describe("Admin panel access", () => {
 
     await clickHeaderButton(page, ADMIN_BTN);
 
-    // Admin panel modal should open
     await expect(page.getByText("Admin Panel").first()).toBeVisible({
       timeout: 10_000,
     });
 
-    // Accordion sections should be visible
     await expect(page.getByText("Server Settings")).toBeVisible();
     await expect(page.getByText("Invite Tokens")).toBeVisible();
     await expect(page.getByText("Account Recovery")).toBeVisible();
     await expect(page.getByText("Join Requests")).toBeVisible();
   });
 
-  test("regular user cannot see admin button", async ({ page }) => {
-    const regular = await setupRegularUser("regular", "Regular User");
+  test("regular user cannot see admin button", async ({
+    page,
+    workerConfig,
+  }) => {
+    const regular = await setupRegularUser(
+      "regular",
+      "Regular User",
+      workerConfig.apiConfig,
+    );
     await loginViaToken(page, regular.token);
 
-    // For regular users, the header right buttons are only [Settings, Logout]
-    // There should be no shield icon / admin button - verify only 2 buttons
     const headerButtons = page.locator(
       "header .flex.items-center.justify-end button",
     );
@@ -68,10 +74,8 @@ test.describe("Server settings", () => {
     await clickHeaderButton(page, ADMIN_BTN);
     await expect(page.getByText("Admin Panel").first()).toBeVisible();
 
-    // Expand Server Settings accordion
     await page.getByText("Server Settings").click();
 
-    // Should show registration mode setting
     await expect(page.getByText("Registration Mode")).toBeVisible({
       timeout: 5_000,
     });
@@ -84,10 +88,8 @@ test.describe("Invite tokens", () => {
 
     await clickHeaderButton(page, ADMIN_BTN);
 
-    // Expand Invite Tokens accordion
     await page.getByText("Invite Tokens").click();
 
-    // Should show invite management UI
     await expect(
       page.getByRole("button", { name: /generate|create/i }),
     ).toBeVisible({ timeout: 5_000 });
@@ -100,7 +102,6 @@ test.describe("User settings", () => {
 
     await clickHeaderButton(page, SETTINGS_BTN);
 
-    // Settings modal should open with accordion sections
     await expect(page.getByText("Settings").first()).toBeVisible({
       timeout: 5_000,
     });

@@ -16,6 +16,7 @@ import {
   promoteToOwner,
   setRegistrationOpen,
   completeSetup,
+  type ApiConfig,
 } from "./api.js";
 
 export interface TestUser {
@@ -29,11 +30,13 @@ export interface TestUser {
  * Set up an admin/owner user via the API and configure open registration.
  * Returns the user info including auth token.
  */
-export async function setupAdminUser(): Promise<TestUser> {
-  const data = await apiRegisterUser("admin", "Admin User");
-  promoteToOwner(data.userId);
-  await setRegistrationOpen(data.token);
-  await completeSetup(data.token);
+export async function setupAdminUser(
+  config?: ApiConfig,
+): Promise<TestUser> {
+  const data = await apiRegisterUser("admin", "Admin User", config);
+  promoteToOwner(data.userId, config);
+  await setRegistrationOpen(data.token, config);
+  await completeSetup(data.token, config);
   return {
     token: data.token,
     userId: data.userId,
@@ -48,8 +51,9 @@ export async function setupAdminUser(): Promise<TestUser> {
 export async function setupRegularUser(
   username: string = "testuser",
   displayName: string = "Test User",
+  config?: ApiConfig,
 ): Promise<TestUser> {
-  const data = await apiRegisterUser(username, displayName);
+  const data = await apiRegisterUser(username, displayName, config);
   return {
     token: data.token,
     userId: data.userId,

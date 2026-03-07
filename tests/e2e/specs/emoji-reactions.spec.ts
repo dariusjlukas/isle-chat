@@ -2,7 +2,7 @@
  * E2E tests for emoji picker and message reactions.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures.js";
 import { resetDatabase } from "../helpers/db.js";
 import {
   setupAdminUser,
@@ -88,17 +88,26 @@ async function pickEmoji(
   }
 }
 
-test.beforeEach(async () => {
-  resetDatabase();
-  admin = await setupAdminUser();
-  alice = await setupRegularUser("alice", "Alice");
-  const space = await apiCreateSpace("Test Space", admin.token, {
-    is_public: true,
-  });
-  const channel = await apiCreateSpaceChannel(space.id, "general", admin.token);
+test.beforeEach(async ({ workerConfig }) => {
+  resetDatabase(workerConfig.dbConfig);
+  admin = await setupAdminUser(workerConfig.apiConfig);
+  alice = await setupRegularUser("alice", "Alice", workerConfig.apiConfig);
+  const space = await apiCreateSpace(
+    "Test Space",
+    admin.token,
+    { is_public: true },
+    workerConfig.apiConfig,
+  );
+  const channel = await apiCreateSpaceChannel(
+    space.id,
+    "general",
+    admin.token,
+    undefined,
+    workerConfig.apiConfig,
+  );
   // Alice joins the public space and channel so she can see it
-  await apiJoinSpace(space.id, alice.token);
-  await apiJoinChannel(channel.id, alice.token);
+  await apiJoinSpace(space.id, alice.token, workerConfig.apiConfig);
+  await apiJoinChannel(channel.id, alice.token, workerConfig.apiConfig);
 });
 
 test.describe("Emoji picker", () => {
@@ -164,16 +173,21 @@ test.describe("Emoji picker", () => {
 test.describe("Reactions", () => {
   test("add reaction button appears on other users' messages", async ({
     browser,
+    workerConfig,
   }) => {
     // Admin sends a message via UI
-    const adminCtx = await browser.newContext();
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const adminPage = await adminCtx.newPage();
     await loginViaToken(adminPage, admin.token);
     await goToChannel(adminPage);
     await sendMessage(adminPage, "React to this!");
 
     // Alice views it
-    const aliceCtx = await browser.newContext();
+    const aliceCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const alicePage = await aliceCtx.newPage();
     await loginViaToken(alicePage, alice.token);
     await goToChannel(alicePage);
@@ -208,16 +222,23 @@ test.describe("Reactions", () => {
     await expect(addReactionBtn).not.toBeVisible();
   });
 
-  test("user can add a reaction via the emoji picker", async ({ browser }) => {
+  test("user can add a reaction via the emoji picker", async ({
+    browser,
+    workerConfig,
+  }) => {
     // Admin sends a message
-    const adminCtx = await browser.newContext();
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const adminPage = await adminCtx.newPage();
     await loginViaToken(adminPage, admin.token);
     await goToChannel(adminPage);
     await sendMessage(adminPage, "Add a reaction here");
 
     // Alice reacts to it
-    const aliceCtx = await browser.newContext();
+    const aliceCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const alicePage = await aliceCtx.newPage();
     await loginViaToken(alicePage, alice.token);
     await goToChannel(alicePage);
@@ -242,16 +263,23 @@ test.describe("Reactions", () => {
     await aliceCtx.close();
   });
 
-  test("reaction badge shows who reacted on hover", async ({ browser }) => {
+  test("reaction badge shows who reacted on hover", async ({
+    browser,
+    workerConfig,
+  }) => {
     // Admin sends a message
-    const adminCtx = await browser.newContext();
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const adminPage = await adminCtx.newPage();
     await loginViaToken(adminPage, admin.token);
     await goToChannel(adminPage);
     await sendMessage(adminPage, "Hover test message");
 
     // Alice reacts
-    const aliceCtx = await browser.newContext();
+    const aliceCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const alicePage = await aliceCtx.newPage();
     await loginViaToken(alicePage, alice.token);
     await goToChannel(alicePage);
@@ -276,16 +304,23 @@ test.describe("Reactions", () => {
     await aliceCtx.close();
   });
 
-  test("user can toggle off their own reaction", async ({ browser }) => {
+  test("user can toggle off their own reaction", async ({
+    browser,
+    workerConfig,
+  }) => {
     // Admin sends a message
-    const adminCtx = await browser.newContext();
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const adminPage = await adminCtx.newPage();
     await loginViaToken(adminPage, admin.token);
     await goToChannel(adminPage);
     await sendMessage(adminPage, "Toggle reaction test");
 
     // Alice reacts
-    const aliceCtx = await browser.newContext();
+    const aliceCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const alicePage = await aliceCtx.newPage();
     await loginViaToken(alicePage, alice.token);
     await goToChannel(alicePage);
@@ -313,16 +348,21 @@ test.describe("Reactions", () => {
 
   test("reactions are visible across users in real-time", async ({
     browser,
+    workerConfig,
   }) => {
     // Admin sends a message
-    const adminCtx = await browser.newContext();
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const adminPage = await adminCtx.newPage();
     await loginViaToken(adminPage, admin.token);
     await goToChannel(adminPage);
     await sendMessage(adminPage, "Cross-user reaction");
 
     // Alice opens the channel
-    const aliceCtx = await browser.newContext();
+    const aliceCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
     const alicePage = await aliceCtx.newPage();
     await loginViaToken(alicePage, alice.token);
     await goToChannel(alicePage);

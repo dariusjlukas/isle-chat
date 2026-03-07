@@ -5,12 +5,20 @@
 
 import { execSync } from "child_process";
 
-const PG_USER = process.env.POSTGRES_USER ?? "chatapp_test";
-const PG_DB = process.env.POSTGRES_DB ?? "chatapp_test";
-const PG_CONTAINER =
-  process.env.TEST_PG_CONTAINER ?? "chatapp-test-postgres";
+export interface DbConfig {
+  pgUser: string;
+  pgDb: string;
+  pgContainer: string;
+}
 
-export function resetDatabase(): void {
+const defaultConfig: DbConfig = {
+  pgUser: process.env.POSTGRES_USER ?? "chatapp_test",
+  pgDb: process.env.POSTGRES_DB ?? "chatapp_test",
+  pgContainer: process.env.TEST_PG_CONTAINER ?? "chatapp-test-postgres",
+};
+
+export function resetDatabase(config: DbConfig = defaultConfig): void {
+  const { pgUser, pgDb, pgContainer } = config;
   const sql = `
     DO \\$\\$
     DECLARE r RECORD;
@@ -25,7 +33,7 @@ export function resetDatabase(): void {
     END \\$\\$;
   `;
   execSync(
-    `docker exec ${PG_CONTAINER} psql -U "${PG_USER}" -d "${PG_DB}" -c "${sql}"`,
+    `docker exec ${pgContainer} psql -U "${pgUser}" -d "${pgDb}" -c "${sql}"`,
     { stdio: "pipe" },
   );
 }

@@ -2,7 +2,7 @@
  * E2E tests for spaces: creation, navigation, channel management within spaces.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures.js";
 import { resetDatabase } from "../helpers/db.js";
 import {
   setupAdminUser,
@@ -13,9 +13,9 @@ import { apiCreateSpace } from "../helpers/api.js";
 
 let admin: TestUser;
 
-test.beforeEach(async () => {
-  resetDatabase();
-  admin = await setupAdminUser();
+test.beforeEach(async ({ workerConfig }) => {
+  resetDatabase(workerConfig.dbConfig);
+  admin = await setupAdminUser(workerConfig.apiConfig);
 });
 
 test.describe("Space creation via UI", () => {
@@ -39,15 +39,28 @@ test.describe("Space creation via UI", () => {
 
     // Space should be created and visible in the sidebar
     await expect(
-      page.getByRole("heading", { name: "Engineering" })
+      page.getByRole("heading", { name: "Engineering" }),
     ).toBeVisible({ timeout: 10_000 });
   });
 });
 
 test.describe("Space navigation", () => {
-  test("user can switch between spaces", async ({ page }) => {
-    await apiCreateSpace("Space One", admin.token);
-    await apiCreateSpace("Space Two", admin.token);
+  test("user can switch between spaces", async ({
+    page,
+    workerConfig,
+  }) => {
+    await apiCreateSpace(
+      "Space One",
+      admin.token,
+      undefined,
+      workerConfig.apiConfig,
+    );
+    await apiCreateSpace(
+      "Space Two",
+      admin.token,
+      undefined,
+      workerConfig.apiConfig,
+    );
 
     await loginViaToken(page, admin.token);
 
@@ -57,8 +70,16 @@ test.describe("Space navigation", () => {
 });
 
 test.describe("Channel creation in space", () => {
-  test("admin can create a channel within a space", async ({ page }) => {
-    await apiCreateSpace("Dev Team", admin.token);
+  test("admin can create a channel within a space", async ({
+    page,
+    workerConfig,
+  }) => {
+    await apiCreateSpace(
+      "Dev Team",
+      admin.token,
+      undefined,
+      workerConfig.apiConfig,
+    );
 
     await loginViaToken(page, admin.token);
 
@@ -79,14 +100,22 @@ test.describe("Channel creation in space", () => {
 
     // Channel should appear in the sidebar
     await expect(
-      page.locator("aside button", { hasText: "backend" }).first()
+      page.locator("aside button", { hasText: "backend" }).first(),
     ).toBeVisible({ timeout: 10_000 });
   });
 });
 
 test.describe("Space with channels - messaging", () => {
-  test("user can send messages in a space channel", async ({ page }) => {
-    await apiCreateSpace("Team", admin.token);
+  test("user can send messages in a space channel", async ({
+    page,
+    workerConfig,
+  }) => {
+    await apiCreateSpace(
+      "Team",
+      admin.token,
+      undefined,
+      workerConfig.apiConfig,
+    );
 
     await loginViaToken(page, admin.token);
     await expect(page.getByText("Team")).toBeVisible({ timeout: 10_000 });
