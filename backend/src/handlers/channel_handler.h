@@ -414,6 +414,10 @@ struct ChannelHandler {
                     json notify = {{"type", "role_changed"}, {"channel_id", channel_id}, {"role", new_role}};
                     ws.send_to_user(target_user_id, notify.dump());
 
+                    // Broadcast to all channel members so they can update their member lists
+                    json broadcast = {{"type", "member_role_changed"}, {"channel_id", channel_id}, {"user_id", target_user_id}, {"role", new_role}};
+                    ws.broadcast_to_channel(channel_id, broadcast.dump());
+
                     res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
                 } catch (const std::exception& e) {
                     res->writeStatus("400")->writeHeader("Content-Type", "application/json")

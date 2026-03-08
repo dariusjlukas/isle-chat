@@ -163,6 +163,57 @@ export function useWebSocket() {
           .updateUser({ role: role as 'owner' | 'admin' | 'user' });
       }),
 
+      wsService.on('member_role_changed', (data: unknown) => {
+        const { channel_id, user_id, role } = data as {
+          channel_id: string;
+          user_id: string;
+          role: ChannelRole;
+        };
+        const store = useChatStore.getState();
+        const ch = store.channels.find((c) => c.id === channel_id);
+        if (ch) {
+          store.updateChannel({
+            id: channel_id,
+            members: ch.members.map((m) =>
+              m.id === user_id ? { ...m, role } : m,
+            ),
+          });
+        }
+      }),
+
+      wsService.on('space_member_role_changed', (data: unknown) => {
+        const { space_id, user_id, role } = data as {
+          space_id: string;
+          user_id: string;
+          role: ChannelRole;
+        };
+        const store = useChatStore.getState();
+        const sp = store.spaces.find((s) => s.id === space_id);
+        if (sp) {
+          store.updateSpace({
+            id: space_id,
+            members: sp.members.map((m) =>
+              m.id === user_id ? { ...m, role } : m,
+            ),
+          });
+        }
+      }),
+
+      wsService.on('user_role_changed', (data: unknown) => {
+        const { user_id, role } = data as {
+          user_id: string;
+          role: string;
+        };
+        const store = useChatStore.getState();
+        store.setUsers(
+          store.users.map((u) =>
+            u.id === user_id
+              ? { ...u, role: role as 'owner' | 'admin' | 'user' }
+              : u,
+          ),
+        );
+      }),
+
       wsService.on('server_archived_changed', (data: unknown) => {
         const { archived } = data as { archived: boolean };
         useChatStore.getState().setServerArchived(archived);

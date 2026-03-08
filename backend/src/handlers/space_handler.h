@@ -426,6 +426,10 @@ struct SpaceHandler {
                     json notify = {{"type", "space_role_changed"}, {"space_id", space_id}, {"role", new_role}};
                     ws.send_to_user(target_user_id, notify.dump());
 
+                    // Broadcast to all space members so they can update their member lists
+                    json broadcast = {{"type", "space_member_role_changed"}, {"space_id", space_id}, {"user_id", target_user_id}, {"role", new_role}};
+                    ws.broadcast_to_space(space_id, broadcast.dump());
+
                     res->writeHeader("Content-Type", "application/json")
                         ->writeHeader("Access-Control-Allow-Origin", "*")
                         ->end(R"({"ok":true})");

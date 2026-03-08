@@ -161,6 +161,7 @@ export function Header({
             size='sm'
             color='default'
             onPress={handleLogout}
+            className='hover:text-danger'
           >
             <FontAwesomeIcon icon={faRightFromBracket} />
           </Button>

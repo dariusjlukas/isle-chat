@@ -275,6 +275,10 @@ struct AdminHandler {
                     json notify = {{"type", "server_role_changed"}, {"role", new_role}};
                     ws.send_to_user(target_user_id, notify.dump());
 
+                    // Broadcast to all connected users so they can update user cards
+                    json broadcast = {{"type", "user_role_changed"}, {"user_id", target_user_id}, {"role", new_role}};
+                    ws.broadcast_to_presence(broadcast.dump());
+
                     res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
                 } catch (const std::exception& e) {
                     res->writeStatus("400")->writeHeader("Content-Type", "application/json")

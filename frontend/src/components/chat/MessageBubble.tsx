@@ -612,7 +612,7 @@ export function MessageBubble({
           {!isOwn && (
             <p className='text-xs font-semibold text-default-400 mb-1'>
               {author ? (
-                <UserPopoverCard user={author}>
+                <UserPopoverCard user={author} channelId={message.channel_id}>
                   <span className='cursor-pointer hover:underline'>
                     {message.username}
                   </span>
@@ -644,7 +644,7 @@ export function MessageBubble({
         {!isOwn && (
           <p className='text-xs font-semibold text-primary mb-1'>
             {author ? (
-              <UserPopoverCard user={author}>
+              <UserPopoverCard user={author} channelId={message.channel_id}>
                 <span className='cursor-pointer hover:underline'>
                   {message.username}
                 </span>
