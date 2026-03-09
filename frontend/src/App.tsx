@@ -1,13 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import { Spinner } from '@heroui/react';
 import {
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  Spinner,
-  Accordion,
-  AccordionItem,
-} from '@heroui/react';
+  faGear,
+  faUsers,
+  faTicket,
+  faKey,
+  faUserPlus,
+} from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from './hooks/useAuth';
 import { useChatStore } from './stores/chatStore';
 import { LoginPage } from './components/auth/LoginPage';
@@ -24,6 +23,10 @@ import { CreateSpace } from './components/spaces/CreateSpace';
 import { SpaceBrowser } from './components/spaces/SpaceBrowser';
 import { SpaceSettings } from './components/spaces/SpaceSettings';
 import { SpaceInviteNotification } from './components/spaces/SpaceInviteNotification';
+import {
+  SettingsLayout,
+  type SettingsCategory,
+} from './components/common/SettingsLayout';
 import { InviteManager } from './components/admin/InviteManager';
 import { JoinRequests } from './components/admin/JoinRequests';
 import { ServerSettings } from './components/admin/ServerSettings';
@@ -54,6 +57,40 @@ function App() {
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const pendingRequestCount = useChatStore((s) => s.pendingRequestCount);
   const setPendingRequestCount = useChatStore((s) => s.setPendingRequestCount);
+
+  const adminCategories: SettingsCategory[] = [
+    {
+      key: 'server-settings',
+      label: 'Server Settings',
+      icon: faGear,
+      content: <ServerSettings />,
+    },
+    {
+      key: 'user-management',
+      label: 'User Management',
+      icon: faUsers,
+      content: <UserManager />,
+    },
+    {
+      key: 'invite-tokens',
+      label: 'Invite Tokens',
+      icon: faTicket,
+      content: <InviteManager />,
+    },
+    {
+      key: 'recovery-tokens',
+      label: 'Account Recovery',
+      icon: faKey,
+      content: <RecoveryTokenManager />,
+    },
+    {
+      key: 'join-requests',
+      label: 'Join Requests',
+      icon: faUserPlus,
+      badge: pendingRequestCount,
+      content: <JoinRequests />,
+    },
+  ];
   const [showBuildTime, setShowBuildTime] = useState(false);
   const [showConnectionCard, setShowConnectionCard] = useState(false);
   const [heartbeatInfo, setHeartbeatInfo] = useState<{
@@ -261,52 +298,12 @@ function App() {
         />
       )}
 
-      <Modal
+      <SettingsLayout
         isOpen={showAdmin}
-        onOpenChange={setShowAdmin}
-        size='3xl'
-        scrollBehavior='inside'
-        backdrop='opaque'
-      >
-        <ModalContent>
-          <ModalHeader>Admin Panel</ModalHeader>
-          <ModalBody className='pb-6'>
-            <Accordion
-              variant='splitted'
-              selectionMode='multiple'
-              defaultExpandedKeys={[]}
-            >
-              <AccordionItem key='server-settings' title='Server Settings'>
-                <ServerSettings />
-              </AccordionItem>
-              <AccordionItem key='user-management' title='User Management'>
-                <UserManager />
-              </AccordionItem>
-              <AccordionItem key='invite-tokens' title='Invite Tokens'>
-                <InviteManager />
-              </AccordionItem>
-              <AccordionItem key='recovery-tokens' title='Account Recovery'>
-                <RecoveryTokenManager />
-              </AccordionItem>
-              <AccordionItem
-                key='join-requests'
-                title={
-                  <div className='flex items-center justify-between w-full'>
-                    <span>Join Requests</span>
-                    {pendingRequestCount > 0 && (
-                      <span className='bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1'>
-                        {pendingRequestCount}
-                      </span>
-                    )}
-                  </div>
-                }
-              >
-                <JoinRequests />
-              </AccordionItem>
-            </Accordion>
-          </ModalBody>
-        </ModalContent>
-      </Modal>
+        onClose={() => setShowAdmin(false)}
+        title='Admin Panel'
+        categories={adminCategories}
+      />
 
       {showSettings && <UserSettings onClose={() => setShowSettings(false)} />}
 

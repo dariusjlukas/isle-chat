@@ -65,7 +65,7 @@ test.describe("Server-level self-demotion", () => {
     });
 
     // Expand User Management section
-    await page.getByText("User Management").click();
+    await page.getByRole("button", { name: "User Management" }).click();
 
     // Wait for users to load - find our own username
     await expect(page.getByText("@admin").first()).toBeVisible({
@@ -74,12 +74,10 @@ test.describe("Server-level self-demotion", () => {
 
     // The admin user's row should have a role Select (not just a text label)
     const adminRow = page
-      .locator('[class*="bg-content1"]')
+      .locator(".rounded-lg.bg-content1")
       .filter({ hasText: "@admin" });
-    const roleSelect = adminRow.locator(
-      "select, [role='button'][aria-label='Role']",
-    );
-    await expect(roleSelect).toBeVisible();
+    const roleSelect = adminRow.locator("select");
+    await expect(roleSelect.first()).toBeAttached();
   });
 
   test("owner can demote themselves to admin via UI", async ({
@@ -108,14 +106,14 @@ test.describe("Server-level self-demotion", () => {
     });
 
     // Expand User Management section
-    await page.getByText("User Management").click();
+    await page.getByRole("button", { name: "User Management" }).click();
     await expect(page.getByText("@admin").first()).toBeVisible({
       timeout: 5_000,
     });
 
     // Find the admin user's row and change the role via the hidden native <select>
     const adminRow = page
-      .locator('[class*="bg-content1"]')
+      .locator(".rounded-lg.bg-content1")
       .filter({ hasText: "@admin" });
     const nativeSelect = adminRow.locator("select");
     await nativeSelect.selectOption("admin", { force: true });

@@ -44,9 +44,8 @@ export function MessageList({
   const containerRef = useRef<HTMLDivElement>(null);
   const markReadTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const hasScrolledToUnreadRef = useRef<string | null>(null);
-  const separatorDismissTimer = useRef<ReturnType<typeof setTimeout>>(
-    undefined,
-  );
+  const separatorDismissTimer =
+    useRef<ReturnType<typeof setTimeout>>(undefined);
   const [isViewingAround, setIsViewingAround] = useState(false);
   const [isScrolledUp, setIsScrolledUp] = useState(false);
   const [initialLastReadId, setInitialLastReadId] = useState<string | null>(
@@ -76,67 +75,65 @@ export function MessageList({
     const messagesPromise = api.getMessages(channelId);
     const receiptsPromise = api.getReadReceipts(channelId).catch(() => []);
 
-    Promise.all([messagesPromise, receiptsPromise]).then(
-      ([msgs, receipts]) => {
-        // Build read receipts map
-        const map: Record<
-          string,
-          {
-            username: string;
-            last_read_message_id: string;
-            last_read_at: string;
-          }
-        > = {};
-        for (const r of receipts) {
-          map[r.user_id] = {
-            username: r.username,
-            last_read_message_id: r.last_read_message_id,
-            last_read_at: r.last_read_at,
-          };
+    Promise.all([messagesPromise, receiptsPromise]).then(([msgs, receipts]) => {
+      // Build read receipts map
+      const map: Record<
+        string,
+        {
+          username: string;
+          last_read_message_id: string;
+          last_read_at: string;
         }
-        setReadReceipts(channelId, map);
+      > = {};
+      for (const r of receipts) {
+        map[r.user_id] = {
+          username: r.username,
+          last_read_message_id: r.last_read_message_id,
+          last_read_at: r.last_read_at,
+        };
+      }
+      setReadReceipts(channelId, map);
 
-        // Capture the current user's last read message ID at channel-open time
-        const myReceipt = currentUserId ? map[currentUserId] : undefined;
-        const lastReadId = myReceipt?.last_read_message_id ?? null;
+      // Capture the current user's last read message ID at channel-open time
+      const myReceipt = currentUserId ? map[currentUserId] : undefined;
+      const lastReadId = myReceipt?.last_read_message_id ?? null;
 
-        // Only set initialLastReadRef if this is a fresh channel open
-        if (hasScrolledToUnreadRef.current !== channelId) {
-          // If user has read ALL messages (or no receipt), don't show separator
-          const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
-          if (lastReadId && lastReadId !== lastMsg?.id) {
-            setInitialLastReadId(lastReadId);
-          } else {
-            setInitialLastReadId(null);
+      // Only set initialLastReadRef if this is a fresh channel open
+      if (hasScrolledToUnreadRef.current !== channelId) {
+        // If user has read ALL messages (or no receipt), don't show separator
+        const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+        if (lastReadId && lastReadId !== lastMsg?.id) {
+          setInitialLastReadId(lastReadId);
+        } else {
+          setInitialLastReadId(null);
+        }
+      }
+
+      setMessages(channelId, msgs);
+      setIsViewingAround(false);
+
+      // Scroll to first unread message on initial channel open
+      if (hasScrolledToUnreadRef.current !== channelId) {
+        hasScrolledToUnreadRef.current = channelId;
+        if (lastReadId) {
+          const unreadIdx = msgs.findIndex((m) => m.id === lastReadId);
+          if (unreadIdx >= 0 && unreadIdx < msgs.length - 1) {
+            const firstUnreadId = msgs[unreadIdx + 1].id;
+            requestAnimationFrame(() => {
+              const el = document.getElementById(`msg-${firstUnreadId}`);
+              if (el) {
+                el.scrollIntoView({ behavior: 'instant', block: 'start' });
+              }
+            });
+            return;
           }
         }
-
-        setMessages(channelId, msgs);
-        setIsViewingAround(false);
-
-        // Scroll to first unread message on initial channel open
-        if (hasScrolledToUnreadRef.current !== channelId) {
-          hasScrolledToUnreadRef.current = channelId;
-          if (lastReadId) {
-            const unreadIdx = msgs.findIndex((m) => m.id === lastReadId);
-            if (unreadIdx >= 0 && unreadIdx < msgs.length - 1) {
-              const firstUnreadId = msgs[unreadIdx + 1].id;
-              requestAnimationFrame(() => {
-                const el = document.getElementById(`msg-${firstUnreadId}`);
-                if (el) {
-                  el.scrollIntoView({ behavior: 'instant', block: 'start' });
-                }
-              });
-              return;
-            }
-          }
-          // All read or no receipt — scroll to bottom
-          requestAnimationFrame(() => {
-            bottomRef.current?.scrollIntoView({ behavior: 'instant' });
-          });
-        }
-      },
-    );
+        // All read or no receipt — scroll to bottom
+        requestAnimationFrame(() => {
+          bottomRef.current?.scrollIntoView({ behavior: 'instant' });
+        });
+      }
+    });
   }, [channelId, setMessages, setReadReceipts, currentUserId]);
 
   // Jump-to-message

@@ -43,10 +43,18 @@ test.describe("Admin panel access", () => {
       timeout: 10_000,
     });
 
-    await expect(page.getByText("Server Settings")).toBeVisible();
-    await expect(page.getByText("Invite Tokens")).toBeVisible();
-    await expect(page.getByText("Account Recovery")).toBeVisible();
-    await expect(page.getByText("Join Requests")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Server Settings" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Invite Tokens" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Account Recovery" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Join Requests" }),
+    ).toBeVisible();
   });
 
   test("regular user cannot see admin button", async ({
@@ -74,7 +82,7 @@ test.describe("Server settings", () => {
     await clickHeaderButton(page, ADMIN_BTN);
     await expect(page.getByText("Admin Panel").first()).toBeVisible();
 
-    await page.getByText("Server Settings").click();
+    await page.getByRole("button", { name: "Server Settings" }).click();
 
     await expect(page.getByText("Registration Mode")).toBeVisible({
       timeout: 5_000,
@@ -88,7 +96,7 @@ test.describe("Invite tokens", () => {
 
     await clickHeaderButton(page, ADMIN_BTN);
 
-    await page.getByText("Invite Tokens").click();
+    await page.getByRole("button", { name: "Invite Tokens" }).click();
 
     await expect(
       page.getByRole("button", { name: /generate|create/i }),
@@ -105,7 +113,11 @@ test.describe("User settings", () => {
     await expect(page.getByText("Settings").first()).toBeVisible({
       timeout: 5_000,
     });
-    await expect(page.getByText("Profile")).toBeVisible();
-    await expect(page.getByText("Appearance")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Profile" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Appearance" }),
+    ).toBeVisible();
   });
 });
