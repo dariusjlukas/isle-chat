@@ -200,6 +200,26 @@ struct AuthHandler {
             res->onAborted([]() {});
         });
 
+        app.post("/api/auth/mfa/setup", [this](auto* res, auto* req) {
+            std::string body;
+            res->onData([this, res, body = std::move(body)](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                handle_mfa_setup(res, body);
+            });
+            res->onAborted([]() {});
+        });
+
+        app.post("/api/auth/mfa/setup/verify", [this](auto* res, auto* req) {
+            std::string body;
+            res->onData([this, res, body = std::move(body)](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                handle_mfa_setup_verify(res, body);
+            });
+            res->onAborted([]() {});
+        });
+
         app.post("/api/auth/logout", [this](auto* res, auto* req) {
             std::string token(req->getHeader("authorization"));
             if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
@@ -232,9 +252,9 @@ private:
         if (!mfa_required && !user_has_totp) return false;
 
         if (mfa_required && !user_has_totp) {
-            // User hasn't set up TOTP but admin requires it — let them in but flag it
-            auto token = db.create_session(user.id, get_session_expiry());
-            json resp = {{"token", token}, {"user", make_user_json(user)}, {"must_setup_totp", true}};
+            // User hasn't set up TOTP but admin requires it — force setup
+            auto mfa_token = db.create_mfa_pending_token(user.id, auth_method);
+            json resp = {{"must_setup_totp", true}, {"mfa_token", mfa_token}};
             res->writeHeader("Content-Type", "application/json")->end(resp.dump());
             return true;
         }
@@ -299,7 +319,9 @@ private:
             {"bio", user.bio},
             {"status", user.status},
             {"avatar_file_id", user.avatar_file_id},
-            {"profile_color", user.profile_color}
+            {"profile_color", user.profile_color},
+            {"has_password", db.has_password(user.id)},
+            {"has_totp", db.has_totp(user.id)}
         };
     }
 
@@ -1289,6 +1311,97 @@ private:
             json resp = {{"token", token}, {"user", make_user_json(*user)}};
 
             // For password login, also check expiry
+            if (auth_method == "password") {
+                auto policy = get_password_policy();
+                if (policy.max_age_days > 0) {
+                    resp["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
+                }
+            }
+
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        } catch (const std::exception& e) {
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
+        }
+    }
+
+    void handle_mfa_setup(uWS::HttpResponse<SSL>* res, const std::string& body) {
+        try {
+            auto j = json::parse(body);
+            std::string mfa_token = j.at("mfa_token");
+
+            auto pending = db.validate_mfa_pending_token(mfa_token);
+            if (!pending) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid or expired MFA token"})");
+                return;
+            }
+
+            auto [user_id, auth_method] = *pending;
+
+            auto user = db.find_user_by_id(user_id);
+            if (!user) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"User not found"})");
+                return;
+            }
+
+            auto secret = totp::generate_secret();
+            db.store_totp_secret(user_id, secret);
+
+            auto server_name = db.get_setting("server_name").value_or("Isle Chat");
+            auto uri = totp::build_uri(secret, user->username, server_name);
+
+            json resp = {{"secret", secret}, {"uri", uri}};
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        } catch (const std::exception& e) {
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
+        }
+    }
+
+    void handle_mfa_setup_verify(uWS::HttpResponse<SSL>* res, const std::string& body) {
+        try {
+            auto j = json::parse(body);
+            std::string mfa_token = j.at("mfa_token");
+            std::string code = j.at("code");
+
+            auto pending = db.validate_mfa_pending_token(mfa_token);
+            if (!pending) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid or expired MFA token"})");
+                return;
+            }
+
+            auto [user_id, auth_method] = *pending;
+
+            auto secret = db.get_unverified_totp_secret(user_id);
+            if (!secret) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"No TOTP setup in progress"})");
+                return;
+            }
+
+            if (!totp::verify_code(*secret, code)) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid verification code"})");
+                return;
+            }
+
+            // TOTP verified — mark as verified, consume MFA token, create session
+            db.verify_totp(user_id);
+            db.delete_mfa_pending_token(mfa_token);
+
+            auto user = db.find_user_by_id(user_id);
+            if (!user) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"User not found"})");
+                return;
+            }
+
+            auto token = db.create_session(user->id, get_session_expiry());
+            json resp = {{"token", token}, {"user", make_user_json(*user)}};
+
             if (auth_method == "password") {
                 auto policy = get_password_policy();
                 if (policy.max_age_days > 0) {

@@ -70,11 +70,15 @@ export type LoginResult =
       token: string;
       user: User;
       must_change_password?: boolean;
-      must_setup_totp?: boolean;
       mfa_required?: false;
+      must_setup_totp?: false;
     }
   | {
       mfa_required: true;
+      mfa_token: string;
+    }
+  | {
+      must_setup_totp: true;
       mfa_token: string;
     };
 
@@ -887,6 +891,20 @@ export function getTotpStatus() {
 
 export function verifyMfa(data: { mfa_token: string; totp_code: string }) {
   return request<{ token: string; user: User }>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+export function mfaSetup(mfa_token: string) {
+  return request<{ secret: string; uri: string }>('/auth/mfa/setup', {
+    method: 'POST',
+    body: JSON.stringify({ mfa_token }),
+  });
+}
+
+export function mfaSetupVerify(data: { mfa_token: string; code: string }) {
+  return request<{ token: string; user: User }>('/auth/mfa/setup/verify', {
     method: 'POST',
     body: JSON.stringify(data),
   });

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button, Card, CardBody, Input, Alert, Divider } from '@heroui/react';
+import QRCode from 'qrcode';
 import { useChatStore } from '../../stores/chatStore';
 import { browserSupportsWebAuthn, authenticate } from '../../services/webauthn';
 import * as pki from '../../services/pki';
@@ -34,6 +35,14 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   const [totpCode, setTotpCode] = useState('');
   const [mfaLoading, setMfaLoading] = useState(false);
 
+  // Forced TOTP setup state
+  const [setupToken, setSetupToken] = useState('');
+  const [setupSecret, setSetupSecret] = useState('');
+  const [setupQrDataUrl, setSetupQrDataUrl] = useState('');
+  const [setupCode, setSetupCode] = useState('');
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [setupVerifying, setSetupVerifying] = useState(false);
+
   useEffect(() => {
     let retryTimer: ReturnType<typeof setTimeout>;
     let isRetry = false;
@@ -58,20 +67,53 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
     return () => clearTimeout(retryTimer);
   }, []);
 
-  const handleLoginResult = (result: LoginResult) => {
-    if (result.mfa_required) {
+  const handleLoginResult = async (result: LoginResult) => {
+    if ('mfa_required' in result && result.mfa_required) {
       setMfaToken(result.mfa_token);
       setError('');
       return;
     }
-    if (result.must_setup_totp) {
-      setAuth(result.user, result.token);
-      alert(
-        'Your server requires two-factor authentication. Please set it up in Settings > Two-Factor Auth.',
-      );
+    if ('must_setup_totp' in result && result.must_setup_totp) {
+      // Start TOTP setup flow
+      setSetupToken(result.mfa_token);
+      setSetupLoading(true);
+      setError('');
+      try {
+        const setup = await api.mfaSetup(result.mfa_token);
+        setSetupSecret(setup.secret);
+        const dataUrl = await QRCode.toDataURL(setup.uri, {
+          width: 200,
+          margin: 2,
+          color: { dark: '#000000', light: '#ffffff' },
+        });
+        setSetupQrDataUrl(dataUrl);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to start TOTP setup');
+        setSetupToken('');
+      } finally {
+        setSetupLoading(false);
+      }
       return;
     }
     setAuth(result.user, result.token);
+  };
+
+  const handleSetupVerify = async (code: string) => {
+    if (code.length !== 6) return;
+    setSetupVerifying(true);
+    setError('');
+    try {
+      const result = await api.mfaSetupVerify({
+        mfa_token: setupToken,
+        code,
+      });
+      setAuth(result.user, result.token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Verification failed');
+      setSetupCode('');
+    } finally {
+      setSetupVerifying(false);
+    }
   };
 
   const handleMfaVerify = async (code: string) => {
@@ -175,6 +217,118 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   const pkiEnabled = authMethods.includes('pki') && pki.isWebCryptoAvailable();
   const passwordEnabled = authMethods.includes('password');
   const webauthnSupported = browserSupportsWebAuthn();
+
+  // Forced TOTP setup screen
+  if (setupToken) {
+    return (
+      <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
+        <img
+          src={logoLarge}
+          alt={serverName}
+          className='w-24 h-24 mb-4 dark:hidden'
+        />
+        <img
+          src={logoLargeDark}
+          alt={serverName}
+          className='w-24 h-24 mb-4 hidden dark:block'
+        />
+        <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
+          <CardBody className='p-5 sm:p-8'>
+            <h1 className='text-3xl font-bold text-foreground mb-2'>
+              Set Up Two-Factor Authentication
+            </h1>
+            <p className='text-default-500 mb-4'>
+              This server requires two-factor authentication. Scan the QR code
+              with your authenticator app to continue.
+            </p>
+
+            {error && (
+              <Alert color='danger' variant='flat' className='mb-4'>
+                {error}
+              </Alert>
+            )}
+
+            {setupLoading ? (
+              <div className='text-center text-default-500 py-8'>
+                Preparing setup...
+              </div>
+            ) : (
+              <>
+                <div className='flex justify-center py-2'>
+                  {setupQrDataUrl && (
+                    <img
+                      src={setupQrDataUrl}
+                      alt='TOTP QR Code'
+                      className='rounded-lg'
+                      width={200}
+                      height={200}
+                    />
+                  )}
+                </div>
+
+                <div className='mb-4'>
+                  <p className='text-xs text-default-400 mb-1'>
+                    Or enter this key manually:
+                  </p>
+                  <code className='text-xs bg-default-100 px-2 py-1 rounded font-mono select-all break-all'>
+                    {setupSecret}
+                  </code>
+                </div>
+
+                <Divider className='my-4' />
+
+                <div className='space-y-4'>
+                  <Input
+                    label='Verification Code'
+                    variant='bordered'
+                    value={setupCode}
+                    onChange={(e) => {
+                      const code = e.target.value
+                        .replace(/\D/g, '')
+                        .slice(0, 6);
+                      setSetupCode(code);
+                      if (code.length === 6) handleSetupVerify(code);
+                    }}
+                    placeholder='000000'
+                    maxLength={6}
+                    inputMode='numeric'
+                    autoComplete='one-time-code'
+                    autoFocus
+                    isDisabled={setupVerifying}
+                    classNames={{
+                      input: 'text-center font-mono text-lg tracking-widest',
+                    }}
+                  />
+                  {setupVerifying && (
+                    <p className='text-center text-default-500 text-sm'>
+                      Verifying...
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            <Button
+              variant='light'
+              color='default'
+              fullWidth
+              className='mt-4'
+              size='sm'
+              onPress={() => {
+                setSetupToken('');
+                setSetupSecret('');
+                setSetupQrDataUrl('');
+                setSetupCode('');
+                setError('');
+              }}
+            >
+              Back to sign in
+            </Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
 
   // MFA verification screen
   if (mfaToken) {

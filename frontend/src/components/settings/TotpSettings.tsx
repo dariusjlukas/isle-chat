@@ -11,6 +11,7 @@ export function TotpSettings() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [disableBlocked, setDisableBlocked] = useState(false);
 
   // Setup state
   const [secret, setSecret] = useState('');
@@ -23,8 +24,16 @@ export function TotpSettings() {
   const [disabling, setDisabling] = useState(false);
 
   useEffect(() => {
-    api.getMe().then((me) => {
+    Promise.all([api.getMe(), api.getPublicConfig()]).then(([me, config]) => {
       setPhase(me.has_totp ? 'enabled' : 'disabled');
+      // Check if any of the user's auth methods require MFA
+      if (me.has_totp) {
+        const blocked =
+          (config.mfa_required_password === true && me.has_password === true) ||
+          config.mfa_required_pki === true ||
+          config.mfa_required_passkey === true;
+        setDisableBlocked(blocked);
+      }
     });
   }, []);
 
@@ -202,41 +211,52 @@ export function TotpSettings() {
 
           <Divider />
 
-          <div>
-            <p className='text-sm font-medium text-foreground mb-1'>
-              Disable Two-Factor Authentication
-            </p>
-            <p className='text-xs text-default-400 mb-3'>
-              Enter a verification code from your authenticator app to disable
-              two-factor authentication.
-            </p>
-            <form onSubmit={handleDisable} className='space-y-3'>
-              <Input
-                label='Verification Code'
-                variant='bordered'
-                value={disableCode}
-                onChange={(e) =>
-                  setDisableCode(e.target.value.replace(/\D/g, '').slice(0, 6))
-                }
-                placeholder='000000'
-                maxLength={6}
-                inputMode='numeric'
-                autoComplete='one-time-code'
-                classNames={{
-                  input: 'text-center font-mono text-lg tracking-widest',
-                }}
-              />
-              <Button
-                type='submit'
-                color='danger'
-                variant='flat'
-                size='sm'
-                isLoading={disabling}
-              >
-                Disable Two-Factor Auth
-              </Button>
-            </form>
-          </div>
+          {disableBlocked ? (
+            <Alert color='warning' variant='flat'>
+              <p className='text-sm'>
+                Two-factor authentication cannot be disabled because this server
+                requires it for one or more of your login methods.
+              </p>
+            </Alert>
+          ) : (
+            <div>
+              <p className='text-sm font-medium text-foreground mb-1'>
+                Disable Two-Factor Authentication
+              </p>
+              <p className='text-xs text-default-400 mb-3'>
+                Enter a verification code from your authenticator app to disable
+                two-factor authentication.
+              </p>
+              <form onSubmit={handleDisable} className='space-y-3'>
+                <Input
+                  label='Verification Code'
+                  variant='bordered'
+                  value={disableCode}
+                  onChange={(e) =>
+                    setDisableCode(
+                      e.target.value.replace(/\D/g, '').slice(0, 6),
+                    )
+                  }
+                  placeholder='000000'
+                  maxLength={6}
+                  inputMode='numeric'
+                  autoComplete='one-time-code'
+                  classNames={{
+                    input: 'text-center font-mono text-lg tracking-widest',
+                  }}
+                />
+                <Button
+                  type='submit'
+                  color='danger'
+                  variant='flat'
+                  size='sm'
+                  isLoading={disabling}
+                >
+                  Disable Two-Factor Auth
+                </Button>
+              </form>
+            </div>
+          )}
         </>
       )}
     </div>

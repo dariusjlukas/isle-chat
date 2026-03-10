@@ -121,7 +121,7 @@ test.describe("Password login with MFA (TOTP)", () => {
 });
 
 test.describe("Admin MFA requirement", () => {
-  test("must_setup_totp flag shown when MFA required but not configured", async ({
+  test("user without TOTP is forced to set it up at login", async ({
     page,
     workerConfig,
   }) => {
@@ -145,16 +145,21 @@ test.describe("Admin MFA requirement", () => {
     await page.getByLabel("Password").fill("TestPass123");
     await page.getByRole("button", { name: /sign in with password/i }).click();
 
-    // User should be logged in (with must_setup_totp flag, which shows an alert)
-    // The app shows a browser alert saying to set up TOTP
-    page.on("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("two-factor");
-      await dialog.accept();
-    });
+    // Should see the forced TOTP setup screen
+    await expect(
+      page.getByText("Set Up Two-Factor Authentication"),
+    ).toBeVisible({ timeout: 10_000 });
 
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
-      timeout: 10_000,
-    });
+    // Should show QR code and manual key
+    await expect(
+      page.getByText(/scan.*qr|authenticator/i),
+    ).toBeVisible({ timeout: 5_000 });
+
+    // Back button should return to login
+    await page.getByRole("button", { name: "Back to sign in" }).click();
+    await expect(
+      page.getByRole("button", { name: /sign in with password/i }),
+    ).toBeVisible({ timeout: 5_000 });
   });
 });
 

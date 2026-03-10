@@ -74,6 +74,57 @@ class TestTotpRemoval:
                            json={"code": "123456"}, headers=admin_user["headers"])
         assert r.status_code == 400
 
+    def test_remove_totp_blocked_when_mfa_required_for_password(self, client, admin_user):
+        """Cannot disable TOTP when server requires MFA for password and user has a password."""
+        # Enable password auth and require MFA for it
+        client.put("/api/admin/settings", json={
+            "auth_methods": ["passkey", "pki", "password"],
+            "mfa_required_password": True,
+        }, headers=admin_user["headers"])
+
+        # Create a password user with TOTP enabled
+        reg = password_register(client, "mfablock", "MFA Block", password="TestPass123")
+        headers = auth_header(reg["token"])
+        totp = setup_totp(client, headers)
+
+        # Try to remove TOTP — should be blocked
+        code = totp.now()
+        r = client.request("DELETE", "/api/users/me/totp",
+                           json={"code": code}, headers=headers)
+        assert r.status_code == 403
+        assert "cannot disable" in r.json()["error"].lower()
+
+    def test_remove_totp_blocked_when_mfa_required_for_pki(self, client, admin_user):
+        """Cannot disable TOTP when server requires MFA for PKI and user has PKI keys."""
+        # admin_user already has a PKI key from registration
+        client.put("/api/admin/settings", json={
+            "mfa_required_pki": True,
+        }, headers=admin_user["headers"])
+
+        totp = setup_totp(client, admin_user["headers"])
+
+        code = totp.now()
+        r = client.request("DELETE", "/api/users/me/totp",
+                           json={"code": code}, headers=admin_user["headers"])
+        assert r.status_code == 403
+        assert "cannot disable" in r.json()["error"].lower()
+
+    def test_remove_totp_allowed_when_mfa_not_required(self, client, admin_user):
+        """TOTP removal succeeds when no MFA requirements are set."""
+        client.put("/api/admin/settings", json={
+            "auth_methods": ["passkey", "pki", "password"],
+            "mfa_required_password": False,
+            "mfa_required_pki": False,
+            "mfa_required_passkey": False,
+        }, headers=admin_user["headers"])
+
+        totp = setup_totp(client, admin_user["headers"])
+
+        code = totp.now()
+        r = client.request("DELETE", "/api/users/me/totp",
+                           json={"code": code}, headers=admin_user["headers"])
+        assert r.status_code == 200
+
 
 class TestMfaPasswordLogin:
     """Test MFA flow when user has TOTP enabled and logs in with password."""
@@ -200,26 +251,72 @@ class TestAdminMfaSettings:
         assert "mfa_required_password" in data
         assert data["mfa_required_password"] is True
 
-    def test_mfa_required_but_no_totp_setup(self, client, admin_user):
-        """When admin requires MFA but user hasn't set it up, user gets must_setup_totp flag."""
+    def test_mfa_required_but_no_totp_forces_setup(self, client, admin_user):
+        """When admin requires MFA but user hasn't set it up, user is forced to set up TOTP."""
         client.put("/api/admin/settings", json={
             "auth_methods": ["passkey", "pki", "password"],
             "mfa_required_password": True,
         }, headers=admin_user["headers"])
 
         # Register a password user (who hasn't set up TOTP)
-        reg = password_register(client, "nomfa", "No MFA", password="TestPass123")
-        # User is logged in from registration, now log out and try logging in
+        password_register(client, "nomfa", "No MFA", password="TestPass123")
+        # Try logging in — should get must_setup_totp
         r = client.post("/api/auth/password/login", json={
             "username": "nomfa",
             "password": "TestPass123",
         })
         assert r.status_code == 200
         data = r.json()
-        # Should get a session but with must_setup_totp flag
-        assert data.get("must_setup_totp") is True
-        assert data["token"]
-        assert data["user"]["username"] == "nomfa"
+        assert data["must_setup_totp"] is True
+        assert "mfa_token" in data
+
+        # Use the mfa_token to start TOTP setup
+        mfa_token = data["mfa_token"]
+        r = client.post("/api/auth/mfa/setup", json={"mfa_token": mfa_token})
+        assert r.status_code == 200
+        setup_data = r.json()
+        assert "secret" in setup_data
+        assert setup_data["uri"].startswith("otpauth://totp/")
+
+        # Verify the TOTP setup and complete login
+        totp = pyotp.TOTP(setup_data["secret"])
+        code = totp.now()
+        r = client.post("/api/auth/mfa/setup/verify", json={
+            "mfa_token": mfa_token,
+            "code": code,
+        })
+        assert r.status_code == 200
+        result = r.json()
+        assert result["token"]
+        assert result["user"]["username"] == "nomfa"
+
+    def test_mfa_setup_with_wrong_code(self, client, admin_user):
+        """Wrong TOTP code during forced setup returns error."""
+        client.put("/api/admin/settings", json={
+            "auth_methods": ["passkey", "pki", "password"],
+            "mfa_required_password": True,
+        }, headers=admin_user["headers"])
+
+        password_register(client, "nomfa2", "No MFA 2", password="TestPass123")
+        r = client.post("/api/auth/password/login", json={
+            "username": "nomfa2",
+            "password": "TestPass123",
+        })
+        mfa_token = r.json()["mfa_token"]
+
+        r = client.post("/api/auth/mfa/setup", json={"mfa_token": mfa_token})
+        assert r.status_code == 200
+
+        r = client.post("/api/auth/mfa/setup/verify", json={
+            "mfa_token": mfa_token,
+            "code": "000000",
+        })
+        assert r.status_code == 401
+
+    def test_mfa_setup_with_invalid_token(self, client):
+        """Invalid mfa_token for setup returns error."""
+        r = client.post("/api/auth/mfa/setup", json={"mfa_token": "bogus"})
+        assert r.status_code in (400, 401)
 
     def test_mfa_not_required_no_totp_normal_login(self, client, admin_user):
         """Without MFA requirement and no TOTP, login is normal (no MFA challenge)."""
@@ -236,4 +333,3 @@ class TestAdminMfaSettings:
         data = r.json()
         assert data["token"]
         assert data.get("mfa_required") is not True
-        assert data.get("must_setup_totp") is not True

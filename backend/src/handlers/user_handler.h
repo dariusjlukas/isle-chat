@@ -640,6 +640,31 @@ struct UserHandler {
                         return;
                     }
 
+                    // Check if user has auth methods that require MFA
+                    auto check_mfa = [&](const std::string& method) -> bool {
+                        auto val = db.get_setting("mfa_required_" + method);
+                        return val && *val == "true";
+                    };
+
+                    std::vector<std::string> blocking_methods;
+                    if (check_mfa("password") && db.has_password(user_id))
+                        blocking_methods.push_back("password");
+                    if (check_mfa("pki") && !db.list_pki_credentials(user_id).empty())
+                        blocking_methods.push_back("browser key");
+                    if (check_mfa("passkey") && !db.list_webauthn_credentials(user_id).empty())
+                        blocking_methods.push_back("passkey");
+
+                    if (!blocking_methods.empty()) {
+                        std::string methods_str;
+                        for (size_t i = 0; i < blocking_methods.size(); i++) {
+                            if (i > 0) methods_str += (i == blocking_methods.size() - 1) ? " and " : ", ";
+                            methods_str += blocking_methods[i];
+                        }
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(json({{"error", "Cannot disable two-factor authentication because this server requires it for " + methods_str + " login. Remove those authentication methods first or contact an administrator."}}).dump());
+                        return;
+                    }
+
                     db.delete_totp(user_id);
                     res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
                 } catch (const std::exception& e) {
