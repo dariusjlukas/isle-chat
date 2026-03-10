@@ -28,7 +28,6 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   // PKI PIN state
   const [showPkiPin, setShowPkiPin] = useState(false);
   const [pkiPin, setPkiPin] = useState('');
-  const [isLegacyKey, setIsLegacyKey] = useState(false);
 
   // MFA state
   const [mfaToken, setMfaToken] = useState('');
@@ -112,17 +111,15 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
     }
   };
 
-  const handlePkiLoginStart = async () => {
+  const handlePkiLoginStart = () => {
     setError('');
-    const isPinProtected = await pki.isKeyPinProtected();
-    setIsLegacyKey(!isPinProtected);
     setShowPkiPin(true);
     setPkiPin('');
   };
 
   const handlePkiLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!isLegacyKey && !pkiPin) {
+    if (!pkiPin) {
       setError('Please enter your PIN');
       return;
     }
@@ -325,23 +322,15 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
 
               {pkiEnabled && hasLocalKey && showPkiPin && (
                 <form onSubmit={handlePkiLogin} className='space-y-3'>
-                  {!isLegacyKey && (
-                    <Input
-                      label='Browser Key PIN'
-                      type='password'
-                      variant='bordered'
-                      value={pkiPin}
-                      onChange={(e) => setPkiPin(e.target.value)}
-                      autoFocus
-                      size='sm'
-                    />
-                  )}
-                  {isLegacyKey && (
-                    <p className='text-xs text-default-400 text-center'>
-                      This is a legacy key without PIN protection. You can add a
-                      PIN in Settings after signing in.
-                    </p>
-                  )}
+                  <Input
+                    label='Browser Key PIN'
+                    type='password'
+                    variant='bordered'
+                    value={pkiPin}
+                    onChange={(e) => setPkiPin(e.target.value)}
+                    autoFocus
+                    size='sm'
+                  />
                   <div className='flex gap-2'>
                     <Button
                       variant='bordered'

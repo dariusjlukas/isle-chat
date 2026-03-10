@@ -109,27 +109,14 @@ async function decryptPrivateKey(
   );
 }
 
-// --- Storage types ---
+// --- Storage type ---
 
-interface LegacyStoredKey {
-  id: string;
-  privateKey: CryptoKey;
-  publicKey: CryptoKey;
-  publicKeyB64: string;
-}
-
-interface PinProtectedStoredKey {
+interface StoredKey {
   id: string;
   encryptedPrivateKey: ArrayBuffer;
   salt: Uint8Array;
   iv: Uint8Array;
   publicKeyB64: string;
-}
-
-type StoredKey = LegacyStoredKey | PinProtectedStoredKey;
-
-function isPinProtected(entry: StoredKey): entry is PinProtectedStoredKey {
-  return 'encryptedPrivateKey' in entry;
 }
 
 // --- Public API ---
@@ -156,7 +143,7 @@ export async function generateKeyPair(pin: string): Promise<string> {
       salt,
       iv,
       publicKeyB64,
-    } satisfies PinProtectedStoredKey);
+    } satisfies StoredKey);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -170,19 +157,12 @@ export async function signChallenge(
   pin: string,
 ): Promise<string> {
   const entry = await loadStoredKey();
-  let privateKey: CryptoKey;
-
-  if (isPinProtected(entry)) {
-    privateKey = await decryptPrivateKey(
-      entry.encryptedPrivateKey,
-      entry.salt,
-      entry.iv,
-      pin,
-    );
-  } else {
-    // Legacy non-extractable CryptoKey
-    privateKey = entry.privateKey;
-  }
+  const privateKey = await decryptPrivateKey(
+    entry.encryptedPrivateKey,
+    entry.salt,
+    entry.iv,
+    pin,
+  );
 
   const data = new TextEncoder().encode(challenge);
   const signature = await crypto.subtle.sign(
@@ -237,63 +217,13 @@ export async function clearStoredKey(): Promise<void> {
 }
 
 /**
- * Check if the stored key is PIN-protected (vs legacy non-extractable format).
- * Returns false if no key is stored.
- */
-export async function isKeyPinProtected(): Promise<boolean> {
-  try {
-    const entry = await loadStoredKey();
-    return isPinProtected(entry);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Migrate a legacy (non-extractable) key to PIN-protected format.
- * This is only possible if the key was originally created as extractable.
- * For truly non-extractable keys, this will fail and the user must create a new key.
- */
-export async function migrateKeyToPin(pin: string): Promise<boolean> {
-  const entry = await loadStoredKey();
-  if (isPinProtected(entry)) return true; // Already migrated
-
-  try {
-    const pkcs8 = await crypto.subtle.exportKey('pkcs8', entry.privateKey);
-    const { encrypted, salt, iv } = await encryptPrivateKey(pkcs8, pin);
-
-    const db = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put({
-        id: KEY_ID,
-        encryptedPrivateKey: encrypted,
-        salt,
-        iv,
-        publicKeyB64: entry.publicKeyB64,
-      } satisfies PinProtectedStoredKey);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-    db.close();
-    return true;
-  } catch {
-    // Key is non-extractable, can't migrate
-    return false;
-  }
-}
-
-/**
- * Change the PIN on a PIN-protected key. Requires the current PIN.
+ * Change the PIN on a stored key. Requires the current PIN.
  */
 export async function changePin(
   currentPin: string,
   newPin: string,
 ): Promise<void> {
   const entry = await loadStoredKey();
-  if (!isPinProtected(entry)) {
-    throw new Error('Key is not PIN-protected');
-  }
 
   // Decrypt with current PIN to get raw PKCS8
   const aesKey = await deriveKeyFromPin(currentPin, entry.salt);
@@ -320,7 +250,7 @@ export async function changePin(
       salt,
       iv,
       publicKeyB64: entry.publicKeyB64,
-    } satisfies PinProtectedStoredKey);
+    } satisfies StoredKey);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

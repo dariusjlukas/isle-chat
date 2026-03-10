@@ -29,6 +29,19 @@ target_compile_definitions(uSockets PUBLIC LIBUS_USE_OPENSSL)
 # nlohmann/json (header-only)
 set(JSON_DIR ${CMAKE_SOURCE_DIR}/libs/json/single_include)
 
+# Argon2 (built from source)
+set(ARGON2_DIR ${CMAKE_SOURCE_DIR}/libs/argon2)
+add_library(argon2 STATIC
+    ${ARGON2_DIR}/src/argon2.c
+    ${ARGON2_DIR}/src/core.c
+    ${ARGON2_DIR}/src/encoding.c
+    ${ARGON2_DIR}/src/ref.c
+    ${ARGON2_DIR}/src/thread.c
+    ${ARGON2_DIR}/src/blake2/blake2b.c
+)
+target_include_directories(argon2 PUBLIC ${ARGON2_DIR}/include)
+target_include_directories(argon2 PRIVATE ${ARGON2_DIR}/src ${ARGON2_DIR}/src/blake2)
+
 # Application library (shared between main executable and tests)
 set(LIB_SOURCES
     src/auth/pki.cpp

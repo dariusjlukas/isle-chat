@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react';
 import { Button, Input, Alert, Divider } from '@heroui/react';
 import { useChatStore } from '../../stores/chatStore';
+import { useSettingsNav } from '../common/settingsNavContext';
 import * as api from '../../services/api';
 
 export function PasswordSettings() {
   const updateUser = useChatStore((s) => s.updateUser);
+  const user = useChatStore((s) => s.user);
+  const navigateTo = useSettingsNav();
   const [hasPassword, setHasPassword] = useState<boolean | null>(null);
   const [passwordEnabled, setPasswordEnabled] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
   const [passwordPolicy, setPasswordPolicy] =
     useState<api.PasswordPolicy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,6 +28,7 @@ export function PasswordSettings() {
     Promise.all([api.getPublicConfig(), api.getMe()])
       .then(([config, me]) => {
         setPasswordEnabled(config.auth_methods.includes('password'));
+        setMfaRequired(config.mfa_required_password ?? false);
         if (config.password_policy) setPasswordPolicy(config.password_policy);
         setHasPassword(me.has_password ?? false);
       })
@@ -122,8 +127,28 @@ export function PasswordSettings() {
     );
   }
 
+  const needsMfaSetup = mfaRequired && !user?.has_totp && !hasPassword;
+
   return (
     <div className='space-y-4'>
+      {needsMfaSetup && (
+        <Alert color='warning' variant='flat'>
+          <p className='text-sm'>
+            This server requires two-factor authentication for password login.
+            Please set up TOTP before adding a password.
+          </p>
+          <Button
+            size='sm'
+            color='warning'
+            variant='solid'
+            className='mt-2'
+            onPress={() => navigateTo('two-factor')}
+          >
+            Set Up Two-Factor Auth
+          </Button>
+        </Alert>
+      )}
+
       <p className='text-sm text-default-500'>
         {hasPassword
           ? 'Change your password below.'
@@ -177,7 +202,13 @@ export function PasswordSettings() {
             {passwordPolicy.require_special && ', special character'}
           </p>
         )}
-        <Button type='submit' color='primary' isLoading={saving} size='sm'>
+        <Button
+          type='submit'
+          color='primary'
+          isLoading={saving}
+          size='sm'
+          isDisabled={needsMfaSetup}
+        >
           {hasPassword ? 'Change Password' : 'Create Password'}
         </Button>
       </form>

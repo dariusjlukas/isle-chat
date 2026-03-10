@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Button, Card, CardBody, Alert, Spinner } from '@heroui/react';
 import { register as webauthnRegister } from '../../services/webauthn';
+import { useChatStore } from '../../stores/chatStore';
+import { useSettingsNav } from '../common/settingsNavContext';
 import * as api from '../../services/api';
 
 interface Passkey {
@@ -10,12 +12,18 @@ interface Passkey {
 }
 
 export function PasskeyManager() {
+  const user = useChatStore((s) => s.user);
+  const navigateTo = useSettingsNav();
   const [passkeys, setPasskeys] = useState<Passkey[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
+  const [mfaRequired, setMfaRequired] = useState(false);
 
   useEffect(() => {
+    api.getPublicConfig().then((config) => {
+      setMfaRequired(config.mfa_required_passkey ?? false);
+    });
     loadPasskeys();
   }, []);
 
@@ -68,6 +76,8 @@ export function PasskeyManager() {
       </div>
     );
 
+  const needsMfaSetup = mfaRequired && !user?.has_totp && passkeys.length === 0;
+
   return (
     <div className='space-y-4'>
       <h3 className='text-lg font-semibold text-foreground'>Passkeys</h3>
@@ -105,14 +115,32 @@ export function PasskeyManager() {
         ))}
       </div>
 
-      <Button
-        color='primary'
-        fullWidth
-        onPress={handleAddPasskey}
-        isLoading={adding}
-      >
-        {adding ? 'Setting up passkey...' : 'Add Passkey'}
-      </Button>
+      {needsMfaSetup ? (
+        <Alert color='warning' variant='flat'>
+          <p className='text-sm'>
+            This server requires two-factor authentication for passkey login.
+            Please set up TOTP before adding a passkey.
+          </p>
+          <Button
+            size='sm'
+            color='warning'
+            variant='solid'
+            className='mt-2'
+            onPress={() => navigateTo('two-factor')}
+          >
+            Set Up Two-Factor Auth
+          </Button>
+        </Alert>
+      ) : (
+        <Button
+          color='primary'
+          fullWidth
+          onPress={handleAddPasskey}
+          isLoading={adding}
+        >
+          {adding ? 'Setting up passkey...' : 'Add Passkey'}
+        </Button>
+      )}
     </div>
   );
 }

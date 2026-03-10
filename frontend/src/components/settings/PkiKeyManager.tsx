@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Button, Card, CardBody, Input, Alert, Spinner } from '@heroui/react';
 import * as pki from '../../services/pki';
 import * as api from '../../services/api';
+import { useChatStore } from '../../stores/chatStore';
+import { useSettingsNav } from '../common/settingsNavContext';
 import { RecoveryKeyDisplay } from '../auth/RecoveryKeyDisplay';
 
 interface PkiKey {
@@ -11,6 +13,8 @@ interface PkiKey {
 }
 
 export function PkiKeyManager() {
+  const user = useChatStore((s) => s.user);
+  const navigateTo = useSettingsNav();
   const [keys, setKeys] = useState<PkiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
@@ -21,21 +25,18 @@ export function PkiKeyManager() {
   const [showPinForm, setShowPinForm] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
-  const [isLegacyKey, setIsLegacyKey] = useState(false);
   const [showChangePinForm, setShowChangePinForm] = useState(false);
   const [currentPin, setCurrentPin] = useState('');
   const [changePinNew, setChangePinNew] = useState('');
   const [changePinConfirm, setChangePinConfirm] = useState('');
   const [changePinLoading, setChangePinLoading] = useState(false);
+  const [mfaRequired, setMfaRequired] = useState(false);
 
   useEffect(() => {
-    loadData();
-    pki.hasStoredKey().then(async (has) => {
-      if (has) {
-        const pinProtected = await pki.isKeyPinProtected();
-        setIsLegacyKey(!pinProtected);
-      }
+    api.getPublicConfig().then((config) => {
+      setMfaRequired(config.mfa_required_pki ?? false);
     });
+    loadData();
   }, []);
 
   const loadData = async () => {
@@ -89,43 +90,9 @@ export function PkiKeyManager() {
         setRecoveryKeys(result.recovery_keys);
       }
       setShowPinForm(false);
-      setIsLegacyKey(false);
       await loadData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add key');
-    } finally {
-      setAdding(false);
-    }
-  };
-
-  const handleMigrateKey = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!newPin) {
-      setError('Please set a PIN');
-      return;
-    }
-    if (newPin !== confirmPin) {
-      setError('PINs do not match');
-      return;
-    }
-    if (newPin.length < 4) {
-      setError('PIN must be at least 4 characters');
-      return;
-    }
-    setError('');
-    setAdding(true);
-    try {
-      const success = await pki.migrateKeyToPin(newPin);
-      if (success) {
-        setIsLegacyKey(false);
-        setShowPinForm(false);
-      } else {
-        setError(
-          'This key cannot be migrated (non-extractable). Please remove it and add a new browser key.',
-        );
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Migration failed');
     } finally {
       setAdding(false);
     }
@@ -251,28 +218,8 @@ export function PkiKeyManager() {
         )}
       </div>
 
-      {isLegacyKey && !showPinForm && (
-        <Alert color='warning' variant='flat'>
-          Your browser key is not PIN-protected.{' '}
-          <button
-            className='underline font-medium'
-            onClick={() => {
-              setShowPinForm(true);
-              setNewPin('');
-              setConfirmPin('');
-              setError('');
-            }}
-          >
-            Add a PIN now
-          </button>
-        </Alert>
-      )}
-
       {showPinForm ? (
-        <form
-          onSubmit={isLegacyKey ? handleMigrateKey : handleAddKey}
-          className='space-y-3'
-        >
+        <form onSubmit={handleAddKey} className='space-y-3'>
           <Input
             label='New PIN'
             type='password'
@@ -302,14 +249,26 @@ export function PkiKeyManager() {
               Cancel
             </Button>
             <Button type='submit' color='primary' fullWidth isLoading={adding}>
-              {adding
-                ? 'Working...'
-                : isLegacyKey
-                  ? 'Set PIN'
-                  : 'Add Browser Key'}
+              {adding ? 'Working...' : 'Add Browser Key'}
             </Button>
           </div>
         </form>
+      ) : mfaRequired && !user?.has_totp && keys.length === 0 ? (
+        <Alert color='warning' variant='flat'>
+          <p className='text-sm'>
+            This server requires two-factor authentication for browser key
+            login. Please set up TOTP before adding a browser key.
+          </p>
+          <Button
+            size='sm'
+            color='warning'
+            variant='solid'
+            className='mt-2'
+            onPress={() => navigateTo('two-factor')}
+          >
+            Set Up Two-Factor Auth
+          </Button>
+        </Alert>
       ) : (
         <Button
           color='primary'
@@ -321,26 +280,23 @@ export function PkiKeyManager() {
         </Button>
       )}
 
-      {!isLegacyKey &&
-        !showPinForm &&
-        !showChangePinForm &&
-        keys.length > 0 && (
-          <Button
-            variant='light'
-            color='default'
-            fullWidth
-            size='sm'
-            onPress={() => {
-              setShowChangePinForm(true);
-              setCurrentPin('');
-              setChangePinNew('');
-              setChangePinConfirm('');
-              setError('');
-            }}
-          >
-            Change PIN
-          </Button>
-        )}
+      {!showPinForm && !showChangePinForm && keys.length > 0 && (
+        <Button
+          variant='light'
+          color='default'
+          fullWidth
+          size='sm'
+          onPress={() => {
+            setShowChangePinForm(true);
+            setCurrentPin('');
+            setChangePinNew('');
+            setChangePinConfirm('');
+            setError('');
+          }}
+        >
+          Change PIN
+        </Button>
+      )}
 
       {showChangePinForm && (
         <form onSubmit={handleChangePin} className='space-y-3'>

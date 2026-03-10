@@ -8,8 +8,7 @@ RUN apk add --no-cache \
     postgresql-dev \
     pkgconf \
     zlib-dev \
-    linux-headers \
-    argon2-dev
+    linux-headers
 
 WORKDIR /app
 
@@ -37,8 +36,7 @@ RUN apk add --no-cache \
     libssl3 \
     libpq \
     libstdc++ \
-    libgcc \
-    argon2-libs
+    libgcc
 
 WORKDIR /app
 COPY --from=builder /app/build/chat-server .
