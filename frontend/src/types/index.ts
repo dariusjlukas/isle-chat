@@ -10,6 +10,7 @@ export interface User {
   avatar_file_id: string;
   profile_color: string;
   has_password?: boolean;
+  has_totp?: boolean;
 }
 
 export type ChannelRole = 'owner' | 'admin' | 'write' | 'read';

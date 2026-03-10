@@ -30,8 +30,10 @@ test.describe("Registration via UI", () => {
     await page.getByPlaceholder("johndoe").fill("firstuser");
     await page.getByPlaceholder("John Doe").fill("First User");
 
-    // Switch to Browser Key tab and click register
+    // Switch to Browser Key tab, fill PIN, and click register
     await page.getByText("Browser Key").click();
+    await page.getByLabel("Browser Key PIN").fill("testpin1234");
+    await page.getByLabel("Confirm PIN").fill("testpin1234");
     await page
       .getByRole("button", { name: /create account with browser key/i })
       .click();
@@ -75,6 +77,8 @@ test.describe("Registration via UI", () => {
     await page.getByPlaceholder("johndoe").fill("seconduser");
     await page.getByPlaceholder("John Doe").fill("Second User");
     await page.getByText("Browser Key").click();
+    await page.getByLabel("Browser Key PIN").fill("testpin1234");
+    await page.getByLabel("Confirm PIN").fill("testpin1234");
     await page
       .getByRole("button", { name: /create account with browser key/i })
       .click();

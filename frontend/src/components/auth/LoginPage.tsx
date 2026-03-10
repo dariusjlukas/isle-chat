@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { browserSupportsWebAuthn, authenticate } from '../../services/webauthn';
 import * as pki from '../../services/pki';
 import * as api from '../../services/api';
+import type { LoginResult } from '../../services/api';
 import logoLarge from '../../assets/isle-chat-logo-large.png';
 import logoLargeDark from '../../assets/isle-chat-logo-large-dark.png';
 
@@ -23,6 +24,16 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   const [serverName, setServerName] = useState('Isle Chat');
   const [configLoading, setConfigLoading] = useState(true);
   const [serverDown, setServerDown] = useState(false);
+
+  // PKI PIN state
+  const [showPkiPin, setShowPkiPin] = useState(false);
+  const [pkiPin, setPkiPin] = useState('');
+  const [isLegacyKey, setIsLegacyKey] = useState(false);
+
+  // MFA state
+  const [mfaToken, setMfaToken] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [mfaLoading, setMfaLoading] = useState(false);
 
   useEffect(() => {
     let retryTimer: ReturnType<typeof setTimeout>;
@@ -48,6 +59,40 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
     return () => clearTimeout(retryTimer);
   }, []);
 
+  const handleLoginResult = (result: LoginResult) => {
+    if (result.mfa_required) {
+      setMfaToken(result.mfa_token);
+      setError('');
+      return;
+    }
+    if (result.must_setup_totp) {
+      setAuth(result.user, result.token);
+      alert(
+        'Your server requires two-factor authentication. Please set it up in Settings > Two-Factor Auth.',
+      );
+      return;
+    }
+    setAuth(result.user, result.token);
+  };
+
+  const handleMfaVerify = async (code: string) => {
+    if (code.length !== 6) return;
+    setMfaLoading(true);
+    setError('');
+    try {
+      const result = await api.verifyMfa({
+        mfa_token: mfaToken,
+        totp_code: code,
+      });
+      setAuth(result.user, result.token);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Verification failed');
+      setTotpCode('');
+    } finally {
+      setMfaLoading(false);
+    }
+  };
+
   const handlePasskeyLogin = async () => {
     setLoading('passkey');
     setError('');
@@ -55,7 +100,7 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
       const options = await api.getLoginOptions();
       const credential = await authenticate(options);
       const result = await api.verifyLogin(credential);
-      setAuth(result.user, result.token);
+      handleLoginResult(result);
     } catch (e) {
       if (e instanceof Error && e.name === 'NotAllowedError') {
         setError('Authentication was cancelled');
@@ -67,7 +112,20 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
     }
   };
 
-  const handlePkiLogin = async () => {
+  const handlePkiLoginStart = async () => {
+    setError('');
+    const isPinProtected = await pki.isKeyPinProtected();
+    setIsLegacyKey(!isPinProtected);
+    setShowPkiPin(true);
+    setPkiPin('');
+  };
+
+  const handlePkiLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!isLegacyKey && !pkiPin) {
+      setError('Please enter your PIN');
+      return;
+    }
     setLoading('pki');
     setError('');
     try {
@@ -77,15 +135,19 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
         return;
       }
       const { challenge } = await api.getPkiChallenge(publicKey);
-      const signature = await pki.signChallenge(challenge);
+      const signature = await pki.signChallenge(challenge, pkiPin);
       const result = await api.pkiLogin({
         public_key: publicKey,
         challenge,
         signature,
       });
-      setAuth(result.user, result.token);
+      handleLoginResult(result);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Login failed');
+      if (e instanceof Error && e.message === 'Incorrect PIN') {
+        setError('Incorrect PIN');
+      } else {
+        setError(e instanceof Error ? e.message : 'Login failed');
+      }
     } finally {
       setLoading('');
     }
@@ -104,7 +166,7 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
         username: loginUsername.trim(),
         password: loginPassword,
       });
-      setAuth(result.user, result.token);
+      handleLoginResult(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Login failed');
     } finally {
@@ -116,6 +178,82 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
   const pkiEnabled = authMethods.includes('pki') && pki.isWebCryptoAvailable();
   const passwordEnabled = authMethods.includes('password');
   const webauthnSupported = browserSupportsWebAuthn();
+
+  // MFA verification screen
+  if (mfaToken) {
+    return (
+      <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
+        <img
+          src={logoLarge}
+          alt={serverName}
+          className='w-24 h-24 mb-4 dark:hidden'
+        />
+        <img
+          src={logoLargeDark}
+          alt={serverName}
+          className='w-24 h-24 mb-4 hidden dark:block'
+        />
+        <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
+          <CardBody className='p-5 sm:p-8'>
+            <h1 className='text-3xl font-bold text-foreground mb-2'>
+              Two-Factor Authentication
+            </h1>
+            <p className='text-default-500 mb-6'>
+              Enter the 6-digit code from your authenticator app
+            </p>
+
+            {error && (
+              <Alert color='danger' variant='flat' className='mb-4'>
+                {error}
+              </Alert>
+            )}
+
+            <div className='space-y-4'>
+              <Input
+                label='Verification Code'
+                variant='bordered'
+                value={totpCode}
+                onChange={(e) => {
+                  const code = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setTotpCode(code);
+                  if (code.length === 6) handleMfaVerify(code);
+                }}
+                placeholder='000000'
+                maxLength={6}
+                inputMode='numeric'
+                autoComplete='one-time-code'
+                autoFocus
+                isDisabled={mfaLoading}
+                classNames={{
+                  input: 'text-center font-mono text-lg tracking-widest',
+                }}
+              />
+              {mfaLoading && (
+                <p className='text-center text-default-500 text-sm'>
+                  Verifying...
+                </p>
+              )}
+            </div>
+
+            <Button
+              variant='light'
+              color='default'
+              fullWidth
+              className='mt-4'
+              size='sm'
+              onPress={() => {
+                setMfaToken('');
+                setTotpCode('');
+                setError('');
+              }}
+            >
+              Back to sign in
+            </Button>
+          </CardBody>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
@@ -173,19 +311,64 @@ export function LoginPage({ onSwitchToRegister, onSwitchToRecovery }: Props) {
                 </>
               )}
 
-              {pkiEnabled && hasLocalKey && (
+              {pkiEnabled && hasLocalKey && !showPkiPin && (
                 <Button
                   color='secondary'
                   fullWidth
-                  isLoading={loading === 'pki'}
                   isDisabled={!!loading}
-                  onPress={handlePkiLogin}
+                  onPress={handlePkiLoginStart}
                   size='lg'
                 >
-                  {loading === 'pki'
-                    ? 'Authenticating...'
-                    : 'Sign in with Browser Key'}
+                  Sign in with Browser Key
                 </Button>
+              )}
+
+              {pkiEnabled && hasLocalKey && showPkiPin && (
+                <form onSubmit={handlePkiLogin} className='space-y-3'>
+                  {!isLegacyKey && (
+                    <Input
+                      label='Browser Key PIN'
+                      type='password'
+                      variant='bordered'
+                      value={pkiPin}
+                      onChange={(e) => setPkiPin(e.target.value)}
+                      autoFocus
+                      size='sm'
+                    />
+                  )}
+                  {isLegacyKey && (
+                    <p className='text-xs text-default-400 text-center'>
+                      This is a legacy key without PIN protection. You can add a
+                      PIN in Settings after signing in.
+                    </p>
+                  )}
+                  <div className='flex gap-2'>
+                    <Button
+                      variant='bordered'
+                      onPress={() => {
+                        setShowPkiPin(false);
+                        setPkiPin('');
+                        setError('');
+                      }}
+                      size='lg'
+                      className='min-w-0'
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      type='submit'
+                      color='secondary'
+                      fullWidth
+                      isLoading={loading === 'pki'}
+                      isDisabled={!!loading}
+                      size='lg'
+                    >
+                      {loading === 'pki'
+                        ? 'Authenticating...'
+                        : 'Unlock & Sign in'}
+                    </Button>
+                  </div>
+                </form>
               )}
 
               {pkiEnabled && !hasLocalKey && (

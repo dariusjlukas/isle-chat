@@ -4,6 +4,7 @@ import {
   faFingerprint,
   faKey,
   faLock,
+  faShieldHalved,
   faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
 import {
@@ -15,6 +16,7 @@ import { AppearanceSettings } from './AppearanceSettings';
 import { PasskeyManager } from './PasskeyManager';
 import { PkiKeyManager } from './PkiKeyManager';
 import { PasswordSettings } from './PasswordSettings';
+import { TotpSettings } from './TotpSettings';
 import { DangerZone } from './DangerZone';
 
 interface Props {
@@ -51,6 +53,12 @@ const categories: SettingsCategory[] = [
     label: 'Password',
     icon: faLock,
     content: <PasswordSettings />,
+  },
+  {
+    key: 'two-factor',
+    label: 'Two-Factor Auth',
+    icon: faShieldHalved,
+    content: <TotpSettings />,
   },
   {
     key: 'danger',

@@ -9,6 +9,7 @@
 #include "db/database.h"
 #include "ws/ws_handler.h"
 #include "auth/webauthn.h"
+#include "auth/totp.h"
 #include "config.h"
 #include "handlers/handler_utils.h"
 
@@ -53,7 +54,8 @@ struct UserHandler {
                          {"is_online", user->is_online}, {"last_seen", user->last_seen},
                          {"bio", user->bio}, {"status", user->status},
                          {"avatar_file_id", user->avatar_file_id}, {"profile_color", user->profile_color},
-                         {"has_password", db.has_password(user->id)}};
+                         {"has_password", db.has_password(user->id)},
+                         {"has_totp", db.has_totp(user->id)}};
             res->writeHeader("Content-Type", "application/json")->end(resp.dump());
         });
 
@@ -540,6 +542,112 @@ struct UserHandler {
                 res->writeStatus("500")->writeHeader("Content-Type", "application/json")
                     ->end(json({{"error", e.what()}}).dump());
             }
+        });
+
+        // --- TOTP management ---
+
+        app.get("/api/users/me/totp/status", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+            bool enabled = db.has_totp(user_id);
+            json resp = {{"enabled", enabled}};
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        });
+
+        app.post("/api/users/me/totp/setup", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+
+            try {
+                auto user = db.find_user_by_id(user_id);
+                if (!user) {
+                    res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                        ->end(R"({"error":"User not found"})");
+                    return;
+                }
+
+                auto secret = totp::generate_secret();
+                db.store_totp_secret(user_id, secret);
+
+                auto server_name = db.get_setting("server_name").value_or("Isle Chat");
+                auto uri = totp::build_uri(secret, user->username, server_name);
+
+                json resp = {{"secret", secret}, {"uri", uri}};
+                res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+            } catch (const std::exception& e) {
+                res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                    ->end(json({{"error", e.what()}}).dump());
+            }
+        });
+
+        app.post("/api/users/me/totp/verify", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+
+            res->onData([this, res, user_id, body = std::string()](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+
+                try {
+                    auto j = json::parse(body);
+                    std::string code = j.at("code");
+
+                    auto secret = db.get_unverified_totp_secret(user_id);
+                    if (!secret) {
+                        res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"No TOTP setup in progress"})");
+                        return;
+                    }
+
+                    if (!totp::verify_code(*secret, code)) {
+                        res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Invalid verification code"})");
+                        return;
+                    }
+
+                    db.verify_totp(user_id);
+                    res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+                } catch (const std::exception& e) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->end(json({{"error", e.what()}}).dump());
+                }
+            });
+            res->onAborted([]() {});
+        });
+
+        app.del("/api/users/me/totp", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+
+            res->onData([this, res, user_id, body = std::string()](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+
+                try {
+                    auto j = json::parse(body);
+                    std::string code = j.at("code");
+
+                    auto secret = db.get_totp_secret(user_id);
+                    if (!secret) {
+                        res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"TOTP is not enabled"})");
+                        return;
+                    }
+
+                    if (!totp::verify_code(*secret, code)) {
+                        res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Invalid verification code"})");
+                        return;
+                    }
+
+                    db.delete_totp(user_id);
+                    res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+                } catch (const std::exception& e) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->end(json({{"error", e.what()}}).dump());
+                }
+            });
+            res->onAborted([]() {});
         });
     }
 

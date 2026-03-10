@@ -34,6 +34,7 @@ set(LIB_SOURCES
     src/auth/pki.cpp
     src/auth/webauthn.cpp
     src/auth/password.cpp
+    src/auth/totp.cpp
     src/db/database.cpp
 )
 

@@ -13,17 +13,30 @@
 import { type Page } from "@playwright/test";
 import {
   apiRegisterUser,
+  apiPasswordRegister,
+  apiEnablePasswordAuth,
+  apiSetupTotp,
+  apiVerifyTotpSetup,
   promoteToOwner,
   setRegistrationOpen,
   completeSetup,
   type ApiConfig,
 } from "./api.js";
+import { generateTotpCode } from "./totp.js";
 
 export interface TestUser {
   token: string;
   userId: string;
   username: string;
   recoveryKeys: string[];
+}
+
+export interface PasswordTestUser {
+  token: string;
+  userId: string;
+  username: string;
+  password: string;
+  totpSecret?: string;
 }
 
 /**
@@ -80,4 +93,30 @@ export async function loginViaToken(
   await page.goto("/");
   // Wait for the app to be loaded - look for the header with "Isle Chat"
   await page.getByText("Isle Chat").first().waitFor({ timeout: 10_000 });
+}
+
+/**
+ * Set up a password user (requires admin to have enabled password auth first).
+ * Optionally sets up TOTP.
+ */
+export async function setupPasswordUser(
+  username: string,
+  password: string,
+  options?: { enableTotp?: boolean },
+  config?: ApiConfig,
+): Promise<PasswordTestUser> {
+  const data = await apiPasswordRegister(username, `${username} User`, password, config);
+  let totpSecret: string | undefined;
+  if (options?.enableTotp) {
+    totpSecret = await apiSetupTotp(data.token, config);
+    const code = generateTotpCode(totpSecret);
+    await apiVerifyTotpSetup(code, data.token, config);
+  }
+  return {
+    token: data.token,
+    userId: data.userId,
+    username,
+    password,
+    totpSecret,
+  };
 }

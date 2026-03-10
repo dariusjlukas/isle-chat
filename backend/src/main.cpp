@@ -83,6 +83,14 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
 
         resp["server_archived"] = db.is_server_archived();
 
+        // MFA requirements
+        auto mfa_pw = db.get_setting("mfa_required_password");
+        resp["mfa_required_password"] = (mfa_pw && *mfa_pw == "true");
+        auto mfa_pki = db.get_setting("mfa_required_pki");
+        resp["mfa_required_pki"] = (mfa_pki && *mfa_pki == "true");
+        auto mfa_pk = db.get_setting("mfa_required_passkey");
+        resp["mfa_required_passkey"] = (mfa_pk && *mfa_pk == "true");
+
         // Password policy (public so registration form can validate client-side)
         auto auth_methods = resp["auth_methods"];
         bool password_enabled = false;

@@ -343,7 +343,10 @@ private:
             {"password_require_number", get_setting_or("password_require_number", "true") == "true"},
             {"password_require_special", get_setting_or("password_require_special", "false") == "true"},
             {"password_max_age_days", std::stoi(get_setting_or("password_max_age_days", "0"))},
-            {"password_history_count", std::stoi(get_setting_or("password_history_count", "0"))}
+            {"password_history_count", std::stoi(get_setting_or("password_history_count", "0"))},
+            {"mfa_required_password", get_setting_or("mfa_required_password", "false") == "true"},
+            {"mfa_required_pki", get_setting_or("mfa_required_pki", "false") == "true"},
+            {"mfa_required_passkey", get_setting_or("mfa_required_passkey", "false") == "true"}
         };
     }
 
@@ -417,6 +420,17 @@ private:
                 int v = j["password_history_count"].get<int>();
                 if (v < 0) throw std::runtime_error("Password history count must be non-negative");
                 db.set_setting("password_history_count", std::to_string(v));
+            }
+
+            // MFA requirements
+            if (j.contains("mfa_required_password")) {
+                db.set_setting("mfa_required_password", j["mfa_required_password"].get<bool>() ? "true" : "false");
+            }
+            if (j.contains("mfa_required_pki")) {
+                db.set_setting("mfa_required_pki", j["mfa_required_pki"].get<bool>() ? "true" : "false");
+            }
+            if (j.contains("mfa_required_passkey")) {
+                db.set_setting("mfa_required_passkey", j["mfa_required_passkey"].get<bool>() ? "true" : "false");
             }
 
             if (mark_setup) {

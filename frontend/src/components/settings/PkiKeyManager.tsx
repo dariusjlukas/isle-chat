@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Button, Card, CardBody, Alert, Spinner } from '@heroui/react';
+import { Button, Card, CardBody, Input, Alert, Spinner } from '@heroui/react';
 import * as pki from '../../services/pki';
 import * as api from '../../services/api';
 import { RecoveryKeyDisplay } from '../auth/RecoveryKeyDisplay';
@@ -18,9 +18,24 @@ export function PkiKeyManager() {
   const [recoveryCount, setRecoveryCount] = useState(0);
   const [recoveryKeys, setRecoveryKeys] = useState<string[] | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [isLegacyKey, setIsLegacyKey] = useState(false);
+  const [showChangePinForm, setShowChangePinForm] = useState(false);
+  const [currentPin, setCurrentPin] = useState('');
+  const [changePinNew, setChangePinNew] = useState('');
+  const [changePinConfirm, setChangePinConfirm] = useState('');
+  const [changePinLoading, setChangePinLoading] = useState(false);
 
   useEffect(() => {
     loadData();
+    pki.hasStoredKey().then(async (has) => {
+      if (has) {
+        const pinProtected = await pki.isKeyPinProtected();
+        setIsLegacyKey(!pinProtected);
+      }
+    });
   }, []);
 
   const loadData = async () => {
@@ -38,13 +53,33 @@ export function PkiKeyManager() {
     }
   };
 
-  const handleAddKey = async () => {
+  const handleAddKeyStart = () => {
+    setShowPinForm(true);
+    setNewPin('');
+    setConfirmPin('');
+    setError('');
+  };
+
+  const handleAddKey = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!newPin) {
+      setError('Please set a PIN to protect your browser key');
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setError('PINs do not match');
+      return;
+    }
+    if (newPin.length < 4) {
+      setError('PIN must be at least 4 characters');
+      return;
+    }
     setError('');
     setAdding(true);
     try {
       const { challenge } = await api.getPkiKeyChallenge();
-      const publicKey = await pki.generateKeyPair();
-      const signature = await pki.signChallenge(challenge);
+      const publicKey = await pki.generateKeyPair(newPin);
+      const signature = await pki.signChallenge(challenge, newPin);
       const result = await api.addPkiKey({
         public_key: publicKey,
         challenge,
@@ -53,11 +88,79 @@ export function PkiKeyManager() {
       if (result.recovery_keys) {
         setRecoveryKeys(result.recovery_keys);
       }
+      setShowPinForm(false);
+      setIsLegacyKey(false);
       await loadData();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to add key');
     } finally {
       setAdding(false);
+    }
+  };
+
+  const handleMigrateKey = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!newPin) {
+      setError('Please set a PIN');
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setError('PINs do not match');
+      return;
+    }
+    if (newPin.length < 4) {
+      setError('PIN must be at least 4 characters');
+      return;
+    }
+    setError('');
+    setAdding(true);
+    try {
+      const success = await pki.migrateKeyToPin(newPin);
+      if (success) {
+        setIsLegacyKey(false);
+        setShowPinForm(false);
+      } else {
+        setError(
+          'This key cannot be migrated (non-extractable). Please remove it and add a new browser key.',
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Migration failed');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleChangePin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!currentPin) {
+      setError('Please enter your current PIN');
+      return;
+    }
+    if (!changePinNew) {
+      setError('Please enter a new PIN');
+      return;
+    }
+    if (changePinNew !== changePinConfirm) {
+      setError('New PINs do not match');
+      return;
+    }
+    if (changePinNew.length < 4) {
+      setError('PIN must be at least 4 characters');
+      return;
+    }
+    setError('');
+    setChangePinLoading(true);
+    try {
+      await pki.changePin(currentPin, changePinNew);
+      setShowChangePinForm(false);
+      setCurrentPin('');
+      setChangePinNew('');
+      setChangePinConfirm('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to change PIN');
+    } finally {
+      setChangePinLoading(false);
     }
   };
 
@@ -148,14 +251,145 @@ export function PkiKeyManager() {
         )}
       </div>
 
-      <Button
-        color='primary'
-        fullWidth
-        onPress={handleAddKey}
-        isLoading={adding}
-      >
-        {adding ? 'Generating key...' : 'Add Browser Key'}
-      </Button>
+      {isLegacyKey && !showPinForm && (
+        <Alert color='warning' variant='flat'>
+          Your browser key is not PIN-protected.{' '}
+          <button
+            className='underline font-medium'
+            onClick={() => {
+              setShowPinForm(true);
+              setNewPin('');
+              setConfirmPin('');
+              setError('');
+            }}
+          >
+            Add a PIN now
+          </button>
+        </Alert>
+      )}
+
+      {showPinForm ? (
+        <form
+          onSubmit={isLegacyKey ? handleMigrateKey : handleAddKey}
+          className='space-y-3'
+        >
+          <Input
+            label='New PIN'
+            type='password'
+            variant='bordered'
+            value={newPin}
+            onChange={(e) => setNewPin(e.target.value)}
+            description='Min 4 characters. This PIN encrypts your private key.'
+            autoFocus
+            size='sm'
+          />
+          <Input
+            label='Confirm PIN'
+            type='password'
+            variant='bordered'
+            value={confirmPin}
+            onChange={(e) => setConfirmPin(e.target.value)}
+            size='sm'
+          />
+          <div className='flex gap-2'>
+            <Button
+              variant='bordered'
+              onPress={() => {
+                setShowPinForm(false);
+                setError('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type='submit' color='primary' fullWidth isLoading={adding}>
+              {adding
+                ? 'Working...'
+                : isLegacyKey
+                  ? 'Set PIN'
+                  : 'Add Browser Key'}
+            </Button>
+          </div>
+        </form>
+      ) : (
+        <Button
+          color='primary'
+          fullWidth
+          onPress={handleAddKeyStart}
+          isLoading={adding}
+        >
+          {adding ? 'Generating key...' : 'Add Browser Key'}
+        </Button>
+      )}
+
+      {!isLegacyKey &&
+        !showPinForm &&
+        !showChangePinForm &&
+        keys.length > 0 && (
+          <Button
+            variant='light'
+            color='default'
+            fullWidth
+            size='sm'
+            onPress={() => {
+              setShowChangePinForm(true);
+              setCurrentPin('');
+              setChangePinNew('');
+              setChangePinConfirm('');
+              setError('');
+            }}
+          >
+            Change PIN
+          </Button>
+        )}
+
+      {showChangePinForm && (
+        <form onSubmit={handleChangePin} className='space-y-3'>
+          <Input
+            label='Current PIN'
+            type='password'
+            variant='bordered'
+            value={currentPin}
+            onChange={(e) => setCurrentPin(e.target.value)}
+            autoFocus
+            size='sm'
+          />
+          <Input
+            label='New PIN'
+            type='password'
+            variant='bordered'
+            value={changePinNew}
+            onChange={(e) => setChangePinNew(e.target.value)}
+            size='sm'
+          />
+          <Input
+            label='Confirm New PIN'
+            type='password'
+            variant='bordered'
+            value={changePinConfirm}
+            onChange={(e) => setChangePinConfirm(e.target.value)}
+            size='sm'
+          />
+          <div className='flex gap-2'>
+            <Button
+              variant='bordered'
+              onPress={() => {
+                setShowChangePinForm(false);
+                setError('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type='submit'
+              color='primary'
+              fullWidth
+              isLoading={changePinLoading}
+            >
+              {changePinLoading ? 'Changing...' : 'Change PIN'}
+            </Button>
+          </div>
+        </form>
+      )}
 
       {recoveryCount > 0 && (
         <div className='pt-2 border-t border-divider'>

@@ -5,6 +5,7 @@
 #include "db/database.h"
 #include "auth/webauthn.h"
 #include "auth/password.h"
+#include "auth/totp.h"
 #include "config.h"
 #include "ws/ws_handler.h"
 #include "handlers/handler_utils.h"
@@ -189,6 +190,16 @@ struct AuthHandler {
             handle_password_delete(res, token);
         });
 
+        app.post("/api/auth/mfa/verify", [this](auto* res, auto* req) {
+            std::string body;
+            res->onData([this, res, body = std::move(body)](std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                handle_mfa_verify(res, body);
+            });
+            res->onAborted([]() {});
+        });
+
         app.post("/api/auth/logout", [this](auto* res, auto* req) {
             std::string token(req->getHeader("authorization"));
             if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
@@ -205,6 +216,34 @@ private:
 
     int get_session_expiry() {
         return ::get_session_expiry(db, config);
+    }
+
+    bool is_mfa_required_for_method(const std::string& method) {
+        auto val = db.get_setting("mfa_required_" + method);
+        return val && *val == "true";
+    }
+
+    // Returns true if MFA is needed (response already sent), false if caller should proceed with session
+    bool check_and_handle_mfa(uWS::HttpResponse<SSL>* res, const User& user,
+                               const std::string& auth_method) {
+        bool mfa_required = is_mfa_required_for_method(auth_method);
+        bool user_has_totp = db.has_totp(user.id);
+
+        if (!mfa_required && !user_has_totp) return false;
+
+        if (mfa_required && !user_has_totp) {
+            // User hasn't set up TOTP but admin requires it — let them in but flag it
+            auto token = db.create_session(user.id, get_session_expiry());
+            json resp = {{"token", token}, {"user", make_user_json(user)}, {"must_setup_totp", true}};
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+            return true;
+        }
+
+        // User has TOTP — require MFA step
+        auto mfa_token = db.create_mfa_pending_token(user.id, auth_method);
+        json resp = {{"mfa_required", true}, {"mfa_token", mfa_token}};
+        res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+        return true;
     }
 
     // Check registration eligibility for direct registration (with invite token)
@@ -485,6 +524,8 @@ private:
                 return;
             }
 
+            if (check_and_handle_mfa(res, *user, "passkey")) return;
+
             std::string token = db.create_session(user->id, get_session_expiry());
             json resp = {{"token", token}, {"user", make_user_json(*user)}};
             res->writeHeader("Content-Type", "application/json")->end(resp.dump());
@@ -640,6 +681,8 @@ private:
                     ->end(R"({"error":"No account found for this browser key"})");
                 return;
             }
+
+            if (check_and_handle_mfa(res, *user, "pki")) return;
 
             std::string token = db.create_session(user->id, get_session_expiry());
             json resp = {{"token", token}, {"user", make_user_json(*user)}};
@@ -1050,6 +1093,8 @@ private:
                 return;
             }
 
+            if (check_and_handle_mfa(res, *user, "password")) return;
+
             // Create session
             auto token = db.create_session(user->id, get_session_expiry());
 
@@ -1196,6 +1241,62 @@ private:
 
             db.delete_password(*user_id);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        } catch (const std::exception& e) {
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
+        }
+    }
+
+    void handle_mfa_verify(uWS::HttpResponse<SSL>* res, const std::string& body) {
+        try {
+            auto j = json::parse(body);
+            std::string mfa_token = j.at("mfa_token");
+            std::string totp_code = j.at("totp_code");
+
+            auto pending = db.validate_mfa_pending_token(mfa_token);
+            if (!pending) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid or expired MFA token"})");
+                return;
+            }
+
+            auto [user_id, auth_method] = *pending;
+
+            auto secret = db.get_totp_secret(user_id);
+            if (!secret) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"TOTP is not set up"})");
+                return;
+            }
+
+            if (!totp::verify_code(*secret, totp_code)) {
+                res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"Invalid verification code"})");
+                return;
+            }
+
+            // MFA verified — consume the token and create a real session
+            db.delete_mfa_pending_token(mfa_token);
+
+            auto user = db.find_user_by_id(user_id);
+            if (!user) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->end(R"({"error":"User not found"})");
+                return;
+            }
+
+            auto token = db.create_session(user->id, get_session_expiry());
+            json resp = {{"token", token}, {"user", make_user_json(*user)}};
+
+            // For password login, also check expiry
+            if (auth_method == "password") {
+                auto policy = get_password_policy();
+                if (policy.max_age_days > 0) {
+                    resp["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
+                }
+            }
+
+            res->writeHeader("Content-Type", "application/json")->end(resp.dump());
         } catch (const std::exception& e) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(json({{"error", e.what()}}).dump());

@@ -268,6 +268,21 @@ public:
     void add_password_history(const std::string& user_id, const std::string& password_hash);
     std::vector<std::string> get_password_history(const std::string& user_id, int count);
 
+    // TOTP credentials
+    void store_totp_secret(const std::string& user_id, const std::string& secret);
+    std::optional<std::string> get_totp_secret(const std::string& user_id);
+    std::optional<std::string> get_unverified_totp_secret(const std::string& user_id);
+    void verify_totp(const std::string& user_id);
+    void delete_totp(const std::string& user_id);
+    bool has_totp(const std::string& user_id);
+
+    // MFA pending tokens
+    std::string create_mfa_pending_token(const std::string& user_id,
+                                          const std::string& auth_method, int expiry_seconds = 300);
+    std::optional<std::pair<std::string, std::string>> validate_mfa_pending_token(const std::string& token);
+    void delete_mfa_pending_token(const std::string& token);
+    void cleanup_expired_mfa_tokens();
+
     // Search
     struct MessageSearchResult {
         std::string id, channel_id, channel_name, space_name;

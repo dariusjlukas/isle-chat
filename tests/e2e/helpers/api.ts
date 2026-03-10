@@ -355,3 +355,136 @@ export async function apiGetChannels(
   const res = await apiGet("/api/channels", token, config);
   return (await res.json()) as Array<{ id: string; name: string }>;
 }
+
+/**
+ * Enable password auth via admin settings.
+ */
+export async function apiEnablePasswordAuth(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  await apiPut(
+    "/api/admin/settings",
+    { auth_methods: ["passkey", "pki", "password"] },
+    token,
+    config,
+  );
+}
+
+/**
+ * Register a user with password auth.
+ */
+export async function apiPasswordRegister(
+  username: string,
+  displayName: string,
+  password: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ token: string; userId: string }> {
+  const res = await apiPost(
+    "/api/auth/password/register",
+    { username, display_name: displayName, password },
+    undefined,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Password register failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as { token: string; user: { id: string } };
+  return { token: data.token, userId: data.user.id };
+}
+
+/**
+ * Login via password auth.
+ */
+export async function apiPasswordLogin(
+  username: string,
+  password: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ token?: string; mfa_required?: boolean; mfa_token?: string; must_setup_totp?: boolean }> {
+  const res = await apiPost(
+    "/api/auth/password/login",
+    { username, password },
+    undefined,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Password login failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as { token?: string; mfa_required?: boolean; mfa_token?: string; must_setup_totp?: boolean };
+}
+
+/**
+ * Set up TOTP for a user and return the secret. Initiates setup and verifies with a valid code.
+ */
+export async function apiSetupTotp(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<string> {
+  // We need to dynamically import a TOTP library — use the OTPAuth npm package or compute manually.
+  // For simplicity, we'll just return the secret and let tests generate codes.
+  const res = await apiPost("/api/users/me/totp/setup", {}, token, config);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`TOTP setup failed (${res.status}): ${text}`);
+  }
+  const data = (await res.json()) as { secret: string; uri: string };
+  return data.secret;
+}
+
+/**
+ * Verify TOTP setup with a code.
+ */
+export async function apiVerifyTotpSetup(
+  code: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const res = await apiPost(
+    "/api/users/me/totp/verify",
+    { code },
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`TOTP verify failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * Complete the MFA verification step during login.
+ */
+export async function apiVerifyMfa(
+  mfaToken: string,
+  totpCode: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ token: string }> {
+  const res = await apiPost(
+    "/api/auth/mfa/verify",
+    { mfa_token: mfaToken, totp_code: totpCode },
+    undefined,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`MFA verify failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as { token: string };
+}
+
+/**
+ * Set MFA requirement settings for auth methods.
+ */
+export async function apiSetMfaRequired(
+  settings: {
+    mfa_required_password?: boolean;
+    mfa_required_pki?: boolean;
+    mfa_required_passkey?: boolean;
+  },
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  await apiPut("/api/admin/settings", settings, token, config);
+}

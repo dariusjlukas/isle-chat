@@ -40,6 +40,8 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
   const [selectedMethod, setSelectedMethod] = useState<string>('passkey');
   const [configLoading, setConfigLoading] = useState(true);
   const [phase, setPhase] = useState<Phase>('form');
+  const [pkiPin, setPkiPin] = useState('');
+  const [pkiPinConfirm, setPkiPinConfirm] = useState('');
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -119,12 +121,24 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
   };
 
   const handlePkiRegister = async () => {
+    if (!pkiPin) {
+      setError('Please set a PIN to protect your browser key');
+      return;
+    }
+    if (pkiPin !== pkiPinConfirm) {
+      setError('PINs do not match');
+      return;
+    }
+    if (pkiPin.length < 4) {
+      setError('PIN must be at least 4 characters');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const { challenge } = await api.getPkiChallenge();
-      const publicKey = await pki.generateKeyPair();
-      const signature = await pki.signChallenge(challenge);
+      const publicKey = await pki.generateKeyPair(pkiPin);
+      const signature = await pki.signChallenge(challenge, pkiPin);
       const result = await api.pkiRegister({
         username: username.trim(),
         display_name: displayName.trim(),
@@ -207,10 +221,25 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
         setPhase('waiting');
         startPolling(result.request_id);
       } else if (selectedMethod === 'pki') {
+        if (!pkiPin) {
+          setError('Please set a PIN to protect your browser key');
+          setLoading(false);
+          return;
+        }
+        if (pkiPin !== pkiPinConfirm) {
+          setError('PINs do not match');
+          setLoading(false);
+          return;
+        }
+        if (pkiPin.length < 4) {
+          setError('PIN must be at least 4 characters');
+          setLoading(false);
+          return;
+        }
         // PKI: generate key, get challenge, sign, submit
         const { challenge } = await api.getPkiChallenge();
-        const publicKey = await pki.generateKeyPair();
-        const signature = await pki.signChallenge(challenge);
+        const publicKey = await pki.generateKeyPair(pkiPin);
+        const signature = await pki.signChallenge(challenge, pkiPin);
         const result = await api.requestAccess({
           username: username.trim(),
           display_name: displayName.trim(),
@@ -406,6 +435,26 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
                   </>
                 )}
 
+                {selectedMethod === 'pki' && (
+                  <>
+                    <Input
+                      label='Browser Key PIN'
+                      type='password'
+                      variant='bordered'
+                      value={pkiPin}
+                      onChange={(e) => setPkiPin(e.target.value)}
+                      description='This PIN encrypts your private key in the browser (min 4 characters)'
+                    />
+                    <Input
+                      label='Confirm PIN'
+                      type='password'
+                      variant='bordered'
+                      value={pkiPinConfirm}
+                      onChange={(e) => setPkiPinConfirm(e.target.value)}
+                    />
+                  </>
+                )}
+
                 {canDirectRegister && (
                   <Button
                     type='submit'
@@ -444,7 +493,7 @@ export function RegisterPage({ onSwitchToLogin }: Props) {
               {selectedMethod !== 'password' && (
                 <p className='mt-4 text-center text-sm text-default-500'>
                   {selectedMethod === 'pki'
-                    ? 'A cryptographic key will be generated and stored securely in your browser.'
+                    ? 'A cryptographic key will be generated and encrypted with your PIN in this browser.'
                     : 'A passkey will be created and stored securely by your device.'}
                 </p>
               )}

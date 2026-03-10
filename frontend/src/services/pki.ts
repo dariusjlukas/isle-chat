@@ -6,6 +6,10 @@ const DB_NAME = 'isle-chat-pki';
 const STORE_NAME = 'keys';
 const KEY_ID = 'default';
 
+const PBKDF2_ITERATIONS = 600_000;
+const SALT_BYTES = 16;
+const IV_BYTES = 12;
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -17,7 +21,7 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-function bufferToBase64url(buffer: ArrayBuffer): string {
+export function bufferToBase64url(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
   for (const b of bytes) binary += String.fromCharCode(b);
@@ -27,7 +31,7 @@ function bufferToBase64url(buffer: ArrayBuffer): string {
     .replace(/=+$/, '');
 }
 
-function base64urlToBuffer(b64url: string): ArrayBuffer {
+export function base64urlToBuffer(b64url: string): ArrayBuffer {
   const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
   const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
   const binary = atob(padded);
@@ -36,25 +40,123 @@ function base64urlToBuffer(b64url: string): ArrayBuffer {
   return bytes.buffer;
 }
 
-export async function generateKeyPair(): Promise<string> {
+// --- PIN-based key derivation and encryption ---
+
+async function deriveKeyFromPin(
+  pin: string,
+  salt: Uint8Array,
+): Promise<CryptoKey> {
+  const pinBytes = new TextEncoder().encode(pin);
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    pinBytes,
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt as BufferSource,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256',
+    },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+}
+
+async function encryptPrivateKey(
+  pkcs8: ArrayBuffer,
+  pin: string,
+): Promise<{ encrypted: ArrayBuffer; salt: Uint8Array; iv: Uint8Array }> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+  const aesKey = await deriveKeyFromPin(pin, salt);
+  const encrypted = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv as BufferSource },
+    aesKey,
+    pkcs8,
+  );
+  return { encrypted, salt, iv };
+}
+
+async function decryptPrivateKey(
+  encrypted: ArrayBuffer,
+  salt: Uint8Array,
+  iv: Uint8Array,
+  pin: string,
+): Promise<CryptoKey> {
+  const aesKey = await deriveKeyFromPin(pin, salt);
+  let pkcs8: ArrayBuffer;
+  try {
+    pkcs8 = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv as BufferSource },
+      aesKey,
+      encrypted,
+    );
+  } catch {
+    throw new Error('Incorrect PIN');
+  }
+  return crypto.subtle.importKey(
+    'pkcs8',
+    pkcs8,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign'],
+  );
+}
+
+// --- Storage types ---
+
+interface LegacyStoredKey {
+  id: string;
+  privateKey: CryptoKey;
+  publicKey: CryptoKey;
+  publicKeyB64: string;
+}
+
+interface PinProtectedStoredKey {
+  id: string;
+  encryptedPrivateKey: ArrayBuffer;
+  salt: Uint8Array;
+  iv: Uint8Array;
+  publicKeyB64: string;
+}
+
+type StoredKey = LegacyStoredKey | PinProtectedStoredKey;
+
+function isPinProtected(entry: StoredKey): entry is PinProtectedStoredKey {
+  return 'encryptedPrivateKey' in entry;
+}
+
+// --- Public API ---
+
+export async function generateKeyPair(pin: string): Promise<string> {
   const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-256' },
-    false, // NOT extractable
+    true, // extractable so we can encrypt with PIN
     ['sign', 'verify'],
   );
 
   const spkiBytes = await crypto.subtle.exportKey('spki', keyPair.publicKey);
   const publicKeyB64 = bufferToBase64url(spkiBytes);
 
+  const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+  const { encrypted, salt, iv } = await encryptPrivateKey(pkcs8, pin);
+
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).put({
       id: KEY_ID,
-      privateKey: keyPair.privateKey,
-      publicKey: keyPair.publicKey,
+      encryptedPrivateKey: encrypted,
+      salt,
+      iv,
       publicKeyB64,
-    });
+    } satisfies PinProtectedStoredKey);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -63,8 +165,25 @@ export async function generateKeyPair(): Promise<string> {
   return publicKeyB64;
 }
 
-export async function signChallenge(challenge: string): Promise<string> {
-  const { privateKey } = await loadKeyPair();
+export async function signChallenge(
+  challenge: string,
+  pin: string,
+): Promise<string> {
+  const entry = await loadStoredKey();
+  let privateKey: CryptoKey;
+
+  if (isPinProtected(entry)) {
+    privateKey = await decryptPrivateKey(
+      entry.encryptedPrivateKey,
+      entry.salt,
+      entry.iv,
+      pin,
+    );
+  } else {
+    // Legacy non-extractable CryptoKey
+    privateKey = entry.privateKey;
+  }
+
   const data = new TextEncoder().encode(challenge);
   const signature = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
@@ -117,17 +236,102 @@ export async function clearStoredKey(): Promise<void> {
   db.close();
 }
 
-async function loadKeyPair(): Promise<{
-  privateKey: CryptoKey;
-  publicKey: CryptoKey;
-  publicKeyB64: string;
-}> {
+/**
+ * Check if the stored key is PIN-protected (vs legacy non-extractable format).
+ * Returns false if no key is stored.
+ */
+export async function isKeyPinProtected(): Promise<boolean> {
+  try {
+    const entry = await loadStoredKey();
+    return isPinProtected(entry);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Migrate a legacy (non-extractable) key to PIN-protected format.
+ * This is only possible if the key was originally created as extractable.
+ * For truly non-extractable keys, this will fail and the user must create a new key.
+ */
+export async function migrateKeyToPin(pin: string): Promise<boolean> {
+  const entry = await loadStoredKey();
+  if (isPinProtected(entry)) return true; // Already migrated
+
+  try {
+    const pkcs8 = await crypto.subtle.exportKey('pkcs8', entry.privateKey);
+    const { encrypted, salt, iv } = await encryptPrivateKey(pkcs8, pin);
+
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put({
+        id: KEY_ID,
+        encryptedPrivateKey: encrypted,
+        salt,
+        iv,
+        publicKeyB64: entry.publicKeyB64,
+      } satisfies PinProtectedStoredKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+    return true;
+  } catch {
+    // Key is non-extractable, can't migrate
+    return false;
+  }
+}
+
+/**
+ * Change the PIN on a PIN-protected key. Requires the current PIN.
+ */
+export async function changePin(
+  currentPin: string,
+  newPin: string,
+): Promise<void> {
+  const entry = await loadStoredKey();
+  if (!isPinProtected(entry)) {
+    throw new Error('Key is not PIN-protected');
+  }
+
+  // Decrypt with current PIN to get raw PKCS8
+  const aesKey = await deriveKeyFromPin(currentPin, entry.salt);
+  let pkcs8: ArrayBuffer;
+  try {
+    pkcs8 = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: entry.iv as BufferSource },
+      aesKey,
+      entry.encryptedPrivateKey,
+    );
+  } catch {
+    throw new Error('Incorrect PIN');
+  }
+
+  // Re-encrypt with new PIN
+  const { encrypted, salt, iv } = await encryptPrivateKey(pkcs8, newPin);
+
   const db = await openDB();
-  const result = await new Promise<{
-    privateKey: CryptoKey;
-    publicKey: CryptoKey;
-    publicKeyB64: string;
-  } | null>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.objectStore(STORE_NAME).put({
+      id: KEY_ID,
+      encryptedPrivateKey: encrypted,
+      salt,
+      iv,
+      publicKeyB64: entry.publicKeyB64,
+    } satisfies PinProtectedStoredKey);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+// --- Internal helpers ---
+
+async function loadStoredKey(): Promise<StoredKey> {
+  const db = await openDB();
+  const result = await new Promise<StoredKey | null>((resolve) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
     const req = tx.objectStore(STORE_NAME).get(KEY_ID);
     req.onsuccess = () => resolve(req.result ?? null);
@@ -138,6 +342,3 @@ async function loadKeyPair(): Promise<{
   if (!result) throw new Error('No stored key pair found');
   return result;
 }
-
-// Re-export for convenience
-export { base64urlToBuffer, bufferToBase64url };

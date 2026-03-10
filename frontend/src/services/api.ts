@@ -65,8 +65,21 @@ export function getLoginOptions() {
   });
 }
 
+export type LoginResult =
+  | {
+      token: string;
+      user: User;
+      must_change_password?: boolean;
+      must_setup_totp?: boolean;
+      mfa_required?: false;
+    }
+  | {
+      mfa_required: true;
+      mfa_token: string;
+    };
+
 export function verifyLogin(credential: AuthenticationResponseJSON) {
-  return request<{ token: string; user: User }>('/auth/login/verify', {
+  return request<LoginResult>('/auth/login/verify', {
     method: 'POST',
     body: JSON.stringify(credential),
   });
@@ -501,6 +514,9 @@ export interface AdminSettings {
   password_require_special: boolean;
   password_max_age_days: number;
   password_history_count: number;
+  mfa_required_password: boolean;
+  mfa_required_pki: boolean;
+  mfa_required_passkey: boolean;
 }
 
 export function getAdminSettings() {
@@ -543,6 +559,9 @@ export interface PublicConfig {
   file_uploads_enabled: boolean;
   server_archived: boolean;
   password_policy?: PasswordPolicy;
+  mfa_required_password?: boolean;
+  mfa_required_pki?: boolean;
+  mfa_required_passkey?: boolean;
 }
 
 export function getPublicConfig() {
@@ -812,11 +831,7 @@ export function passwordRegister(data: {
 }
 
 export function passwordLogin(data: { username: string; password: string }) {
-  return request<{
-    token: string;
-    user: User;
-    must_change_password?: boolean;
-  }>('/auth/password/login', {
+  return request<LoginResult>('/auth/password/login', {
     method: 'POST',
     body: JSON.stringify(data),
   });
@@ -842,6 +857,38 @@ export function setPassword(password: string) {
 export function deletePassword() {
   return request<{ ok: boolean }>('/auth/password', {
     method: 'DELETE',
+  });
+}
+
+// TOTP / MFA
+export function setupTotp() {
+  return request<{ secret: string; uri: string }>('/users/me/totp/setup', {
+    method: 'POST',
+  });
+}
+
+export function verifyTotpSetup(code: string) {
+  return request<{ ok: boolean }>('/users/me/totp/verify', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function removeTotp(code: string) {
+  return request<{ ok: boolean }>('/users/me/totp', {
+    method: 'DELETE',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function getTotpStatus() {
+  return request<{ enabled: boolean }>('/users/me/totp/status');
+}
+
+export function verifyMfa(data: { mfa_token: string; totp_code: string }) {
+  return request<{ token: string; user: User }>('/auth/mfa/verify', {
+    method: 'POST',
+    body: JSON.stringify(data),
   });
 }
 
@@ -872,7 +919,7 @@ export function pkiLogin(data: {
   challenge: string;
   signature: string;
 }) {
-  return request<{ token: string; user: User }>('/auth/pki/login', {
+  return request<LoginResult>('/auth/pki/login', {
     method: 'POST',
     body: JSON.stringify(data),
   });

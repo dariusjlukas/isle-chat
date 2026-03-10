@@ -69,6 +69,11 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
   const [fileUploadsEnabled, setFileUploadsEnabled] = useState(true);
   const [sessionExpiryHours, setSessionExpiryHours] = useState('168');
 
+  // MFA requirements
+  const [mfaRequiredPassword, setMfaRequiredPassword] = useState(false);
+  const [mfaRequiredPki, setMfaRequiredPki] = useState(false);
+  const [mfaRequiredPasskey, setMfaRequiredPasskey] = useState(false);
+
   // Password policy
   const [pwMinLength, setPwMinLength] = useState('8');
   const [pwRequireUpper, setPwRequireUpper] = useState(true);
@@ -109,6 +114,10 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
     setPwRequireSpecial(data.password_require_special);
     setPwMaxAgeDays(String(data.password_max_age_days));
     setPwHistoryCount(String(data.password_history_count));
+
+    setMfaRequiredPassword(data.mfa_required_password);
+    setMfaRequiredPki(data.mfa_required_pki);
+    setMfaRequiredPasskey(data.mfa_required_passkey);
   };
 
   useEffect(() => {
@@ -145,6 +154,9 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
       password_require_special: pwRequireSpecial,
       password_max_age_days: parseInt(pwMaxAgeDays) || 0,
       password_history_count: parseInt(pwHistoryCount) || 0,
+      mfa_required_password: mfaRequiredPassword,
+      mfa_required_pki: mfaRequiredPki,
+      mfa_required_passkey: mfaRequiredPasskey,
     };
   };
 
@@ -264,6 +276,60 @@ export function ServerSettings({ isSetup, onComplete }: Props) {
           className='w-32'
           min='1'
         />
+      </div>
+
+      <Divider />
+
+      {/* MFA Requirements */}
+      <div>
+        <p className='text-sm font-medium text-foreground mb-2'>
+          Multi-Factor Authentication
+        </p>
+        <p className='text-xs text-default-400 mb-3'>
+          Require users to set up an authenticator app (TOTP) for additional
+          login security. Users can also enable MFA voluntarily from their
+          settings.
+        </p>
+        <div className='space-y-2 pl-1'>
+          {authMethods.includes('password') && (
+            <div className='flex items-center justify-between'>
+              <span className='text-sm text-foreground'>
+                Require MFA for password login
+              </span>
+              <Switch
+                isSelected={mfaRequiredPassword}
+                onValueChange={setMfaRequiredPassword}
+                size='sm'
+              />
+            </div>
+          )}
+          {authMethods.includes('pki') && (
+            <div className='flex items-center justify-between'>
+              <span className='text-sm text-foreground'>
+                Require MFA for browser key login
+              </span>
+              <Switch
+                isSelected={mfaRequiredPki}
+                onValueChange={setMfaRequiredPki}
+                size='sm'
+              />
+            </div>
+          )}
+          {authMethods.includes('passkey') && (
+            <div className='flex items-center justify-between'>
+              <div>
+                <span className='text-sm text-foreground'>
+                  Require MFA for passkey login
+                </span>
+              </div>
+              <Switch
+                isSelected={mfaRequiredPasskey}
+                onValueChange={setMfaRequiredPasskey}
+                size='sm'
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {authMethods.includes('password') && (

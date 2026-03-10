@@ -397,6 +397,30 @@ void Database::run_migrations() {
         CREATE INDEX IF NOT EXISTS idx_password_history_user ON password_history(user_id);
     )SQL");
 
+    // TOTP credentials
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS totp_credentials (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            secret TEXT NOT NULL,
+            verified BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(user_id)
+        );
+    )SQL");
+
+    // MFA pending tokens (short-lived, for two-step login)
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS mfa_pending_tokens (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            auth_method TEXT NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mfa_pending_user ON mfa_pending_tokens(user_id);
+    )SQL");
+
     txn.commit();
     std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -2986,4 +3010,101 @@ bool Database::is_password_expired(const std::string& user_id, int max_age_days)
         user_id, max_age_days);
     txn.commit();
     return r[0][0].as<int>() > 0;
+}
+
+// --- TOTP credentials ---
+
+void Database::store_totp_secret(const std::string& user_id, const std::string& secret) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("DELETE FROM totp_credentials WHERE user_id = $1", user_id);
+    txn.exec_params(
+        "INSERT INTO totp_credentials (user_id, secret, verified) VALUES ($1, $2, FALSE)",
+        user_id, secret);
+    txn.commit();
+}
+
+std::optional<std::string> Database::get_totp_secret(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT secret FROM totp_credentials WHERE user_id = $1 AND verified = TRUE", user_id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return r[0][0].as<std::string>();
+}
+
+std::optional<std::string> Database::get_unverified_totp_secret(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT secret FROM totp_credentials WHERE user_id = $1", user_id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return r[0][0].as<std::string>();
+}
+
+void Database::verify_totp(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "UPDATE totp_credentials SET verified = TRUE WHERE user_id = $1", user_id);
+    txn.commit();
+}
+
+void Database::delete_totp(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("DELETE FROM totp_credentials WHERE user_id = $1", user_id);
+    txn.commit();
+}
+
+bool Database::has_totp(const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT COUNT(*) FROM totp_credentials WHERE user_id = $1 AND verified = TRUE", user_id);
+    txn.commit();
+    return r[0][0].as<int>() > 0;
+}
+
+// --- MFA pending tokens ---
+
+std::string Database::create_mfa_pending_token(const std::string& user_id,
+                                                const std::string& auth_method, int expiry_seconds) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Clean up any existing pending tokens for this user
+    txn.exec_params("DELETE FROM mfa_pending_tokens WHERE user_id = $1", user_id);
+    auto r = txn.exec_params(
+        "INSERT INTO mfa_pending_tokens (user_id, auth_method, expires_at) "
+        "VALUES ($1, $2, NOW() + INTERVAL '1 second' * $3) RETURNING id::text",
+        user_id, auth_method, expiry_seconds);
+    txn.commit();
+    return r[0][0].as<std::string>();
+}
+
+std::optional<std::pair<std::string, std::string>> Database::validate_mfa_pending_token(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT user_id::text, auth_method FROM mfa_pending_tokens "
+        "WHERE id = $1 AND expires_at > NOW()", token);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return std::make_pair(r[0][0].as<std::string>(), r[0][1].as<std::string>());
+}
+
+void Database::delete_mfa_pending_token(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("DELETE FROM mfa_pending_tokens WHERE id = $1", token);
+    txn.commit();
+}
+
+void Database::cleanup_expired_mfa_tokens() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec("DELETE FROM mfa_pending_tokens WHERE expires_at < NOW()");
+    txn.commit();
 }
