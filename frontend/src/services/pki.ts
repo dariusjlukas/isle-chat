@@ -2,7 +2,7 @@ export function isWebCryptoAvailable(): boolean {
   return typeof crypto !== 'undefined' && !!crypto.subtle;
 }
 
-const DB_NAME = 'isle-chat-pki';
+const DB_NAME = 'enclave-station-pki';
 const STORE_NAME = 'keys';
 const KEY_ID = 'default';
 

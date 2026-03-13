@@ -15,9 +15,5 @@ struct FileHandler {
 
     void register_routes(uWS::TemplatedApp<SSL>& app);
 
-    // Public static utilities (pure functions, used by tests)
-    static std::string format_size(int64_t bytes);
-    static std::string random_hex(int bytes);
-
 private:
 };

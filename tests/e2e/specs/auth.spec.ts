@@ -52,7 +52,7 @@ test.describe("Registration via UI", () => {
     await page.getByRole("button", { name: "Continue" }).click();
 
     // Should be logged in - look for the app content
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible({
       timeout: 10_000,
     });
 
@@ -91,7 +91,7 @@ test.describe("Registration via UI", () => {
       .check({ force: true });
     await page.getByRole("button", { name: "Continue" }).click();
 
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible({
       timeout: 10_000,
     });
   });
@@ -105,8 +105,8 @@ test.describe("Login via token injection", () => {
     const admin = await setupAdminUser(workerConfig.apiConfig);
     await loginViaToken(page, admin.token);
 
-    // Should see the app with "Welcome to Isle Chat" or sidebar
-    await expect(page.getByText("Isle Chat").first()).toBeVisible();
+    // Should see the app with "Welcome to EnclaveStation" or sidebar
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible();
   });
 });
 
@@ -155,7 +155,7 @@ test.describe("Recovery key login", () => {
     await page.getByRole("button", { name: "Recover Account" }).click();
 
     // Should be logged in
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible({
       timeout: 10_000,
     });
   });

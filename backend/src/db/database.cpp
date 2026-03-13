@@ -472,6 +472,79 @@ void Database::run_migrations() {
         ALTER TABLE channels ADD COLUMN IF NOT EXISTS default_join BOOLEAN DEFAULT FALSE;
     )SQL");
 
+    // Space tools (generic enable/disable per space)
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS space_tools (
+            space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+            tool_name VARCHAR(50) NOT NULL,
+            enabled_by UUID REFERENCES users(id),
+            enabled_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (space_id, tool_name)
+        );
+    )SQL");
+
+    // Space files and folders
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS space_files (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+            parent_id UUID REFERENCES space_files(id) ON DELETE CASCADE,
+            name VARCHAR(255) NOT NULL,
+            is_folder BOOLEAN NOT NULL DEFAULT FALSE,
+            disk_file_id TEXT,
+            file_size BIGINT DEFAULT 0,
+            mime_type TEXT,
+            created_by UUID NOT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            is_deleted BOOLEAN DEFAULT FALSE
+        );
+        CREATE INDEX IF NOT EXISTS idx_space_files_space ON space_files(space_id);
+        CREATE INDEX IF NOT EXISTS idx_space_files_parent ON space_files(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_space_files_space_parent
+            ON space_files(space_id, parent_id) WHERE is_deleted = FALSE;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_space_files_unique_name
+            ON space_files(space_id, COALESCE(parent_id, '00000000-0000-0000-0000-000000000000'), LOWER(name))
+            WHERE is_deleted = FALSE;
+    )SQL");
+
+    // Space file version history
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS space_file_versions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            file_id UUID NOT NULL REFERENCES space_files(id) ON DELETE CASCADE,
+            version_number INTEGER NOT NULL,
+            disk_file_id TEXT NOT NULL,
+            file_size BIGINT NOT NULL,
+            mime_type TEXT,
+            uploaded_by UUID NOT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(file_id, version_number)
+        );
+        CREATE INDEX IF NOT EXISTS idx_space_file_versions_file ON space_file_versions(file_id);
+    )SQL");
+
+    // Space file permissions (per-node overrides)
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS space_file_permissions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            file_id UUID NOT NULL REFERENCES space_files(id) ON DELETE CASCADE,
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            permission VARCHAR(20) NOT NULL,
+            granted_by UUID NOT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(file_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_space_file_perms_file ON space_file_permissions(file_id);
+        CREATE INDEX IF NOT EXISTS idx_space_file_perms_user ON space_file_permissions(user_id);
+    )SQL");
+
+    // Per-space storage settings
+    txn.exec(R"SQL(
+        ALTER TABLE spaces ADD COLUMN IF NOT EXISTS storage_limit BIGINT DEFAULT 0;
+        ALTER TABLE spaces ADD COLUMN IF NOT EXISTS auto_delete_old_versions BOOLEAN DEFAULT FALSE;
+    )SQL");
+
     txn.commit();
     std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -1936,7 +2009,8 @@ int64_t Database::get_total_file_size() {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     auto r = txn.exec(
-        "SELECT COALESCE(SUM(file_size), 0) FROM messages WHERE file_id IS NOT NULL");
+        "SELECT COALESCE((SELECT SUM(file_size) FROM messages WHERE file_id IS NOT NULL), 0) "
+        "+ COALESCE((SELECT SUM(file_size) FROM space_file_versions), 0)");
     txn.commit();
     return r[0][0].as<int64_t>();
 }
@@ -3126,6 +3200,492 @@ void Database::unarchive_channel(const std::string& channel_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
     txn.exec_params("UPDATE channels SET is_archived = FALSE WHERE id = $1", channel_id);
+    txn.commit();
+}
+
+// --- Space Tools ---
+
+void Database::enable_space_tool(const std::string& space_id, const std::string& tool_name,
+                                  const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO space_tools (space_id, tool_name, enabled_by) "
+        "VALUES ($1, $2, $3) ON CONFLICT (space_id, tool_name) DO NOTHING",
+        space_id, tool_name, user_id);
+    txn.commit();
+}
+
+void Database::disable_space_tool(const std::string& space_id, const std::string& tool_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "DELETE FROM space_tools WHERE space_id = $1 AND tool_name = $2",
+        space_id, tool_name);
+    txn.commit();
+}
+
+bool Database::is_space_tool_enabled(const std::string& space_id, const std::string& tool_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT 1 FROM space_tools WHERE space_id = $1 AND tool_name = $2",
+        space_id, tool_name);
+    txn.commit();
+    return !r.empty();
+}
+
+std::vector<std::string> Database::get_space_tools(const std::string& space_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT tool_name FROM space_tools WHERE space_id = $1 ORDER BY tool_name",
+        space_id);
+    txn.commit();
+    std::vector<std::string> tools;
+    for (const auto& row : r) tools.push_back(row[0].as<std::string>());
+    return tools;
+}
+
+// --- Space Files ---
+
+SpaceFile Database::create_space_folder(const std::string& space_id, const std::string& parent_id,
+                                         const std::string& name, const std::string& created_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    std::string parent_val = parent_id.empty() ? "" : parent_id;
+    auto r = txn.exec_params(
+        "INSERT INTO space_files (space_id, parent_id, name, is_folder, created_by) "
+        "VALUES ($1, NULLIF($2, '')::uuid, $3, TRUE, $4) "
+        "RETURNING id::text, created_at::text, updated_at::text",
+        space_id, parent_val, name, created_by);
+    auto folder_id = r[0][0].as<std::string>();
+    // Auto-grant "owner" permission to creator
+    txn.exec_params(
+        "INSERT INTO space_file_permissions (file_id, user_id, permission, granted_by) "
+        "VALUES ($1, $2, 'owner', $2) ON CONFLICT DO NOTHING",
+        folder_id, created_by);
+    txn.commit();
+    SpaceFile f;
+    f.id = folder_id;
+    f.space_id = space_id;
+    f.parent_id = parent_id;
+    f.name = name;
+    f.is_folder = true;
+    f.created_by = created_by;
+    f.created_at = r[0][1].as<std::string>();
+    f.updated_at = r[0][2].as<std::string>();
+    return f;
+}
+
+SpaceFile Database::create_space_file(const std::string& space_id, const std::string& parent_id,
+                                       const std::string& name, const std::string& disk_file_id,
+                                       int64_t file_size, const std::string& mime_type,
+                                       const std::string& created_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    std::string parent_val = parent_id.empty() ? "" : parent_id;
+    auto r = txn.exec_params(
+        "INSERT INTO space_files (space_id, parent_id, name, is_folder, disk_file_id, file_size, mime_type, created_by) "
+        "VALUES ($1, NULLIF($2, '')::uuid, $3, FALSE, $4, $5, $6, $7) "
+        "RETURNING id::text, created_at::text, updated_at::text",
+        space_id, parent_val, name, disk_file_id, file_size, mime_type, created_by);
+    auto file_id = r[0][0].as<std::string>();
+
+    // Create initial version (v1)
+    txn.exec_params(
+        "INSERT INTO space_file_versions (file_id, version_number, disk_file_id, file_size, mime_type, uploaded_by) "
+        "VALUES ($1, 1, $2, $3, $4, $5)",
+        file_id, disk_file_id, file_size, mime_type, created_by);
+    // Auto-grant "owner" permission to creator
+    txn.exec_params(
+        "INSERT INTO space_file_permissions (file_id, user_id, permission, granted_by) "
+        "VALUES ($1, $2, 'owner', $2) ON CONFLICT DO NOTHING",
+        file_id, created_by);
+    txn.commit();
+
+    SpaceFile f;
+    f.id = file_id;
+    f.space_id = space_id;
+    f.parent_id = parent_id;
+    f.name = name;
+    f.is_folder = false;
+    f.disk_file_id = disk_file_id;
+    f.file_size = file_size;
+    f.mime_type = mime_type;
+    f.created_by = created_by;
+    f.created_at = r[0][1].as<std::string>();
+    f.updated_at = r[0][2].as<std::string>();
+    return f;
+}
+
+std::vector<SpaceFile> Database::list_space_files(const std::string& space_id, const std::string& parent_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    std::string parent_val = parent_id.empty() ? "" : parent_id;
+    auto r = txn.exec_params(
+        "SELECT sf.id::text, sf.space_id::text, sf.parent_id::text, sf.name, sf.is_folder, "
+        "sf.disk_file_id, sf.file_size, sf.mime_type, sf.created_by::text, "
+        "u.username, sf.created_at::text, sf.updated_at::text "
+        "FROM space_files sf "
+        "LEFT JOIN users u ON u.id = sf.created_by "
+        "WHERE sf.space_id = $1 AND sf.is_deleted = FALSE "
+        "AND (($2 = '' AND sf.parent_id IS NULL) OR sf.parent_id::text = $2) "
+        "ORDER BY sf.is_folder DESC, sf.name ASC",
+        space_id, parent_val);
+    txn.commit();
+    std::vector<SpaceFile> files;
+    for (const auto& row : r) {
+        SpaceFile f;
+        f.id = row[0].as<std::string>();
+        f.space_id = row[1].as<std::string>();
+        f.parent_id = row[2].is_null() ? "" : row[2].as<std::string>();
+        f.name = row[3].as<std::string>();
+        f.is_folder = row[4].as<bool>();
+        f.disk_file_id = row[5].is_null() ? "" : row[5].as<std::string>();
+        f.file_size = row[6].as<int64_t>();
+        f.mime_type = row[7].is_null() ? "" : row[7].as<std::string>();
+        f.created_by = row[8].as<std::string>();
+        f.created_by_username = row[9].is_null() ? "" : row[9].as<std::string>();
+        f.created_at = row[10].as<std::string>();
+        f.updated_at = row[11].as<std::string>();
+        files.push_back(f);
+    }
+    return files;
+}
+
+std::optional<SpaceFile> Database::find_space_file(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT sf.id::text, sf.space_id::text, sf.parent_id::text, sf.name, sf.is_folder, "
+        "sf.disk_file_id, sf.file_size, sf.mime_type, sf.created_by::text, "
+        "u.username, sf.created_at::text, sf.updated_at::text, sf.is_deleted "
+        "FROM space_files sf "
+        "LEFT JOIN users u ON u.id = sf.created_by "
+        "WHERE sf.id = $1",
+        file_id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    SpaceFile f;
+    f.id = r[0][0].as<std::string>();
+    f.space_id = r[0][1].as<std::string>();
+    f.parent_id = r[0][2].is_null() ? "" : r[0][2].as<std::string>();
+    f.name = r[0][3].as<std::string>();
+    f.is_folder = r[0][4].as<bool>();
+    f.disk_file_id = r[0][5].is_null() ? "" : r[0][5].as<std::string>();
+    f.file_size = r[0][6].as<int64_t>();
+    f.mime_type = r[0][7].is_null() ? "" : r[0][7].as<std::string>();
+    f.created_by = r[0][8].as<std::string>();
+    f.created_by_username = r[0][9].is_null() ? "" : r[0][9].as<std::string>();
+    f.created_at = r[0][10].as<std::string>();
+    f.updated_at = r[0][11].as<std::string>();
+    f.is_deleted = r[0][12].as<bool>();
+    return f;
+}
+
+void Database::rename_space_file(const std::string& file_id, const std::string& new_name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "UPDATE space_files SET name = $2, updated_at = NOW() WHERE id = $1",
+        file_id, new_name);
+    txn.commit();
+}
+
+void Database::move_space_file(const std::string& file_id, const std::string& new_parent_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    std::string parent_val = new_parent_id.empty() ? "" : new_parent_id;
+    txn.exec_params(
+        "UPDATE space_files SET parent_id = NULLIF($2, '')::uuid, updated_at = NOW() WHERE id = $1",
+        file_id, parent_val);
+    txn.commit();
+}
+
+void Database::soft_delete_space_file(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Soft-delete the file and all children recursively
+    txn.exec_params(
+        "WITH RECURSIVE descendants AS ("
+        "  SELECT id FROM space_files WHERE id = $1 "
+        "  UNION ALL "
+        "  SELECT sf.id FROM space_files sf "
+        "  JOIN descendants d ON sf.parent_id = d.id "
+        "  WHERE sf.is_deleted = FALSE"
+        ") "
+        "UPDATE space_files SET is_deleted = TRUE, updated_at = NOW() "
+        "WHERE id IN (SELECT id FROM descendants)",
+        file_id);
+    txn.commit();
+}
+
+int64_t Database::get_space_storage_used(const std::string& space_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Include all versions, not just current files (old versions count against storage)
+    auto r = txn.exec_params(
+        "SELECT COALESCE(SUM(v.file_size), 0) "
+        "FROM space_file_versions v "
+        "JOIN space_files sf ON sf.id = v.file_id "
+        "WHERE sf.space_id = $1",
+        space_id);
+    txn.commit();
+    return r[0][0].as<int64_t>();
+}
+
+std::vector<SpaceFile> Database::get_space_file_path(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "WITH RECURSIVE ancestors AS ("
+        "  SELECT id, parent_id, name, 0 AS depth FROM space_files WHERE id = $1 "
+        "  UNION ALL "
+        "  SELECT sf.id, sf.parent_id, sf.name, a.depth + 1 "
+        "  FROM space_files sf JOIN ancestors a ON sf.id = a.parent_id"
+        ") "
+        "SELECT id::text, name FROM ancestors ORDER BY depth DESC",
+        file_id);
+    txn.commit();
+    std::vector<SpaceFile> path;
+    for (const auto& row : r) {
+        SpaceFile f;
+        f.id = row[0].as<std::string>();
+        f.name = row[1].as<std::string>();
+        path.push_back(f);
+    }
+    return path;
+}
+
+bool Database::space_file_name_exists(const std::string& space_id, const std::string& parent_id,
+                                       const std::string& name, const std::string& exclude_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    std::string parent_val = parent_id.empty() ? "" : parent_id;
+    std::string exclude_val = exclude_id.empty() ? "" : exclude_id;
+    auto r = txn.exec_params(
+        "SELECT 1 FROM space_files "
+        "WHERE space_id = $1 AND is_deleted = FALSE "
+        "AND (($2 = '' AND parent_id IS NULL) OR parent_id::text = $2) "
+        "AND LOWER(name) = LOWER($3) "
+        "AND ($4 = '' OR id::text != $4) "
+        "LIMIT 1",
+        space_id, parent_val, name, exclude_val);
+    txn.commit();
+    return !r.empty();
+}
+
+// --- Space File Permissions ---
+
+void Database::set_file_permission(const std::string& file_id, const std::string& user_id,
+                                    const std::string& permission, const std::string& granted_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO space_file_permissions (file_id, user_id, permission, granted_by) "
+        "VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (file_id, user_id) DO UPDATE SET permission = $3, granted_by = $4",
+        file_id, user_id, permission, granted_by);
+    txn.commit();
+}
+
+void Database::remove_file_permission(const std::string& file_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "DELETE FROM space_file_permissions WHERE file_id = $1 AND user_id = $2",
+        file_id, user_id);
+    txn.commit();
+}
+
+std::vector<SpaceFilePermission> Database::get_file_permissions(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT p.id::text, p.file_id::text, p.user_id::text, u.username, u.display_name, "
+        "p.permission, p.granted_by::text, g.username, p.created_at::text "
+        "FROM space_file_permissions p "
+        "JOIN users u ON u.id = p.user_id "
+        "LEFT JOIN users g ON g.id = p.granted_by "
+        "WHERE p.file_id = $1 "
+        "ORDER BY CASE p.permission WHEN 'owner' THEN 0 WHEN 'edit' THEN 1 ELSE 2 END, u.username",
+        file_id);
+    txn.commit();
+    std::vector<SpaceFilePermission> perms;
+    for (const auto& row : r) {
+        SpaceFilePermission p;
+        p.id = row[0].as<std::string>();
+        p.file_id = row[1].as<std::string>();
+        p.user_id = row[2].as<std::string>();
+        p.username = row[3].as<std::string>();
+        p.display_name = row[4].as<std::string>();
+        p.permission = row[5].as<std::string>();
+        p.granted_by = row[6].as<std::string>();
+        p.granted_by_username = row[7].is_null() ? "" : row[7].as<std::string>();
+        p.created_at = row[8].as<std::string>();
+        perms.push_back(p);
+    }
+    return perms;
+}
+
+std::string Database::get_effective_file_permission(const std::string& file_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "WITH RECURSIVE ancestors AS ("
+        "  SELECT id, parent_id FROM space_files WHERE id = $1 "
+        "  UNION ALL "
+        "  SELECT sf.id, sf.parent_id FROM space_files sf JOIN ancestors a ON sf.id = a.parent_id"
+        ") "
+        "SELECT permission FROM space_file_permissions "
+        "WHERE user_id = $2 AND file_id IN (SELECT id FROM ancestors) "
+        "ORDER BY CASE permission WHEN 'owner' THEN 2 WHEN 'edit' THEN 1 ELSE 0 END DESC "
+        "LIMIT 1",
+        file_id, user_id);
+    if (!r.empty()) {
+        txn.commit();
+        return r[0][0].as<std::string>();
+    }
+    auto r2 = txn.exec_params(
+        "SELECT 1 FROM space_files WHERE id = $1 AND created_by = $2",
+        file_id, user_id);
+    txn.commit();
+    if (!r2.empty()) return "owner";
+    return "view";
+}
+
+// --- Space File Versions ---
+
+std::vector<SpaceFileVersion> Database::list_file_versions(const std::string& file_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT v.id::text, v.file_id::text, v.version_number, v.disk_file_id, v.file_size, "
+        "v.mime_type, v.uploaded_by::text, u.username, v.created_at::text "
+        "FROM space_file_versions v "
+        "LEFT JOIN users u ON u.id = v.uploaded_by "
+        "WHERE v.file_id = $1 "
+        "ORDER BY v.version_number DESC",
+        file_id);
+    txn.commit();
+    std::vector<SpaceFileVersion> versions;
+    for (const auto& row : r) {
+        SpaceFileVersion v;
+        v.id = row[0].as<std::string>();
+        v.file_id = row[1].as<std::string>();
+        v.version_number = row[2].as<int>();
+        v.disk_file_id = row[3].as<std::string>();
+        v.file_size = row[4].as<int64_t>();
+        v.mime_type = row[5].is_null() ? "" : row[5].as<std::string>();
+        v.uploaded_by = row[6].as<std::string>();
+        v.uploaded_by_username = row[7].is_null() ? "" : row[7].as<std::string>();
+        v.created_at = row[8].as<std::string>();
+        versions.push_back(v);
+    }
+    return versions;
+}
+
+SpaceFileVersion Database::create_file_version(const std::string& file_id, const std::string& disk_file_id,
+                                                int64_t file_size, const std::string& mime_type,
+                                                const std::string& uploaded_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto vr = txn.exec_params(
+        "SELECT COALESCE(MAX(version_number), 0) + 1 FROM space_file_versions WHERE file_id = $1",
+        file_id);
+    int next_ver = vr[0][0].as<int>();
+    auto r = txn.exec_params(
+        "INSERT INTO space_file_versions (file_id, version_number, disk_file_id, file_size, mime_type, uploaded_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text, created_at::text",
+        file_id, next_ver, disk_file_id, file_size, mime_type, uploaded_by);
+    txn.exec_params(
+        "UPDATE space_files SET disk_file_id = $2, file_size = $3, mime_type = $4, updated_at = NOW() "
+        "WHERE id = $1",
+        file_id, disk_file_id, file_size, mime_type);
+    txn.commit();
+
+    SpaceFileVersion v;
+    v.id = r[0][0].as<std::string>();
+    v.file_id = file_id;
+    v.version_number = next_ver;
+    v.disk_file_id = disk_file_id;
+    v.file_size = file_size;
+    v.mime_type = mime_type;
+    v.uploaded_by = uploaded_by;
+    v.created_at = r[0][1].as<std::string>();
+    return v;
+}
+
+std::optional<SpaceFileVersion> Database::get_file_version(const std::string& version_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT v.id::text, v.file_id::text, v.version_number, v.disk_file_id, v.file_size, "
+        "v.mime_type, v.uploaded_by::text, u.username, v.created_at::text "
+        "FROM space_file_versions v "
+        "LEFT JOIN users u ON u.id = v.uploaded_by "
+        "WHERE v.id = $1",
+        version_id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    SpaceFileVersion v;
+    v.id = r[0][0].as<std::string>();
+    v.file_id = r[0][1].as<std::string>();
+    v.version_number = r[0][2].as<int>();
+    v.disk_file_id = r[0][3].as<std::string>();
+    v.file_size = r[0][4].as<int64_t>();
+    v.mime_type = r[0][5].is_null() ? "" : r[0][5].as<std::string>();
+    v.uploaded_by = r[0][6].as<std::string>();
+    v.uploaded_by_username = r[0][7].is_null() ? "" : r[0][7].as<std::string>();
+    v.created_at = r[0][8].as<std::string>();
+    return v;
+}
+
+// --- Storage admin ---
+
+std::vector<Database::SpaceStorageInfo> Database::get_all_space_storage() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec(
+        "SELECT s.id::text, s.name, "
+        "COALESCE((SELECT SUM(v.file_size) FROM space_file_versions v "
+        "  JOIN space_files sf ON sf.id = v.file_id WHERE sf.space_id = s.id), 0), "
+        "s.storage_limit, "
+        "COALESCE((SELECT COUNT(*) FROM space_files sf2 "
+        "  WHERE sf2.space_id = s.id AND sf2.is_deleted = FALSE AND sf2.is_folder = FALSE), 0) "
+        "FROM spaces s ORDER BY s.name");
+    txn.commit();
+    std::vector<SpaceStorageInfo> result;
+    for (const auto& row : r) {
+        SpaceStorageInfo info;
+        info.space_id = row[0].as<std::string>();
+        info.space_name = row[1].as<std::string>();
+        info.storage_used = row[2].as<int64_t>();
+        info.storage_limit = row[3].as<int64_t>();
+        info.file_count = row[4].as<int>();
+        result.push_back(info);
+    }
+    return result;
+}
+
+void Database::delete_oldest_file_versions(const std::string& space_id, int64_t bytes_to_free) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Delete oldest non-current versions one at a time until enough space freed
+    auto r = txn.exec_params(
+        "SELECT v.id, v.file_size FROM space_file_versions v "
+        "JOIN space_files sf ON sf.id = v.file_id "
+        "WHERE sf.space_id = $1 "
+        "AND v.version_number < (SELECT MAX(v2.version_number) FROM space_file_versions v2 WHERE v2.file_id = v.file_id) "
+        "ORDER BY v.created_at ASC",
+        space_id);
+    int64_t freed = 0;
+    for (const auto& row : r) {
+        if (freed >= bytes_to_free) break;
+        txn.exec_params("DELETE FROM space_file_versions WHERE id = $1", row[0].as<std::string>());
+        freed += row[1].as<int64_t>();
+    }
     txn.commit();
 }
 

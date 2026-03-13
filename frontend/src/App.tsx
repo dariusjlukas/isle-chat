@@ -6,6 +6,7 @@ import {
   faTicket,
   faKey,
   faUserPlus,
+  faHardDrive,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from './hooks/useAuth';
 import { useChatStore } from './stores/chatStore';
@@ -16,6 +17,7 @@ import { AddDevice } from './components/auth/AddDevice';
 import { NewSidebar } from './components/sidebar/NewSidebar';
 import { Header } from './components/layout/Header';
 import { ChatArea } from './components/layout/ChatArea';
+import { FileBrowser } from './components/files/FileBrowser';
 import { CreateChannel } from './components/channels/CreateChannel';
 import { ChannelBrowser } from './components/channels/ChannelBrowser';
 import { ChannelSettings } from './components/channels/ChannelSettings';
@@ -34,6 +36,7 @@ import { ServerSettings } from './components/admin/ServerSettings';
 import { RecoveryTokenManager } from './components/admin/RecoveryTokenManager';
 import { SetupWizard } from './components/admin/SetupWizard';
 import { UserManager } from './components/admin/UserManager';
+import { StorageManager } from './components/admin/StorageManager';
 import { UserSettings } from './components/settings/UserSettings';
 import { ConnectionLostModal } from './components/common/ConnectionLostModal';
 import { useConnectionState } from './hooks/useConnectionState';
@@ -83,6 +86,9 @@ function App() {
   const channels = useChatStore((s) => s.channels);
   const spaces = useChatStore((s) => s.spaces);
   const activeView = useChatStore((s) => s.activeView);
+  const activeToolView = useChatStore((s) => s.activeToolView);
+  const serverName = useChatStore((s) => s.serverName);
+  const serverIconFileId = useChatStore((s) => s.serverIconFileId);
 
   const isOwner = user?.role === 'owner';
   const adminCategories: SettingsCategory[] = [
@@ -113,6 +119,12 @@ function App() {
       label: 'Account Recovery',
       icon: faKey,
       content: <RecoveryTokenManager />,
+    },
+    {
+      key: 'storage',
+      label: 'Storage',
+      icon: faHardDrive,
+      content: <StorageManager />,
     },
     {
       key: 'join-requests',
@@ -152,9 +164,13 @@ function App() {
       }),
     ]).catch(() => {});
 
-    // Load server status (archived, setup)
+    // Load server status (archived, setup, name, icon)
     api.getPublicConfig().then((config) => {
-      useChatStore.getState().setServerArchived(config.server_archived);
+      const store = useChatStore.getState();
+      store.setServerArchived(config.server_archived);
+      store.setServerName(config.server_name);
+      store.setServerIconFileId(config.server_icon_file_id || null);
+      store.setServerIconDarkFileId(config.server_icon_dark_file_id || null);
       if (
         !config.setup_completed &&
         (user?.role === 'admin' || user?.role === 'owner')
@@ -217,6 +233,25 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showConnectionCard]);
 
+  // Keep browser tab title in sync with server name
+  useEffect(() => {
+    document.title = serverName;
+  }, [serverName]);
+
+  // Keep favicon in sync with server icon
+  useEffect(() => {
+    const link =
+      document.querySelector<HTMLLinkElement>("link[rel='icon']") ||
+      document.createElement('link');
+    if (serverIconFileId) {
+      link.rel = 'icon';
+      link.href = api.getAvatarUrl(serverIconFileId);
+      if (!link.parentNode) document.head.appendChild(link);
+    } else {
+      link.href = '/favicon.ico';
+    }
+  }, [serverIconFileId]);
+
   if (loading) {
     return (
       <div className='min-h-screen flex items-center justify-center bg-background'>
@@ -273,7 +308,11 @@ function App() {
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
         />
-        <ChatArea />
+        {activeToolView?.type === 'files' ? (
+          <FileBrowser spaceId={activeToolView.spaceId} />
+        ) : (
+          <ChatArea />
+        )}
       </div>
 
       {showCreateChannel && activeView?.type === 'space' && (
@@ -342,10 +381,10 @@ function App() {
       <ConnectionLostModal />
       <div className='shrink-0 flex items-center justify-between px-3 py-0.5 text-[10px] text-default-400 bg-content1 border-t border-divider'>
         <div className='flex items-center gap-2'>
-          <span className='font-medium text-default-500'>Isle Chat</span>
+          <span className='font-medium text-default-500'>EnclaveStation</span>
           <span>·</span>
           <a
-            href='https://github.com/dariusjlukas/isle-chat'
+            href='https://github.com/dariusjlukas/enclave-station'
             target='_blank'
             rel='noopener noreferrer'
             className='hover:text-default-500'
@@ -354,7 +393,7 @@ function App() {
           </a>
           <span>·</span>
           <a
-            href='https://github.com/dariusjlukas/isle-chat/blob/main/LICENSE'
+            href='https://github.com/dariusjlukas/enclave-station/blob/main/LICENSE'
             target='_blank'
             rel='noopener noreferrer'
             className='hover:text-default-500'

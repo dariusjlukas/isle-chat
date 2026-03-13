@@ -13,6 +13,7 @@
 #include "handlers/space_handler.h"
 #include "handlers/search_handler.h"
 #include "handlers/notification_handler.h"
+#include "handlers/space_file_handler.h"
 #include "ws/ws_handler.h"
 
 us_listen_socket_t* global_listen_socket = nullptr;
@@ -45,6 +46,7 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
     FileHandler<SSL> file_handler{db, config};
     SearchHandler<SSL> search_handler{db};
     NotificationHandler<SSL> notification_handler{db};
+    SpaceFileHandler<SSL> space_file_handler{db, config};
 
     // CORS preflight
     app.options("/*", [](auto* res, auto* req) {
@@ -58,6 +60,7 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
     auth_handler.register_routes(app);
     notification_handler.register_routes(app);
     search_handler.register_routes(app);
+    space_file_handler.register_routes(app);
     space_handler.register_routes(app);
     channel_handler.register_routes(app);
     user_handler.register_routes(app);
@@ -73,7 +76,13 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
         resp["auth_methods"] = get_auth_methods(db);
 
         auto server_name = db.get_setting("server_name");
-        resp["server_name"] = server_name.value_or("Isle Chat");
+        resp["server_name"] = server_name.value_or("EnclaveStation");
+
+        auto server_icon = db.get_setting("server_icon_file_id");
+        resp["server_icon_file_id"] = server_icon.value_or("");
+
+        auto server_icon_dark = db.get_setting("server_icon_dark_file_id");
+        resp["server_icon_dark_file_id"] = server_icon_dark.value_or("");
 
         auto reg_mode = db.get_setting("registration_mode");
         resp["registration_mode"] = reg_mode.value_or("invite");

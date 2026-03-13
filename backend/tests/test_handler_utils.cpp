@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "handlers/handler_utils.h"
 
+using json = nlohmann::json;
+
 // --- Server Role Rank Tests ---
 
 TEST(ServerRoleRank, Owner) {
@@ -99,4 +101,67 @@ TEST(HandlerDefaults, SearchAndMessageLimits) {
 
 TEST(HandlerDefaults, WebAuthnTimeout) {
     EXPECT_EQ(defaults::WEBAUTHN_TIMEOUT_MS, 60000);
+}
+
+// --- Setting Parsing Tests ---
+
+TEST(HandlerSettings, ParseIntSettingUsesValueWhenValid) {
+    EXPECT_EQ(parse_int_setting_or(std::optional<std::string>{"24"}, 8), 24);
+}
+
+TEST(HandlerSettings, ParseIntSettingFallsBackWhenMissingOrInvalid) {
+    EXPECT_EQ(parse_int_setting_or(std::nullopt, 8), 8);
+    EXPECT_EQ(parse_int_setting_or(std::optional<std::string>{"oops"}, 8), 8);
+}
+
+TEST(HandlerSettings, ParseInt64SettingUsesFallbackForInvalidValue) {
+    EXPECT_EQ(parse_i64_setting_or(std::optional<std::string>{"1024"}, 9), 1024);
+    EXPECT_EQ(parse_i64_setting_or(std::optional<std::string>{"bad"}, 9), 9);
+}
+
+TEST(HandlerSettings, ParseBoolSettingRecognizesTrueAndFalse) {
+    EXPECT_TRUE(parse_bool_setting_or(std::optional<std::string>{"true"}, false));
+    EXPECT_FALSE(parse_bool_setting_or(std::optional<std::string>{"false"}, true));
+}
+
+TEST(HandlerSettings, ParseBoolSettingFallsBackForUnknownValue) {
+    EXPECT_TRUE(parse_bool_setting_or(std::optional<std::string>{"TRUE"}, true));
+    EXPECT_FALSE(parse_bool_setting_or(std::optional<std::string>{"TRUE"}, false));
+    EXPECT_TRUE(parse_bool_setting_or(std::nullopt, true));
+}
+
+TEST(HandlerSettings, ParseAuthMethodsSettingUsesDefaultMethods) {
+    auto methods = parse_auth_methods_setting(std::nullopt);
+    ASSERT_TRUE(methods.is_array());
+    ASSERT_EQ(methods.size(), 2u);
+    EXPECT_EQ(methods[0], "passkey");
+    EXPECT_EQ(methods[1], "pki");
+}
+
+TEST(HandlerSettings, ParseAuthMethodsSettingAcceptsValidJsonArray) {
+    auto methods = parse_auth_methods_setting(std::optional<std::string>{R"(["password","pki"])"});
+    ASSERT_EQ(methods.size(), 2u);
+    EXPECT_EQ(methods[0], "password");
+    EXPECT_EQ(methods[1], "pki");
+}
+
+TEST(HandlerSettings, ParseAuthMethodsSettingFallsBackForInvalidJson) {
+    auto methods = parse_auth_methods_setting(std::optional<std::string>{"not-json"});
+    ASSERT_EQ(methods.size(), 2u);
+    EXPECT_EQ(methods[0], "passkey");
+    EXPECT_EQ(methods[1], "pki");
+}
+
+TEST(HandlerSettings, ParseAuthMethodsSettingFallsBackForNonArrayJson) {
+    auto methods = parse_auth_methods_setting(std::optional<std::string>{R"({"method":"password"})"});
+    ASSERT_EQ(methods.size(), 2u);
+    EXPECT_EQ(methods[0], "passkey");
+    EXPECT_EQ(methods[1], "pki");
+}
+
+TEST(HandlerSettings, AuthMethodsIncludeMatchesOnlyStrings) {
+    json methods = json::array({"password", 123, "pki"});
+    EXPECT_TRUE(auth_methods_include(methods, "password"));
+    EXPECT_TRUE(auth_methods_include(methods, "pki"));
+    EXPECT_FALSE(auth_methods_include(methods, "passkey"));
 }

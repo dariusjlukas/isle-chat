@@ -18,8 +18,8 @@ import type { User } from '../../types';
 import * as pki from '../../services/pki';
 import * as api from '../../services/api';
 import { RecoveryKeyDisplay } from './RecoveryKeyDisplay';
-import logoLarge from '../../assets/isle-chat-logo-large.png';
-import logoLargeDark from '../../assets/isle-chat-logo-large-dark.png';
+import logoLight from '../../assets/enclavestation-light-mode-icon.png';
+import logoDark from '../../assets/enclavestation-dark-mode-icon.png';
 
 interface Props {
   onSwitchToLogin: () => void;
@@ -44,6 +44,10 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
   const [hasUsers, setHasUsers] = useState(true);
   const [selectedMethod, setSelectedMethod] = useState<string>('passkey');
   const [configLoading, setConfigLoading] = useState(true);
+  const [serverIconUrl, setServerIconUrl] = useState<string | null>(null);
+  const [serverIconDarkUrl, setServerIconDarkUrl] = useState<string | null>(
+    null,
+  );
   const [phase, setPhase] = useState<Phase>('form');
   const [pkiPin, setPkiPin] = useState('');
   const [pkiPinConfirm, setPkiPinConfirm] = useState('');
@@ -65,6 +69,14 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
         setRegistrationMode(config.registration_mode);
         setHasUsers(config.has_users);
         if (config.password_policy) setPasswordPolicy(config.password_policy);
+        if (config.server_icon_file_id) {
+          setServerIconUrl(api.getAvatarUrl(config.server_icon_file_id));
+        }
+        if (config.server_icon_dark_file_id) {
+          setServerIconDarkUrl(
+            api.getAvatarUrl(config.server_icon_dark_file_id),
+          );
+        }
         // Select first method that's actually available on this device
         const available = config.auth_methods.filter((m: string) => {
           if (m === 'passkey') return browserSupportsWebAuthn();
@@ -328,16 +340,39 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
 
   return (
     <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
-      <img
-        src={logoLarge}
-        alt='Isle Chat'
-        className='w-24 h-24 mb-4 dark:hidden'
-      />
-      <img
-        src={logoLargeDark}
-        alt='Isle Chat'
-        className='w-24 h-24 mb-4 hidden dark:block'
-      />
+      {serverIconUrl && serverIconDarkUrl ? (
+        <>
+          <img
+            src={serverIconUrl}
+            alt='Server'
+            className='w-24 h-24 mb-4 rounded-xl object-cover dark:hidden'
+          />
+          <img
+            src={serverIconDarkUrl}
+            alt='Server'
+            className='w-24 h-24 mb-4 rounded-xl object-cover hidden dark:block'
+          />
+        </>
+      ) : serverIconUrl ? (
+        <img
+          src={serverIconUrl}
+          alt='Server'
+          className='w-24 h-24 mb-4 rounded-xl object-cover'
+        />
+      ) : (
+        <>
+          <img
+            src={logoLight}
+            alt='EnclaveStation'
+            className='w-24 h-24 mb-4 dark:hidden'
+          />
+          <img
+            src={logoDark}
+            alt='EnclaveStation'
+            className='w-24 h-24 mb-4 hidden dark:block'
+          />
+        </>
+      )}
       <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
         <CardBody className='p-5 sm:p-8'>
           <h1 className='text-3xl font-bold text-foreground mb-2'>Register</h1>

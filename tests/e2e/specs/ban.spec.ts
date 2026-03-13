@@ -251,7 +251,7 @@ test.describe("Banned user session", () => {
 
     // Login as the regular user
     await loginViaToken(page, regular.token);
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible({
       timeout: 10_000,
     });
 

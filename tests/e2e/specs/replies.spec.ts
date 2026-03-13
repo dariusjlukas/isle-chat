@@ -397,7 +397,7 @@ test.describe("Deleted message replies", () => {
 
     // Reload to get fresh reply data from the server
     await page.reload();
-    await page.getByText("Isle Chat").first().waitFor({ timeout: 10_000 });
+    await page.getByText("EnclaveStation").first().waitFor({ timeout: 10_000 });
     await goToChannel(page);
 
     // The reply card should now show the deleted notice
@@ -444,7 +444,7 @@ test.describe("Deleted message replies", () => {
 
     // Reload to get fresh data
     await page.reload();
-    await page.getByText("Isle Chat").first().waitFor({ timeout: 10_000 });
+    await page.getByText("EnclaveStation").first().waitFor({ timeout: 10_000 });
     await goToChannel(page);
 
     // Click the reply card — it should still trigger a jump

@@ -1,5 +1,10 @@
 #include "handlers/admin_handler.h"
+#include "handlers/admin_approval_utils.h"
+#include "handlers/admin_settings_utils.h"
+#include "handlers/format_utils.h"
 #include <pqxx/pqxx>
+#include <fstream>
+#include <filesystem>
 #include "auth/webauthn.h"
 #include "auth/password.h"
 
@@ -209,6 +214,140 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         } else {
             res->writeStatus("404")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Token not found or already used"})");
+        }
+    });
+
+    // Upload server icon (owner only)
+    app.post("/api/admin/server-icon", [this](auto* res, auto* req) {
+        auto user_id_copy = get_owner_id(res, req);
+        auto body = std::make_shared<std::string>();
+        int64_t max_size = 50 * 1024 * 1024;
+
+        res->onData([this, res, body, max_size, user_id = std::move(user_id_copy)](std::string_view data, bool last) mutable {
+            body->append(data);
+            if (static_cast<int64_t>(body->size()) > max_size) {
+                res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                    ->end(R"json({"error":"Icon too large (max 50MB)"})json");
+                return;
+            }
+            if (!last) return;
+            if (user_id.empty()) return;
+
+            try {
+                // Delete old icon file if exists
+                auto old_id = db.get_setting("server_icon_file_id");
+                if (old_id && !old_id->empty()) {
+                    std::string old_path = config.upload_dir + "/" + *old_id;
+                    std::filesystem::remove(old_path);
+                }
+
+                // Save new icon
+                std::string file_id = format_utils::random_hex(32);
+                std::string path = config.upload_dir + "/" + file_id;
+                std::ofstream out(path, std::ios::binary);
+                if (!out) {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->end(R"({"error":"Failed to save icon"})");
+                    return;
+                }
+                out.write(body->data(), body->size());
+                out.close();
+
+                db.set_setting("server_icon_file_id", file_id);
+
+                json resp = {{"server_icon_file_id", file_id}};
+                res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+            } catch (const std::exception& e) {
+                res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                    ->end(json({{"error", e.what()}}).dump());
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // Delete server icon (owner only)
+    app.del("/api/admin/server-icon", [this](auto* res, auto* req) {
+        auto user_id = get_owner_id(res, req);
+        if (user_id.empty()) return;
+
+        try {
+            auto old_id = db.get_setting("server_icon_file_id");
+            if (old_id && !old_id->empty()) {
+                std::string old_path = config.upload_dir + "/" + *old_id;
+                std::filesystem::remove(old_path);
+            }
+            db.set_setting("server_icon_file_id", "");
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        } catch (const std::exception& e) {
+            res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
+        }
+    });
+
+    // Upload dark mode server icon (owner only)
+    app.post("/api/admin/server-icon-dark", [this](auto* res, auto* req) {
+        auto user_id_copy = get_owner_id(res, req);
+        auto body = std::make_shared<std::string>();
+        int64_t max_size = 50 * 1024 * 1024;
+
+        res->onData([this, res, body, max_size, user_id = std::move(user_id_copy)](std::string_view data, bool last) mutable {
+            body->append(data);
+            if (static_cast<int64_t>(body->size()) > max_size) {
+                res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                    ->end(R"json({"error":"Icon too large (max 50MB)"})json");
+                return;
+            }
+            if (!last) return;
+            if (user_id.empty()) return;
+
+            try {
+                // Delete old dark icon file if exists
+                auto old_id = db.get_setting("server_icon_dark_file_id");
+                if (old_id && !old_id->empty()) {
+                    std::string old_path = config.upload_dir + "/" + *old_id;
+                    std::filesystem::remove(old_path);
+                }
+
+                // Save new dark icon
+                std::string file_id = format_utils::random_hex(32);
+                std::string path = config.upload_dir + "/" + file_id;
+                std::ofstream out(path, std::ios::binary);
+                if (!out) {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->end(R"({"error":"Failed to save icon"})");
+                    return;
+                }
+                out.write(body->data(), body->size());
+                out.close();
+
+                db.set_setting("server_icon_dark_file_id", file_id);
+
+                json resp = {{"server_icon_dark_file_id", file_id}};
+                res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+            } catch (const std::exception& e) {
+                res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                    ->end(json({{"error", e.what()}}).dump());
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // Delete dark mode server icon (owner only)
+    app.del("/api/admin/server-icon-dark", [this](auto* res, auto* req) {
+        auto user_id = get_owner_id(res, req);
+        if (user_id.empty()) return;
+
+        try {
+            auto old_id = db.get_setting("server_icon_dark_file_id");
+            if (old_id && !old_id->empty()) {
+                std::string old_path = config.upload_dir + "/" + *old_id;
+                std::filesystem::remove(old_path);
+            }
+            db.set_setting("server_icon_dark_file_id", "");
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        } catch (const std::exception& e) {
+            res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                ->end(json({{"error", e.what()}}).dump());
         }
     });
 
@@ -448,123 +587,42 @@ std::string AdminHandler<SSL>::get_setting_or(const std::string& key, const std:
 
 template <bool SSL>
 json AdminHandler<SSL>::build_settings_response() {
-    auto max_file = db.get_setting("max_file_size");
-    auto max_storage = db.get_setting("max_storage_size");
-    int64_t storage_used = db.get_total_file_size();
+    admin_settings::Snapshot snapshot;
+    snapshot.config_max_file_size = config.max_file_size;
+    snapshot.config_session_expiry_hours = config.session_expiry_hours;
+    snapshot.storage_used = db.get_total_file_size();
+    snapshot.server_archived = db.is_server_archived();
 
-    json auth_methods = get_auth_methods(db);
+    snapshot.max_file_size = db.get_setting("max_file_size");
+    snapshot.max_storage_size = db.get_setting("max_storage_size");
+    snapshot.auth_methods = db.get_setting("auth_methods");
+    snapshot.server_name = db.get_setting("server_name");
+    snapshot.server_icon_file_id = db.get_setting("server_icon_file_id");
+    snapshot.server_icon_dark_file_id = db.get_setting("server_icon_dark_file_id");
+    snapshot.registration_mode = db.get_setting("registration_mode");
+    snapshot.file_uploads_enabled = db.get_setting("file_uploads_enabled");
+    snapshot.session_expiry_hours = db.get_setting("session_expiry_hours");
+    snapshot.setup_completed = db.get_setting("setup_completed");
+    snapshot.password_min_length = db.get_setting("password_min_length");
+    snapshot.password_require_uppercase = db.get_setting("password_require_uppercase");
+    snapshot.password_require_lowercase = db.get_setting("password_require_lowercase");
+    snapshot.password_require_number = db.get_setting("password_require_number");
+    snapshot.password_require_special = db.get_setting("password_require_special");
+    snapshot.password_max_age_days = db.get_setting("password_max_age_days");
+    snapshot.password_history_count = db.get_setting("password_history_count");
+    snapshot.mfa_required_password = db.get_setting("mfa_required_password");
+    snapshot.mfa_required_pki = db.get_setting("mfa_required_pki");
+    snapshot.mfa_required_passkey = db.get_setting("mfa_required_passkey");
 
-    return {
-        {"max_file_size", max_file ? std::stoll(*max_file) : config.max_file_size},
-        {"max_storage_size", max_storage ? std::stoll(*max_storage) : 0},
-        {"storage_used", storage_used},
-        {"auth_methods", auth_methods},
-        {"server_name", get_setting_or("server_name", "Isle Chat")},
-        {"registration_mode", get_setting_or("registration_mode", "invite")},
-        {"file_uploads_enabled", get_setting_or("file_uploads_enabled", "true") == "true"},
-        {"session_expiry_hours", std::stoi(get_setting_or("session_expiry_hours",
-                                 std::to_string(config.session_expiry_hours)))},
-        {"setup_completed", get_setting_or("setup_completed", "false") == "true"},
-        {"server_archived", db.is_server_archived()},
-        {"password_min_length", std::stoi(get_setting_or("password_min_length", "8"))},
-        {"password_require_uppercase", get_setting_or("password_require_uppercase", "true") == "true"},
-        {"password_require_lowercase", get_setting_or("password_require_lowercase", "true") == "true"},
-        {"password_require_number", get_setting_or("password_require_number", "true") == "true"},
-        {"password_require_special", get_setting_or("password_require_special", "false") == "true"},
-        {"password_max_age_days", std::stoi(get_setting_or("password_max_age_days", "0"))},
-        {"password_history_count", std::stoi(get_setting_or("password_history_count", "0"))},
-        {"mfa_required_password", get_setting_or("mfa_required_password", "false") == "true"},
-        {"mfa_required_pki", get_setting_or("mfa_required_pki", "false") == "true"},
-        {"mfa_required_passkey", get_setting_or("mfa_required_passkey", "false") == "true"}
-    };
+    return admin_settings::build_settings_response(snapshot);
 }
 
 template <bool SSL>
 void AdminHandler<SSL>::save_settings(uWS::HttpResponse<SSL>* res, const std::string& body, bool mark_setup) {
     try {
-        auto j = json::parse(body);
-
-        if (j.contains("max_file_size")) {
-            db.set_setting("max_file_size", std::to_string(j["max_file_size"].get<int64_t>()));
-        }
-        if (j.contains("max_storage_size")) {
-            db.set_setting("max_storage_size", std::to_string(j["max_storage_size"].get<int64_t>()));
-        }
-        if (j.contains("auth_methods")) {
-            auto& arr = j["auth_methods"];
-            if (!arr.is_array() || arr.empty()) {
-                throw std::runtime_error("auth_methods must be a non-empty array");
-            }
-            for (const auto& m : arr) {
-                auto s = m.get<std::string>();
-                if (s != "passkey" && s != "pki" && s != "password") {
-                    throw std::runtime_error("Invalid auth method: " + s);
-                }
-            }
-            db.set_setting("auth_methods", arr.dump());
-        }
-        if (j.contains("server_name")) {
-            db.set_setting("server_name", j["server_name"].get<std::string>());
-        }
-        if (j.contains("registration_mode")) {
-            auto mode = j["registration_mode"].get<std::string>();
-            if (mode != "invite" && mode != "invite_only" && mode != "approval" && mode != "open") {
-                throw std::runtime_error("Invalid registration mode: " + mode);
-            }
-            db.set_setting("registration_mode", mode);
-        }
-        if (j.contains("file_uploads_enabled")) {
-            db.set_setting("file_uploads_enabled",
-                           j["file_uploads_enabled"].get<bool>() ? "true" : "false");
-        }
-        if (j.contains("session_expiry_hours")) {
-            int hours = j["session_expiry_hours"].get<int>();
-            if (hours <= 0) throw std::runtime_error("Session expiry must be positive");
-            db.set_setting("session_expiry_hours", std::to_string(hours));
-        }
-
-        // Password policy settings
-        if (j.contains("password_min_length")) {
-            int v = j["password_min_length"].get<int>();
-            if (v < 1) throw std::runtime_error("Minimum password length must be at least 1");
-            db.set_setting("password_min_length", std::to_string(v));
-        }
-        if (j.contains("password_require_uppercase"))
-            db.set_setting("password_require_uppercase",
-                           j["password_require_uppercase"].get<bool>() ? "true" : "false");
-        if (j.contains("password_require_lowercase"))
-            db.set_setting("password_require_lowercase",
-                           j["password_require_lowercase"].get<bool>() ? "true" : "false");
-        if (j.contains("password_require_number"))
-            db.set_setting("password_require_number",
-                           j["password_require_number"].get<bool>() ? "true" : "false");
-        if (j.contains("password_require_special"))
-            db.set_setting("password_require_special",
-                           j["password_require_special"].get<bool>() ? "true" : "false");
-        if (j.contains("password_max_age_days")) {
-            int v = j["password_max_age_days"].get<int>();
-            if (v < 0) throw std::runtime_error("Password max age must be non-negative");
-            db.set_setting("password_max_age_days", std::to_string(v));
-        }
-        if (j.contains("password_history_count")) {
-            int v = j["password_history_count"].get<int>();
-            if (v < 0) throw std::runtime_error("Password history count must be non-negative");
-            db.set_setting("password_history_count", std::to_string(v));
-        }
-
-        // MFA requirements
-        if (j.contains("mfa_required_password")) {
-            db.set_setting("mfa_required_password", j["mfa_required_password"].get<bool>() ? "true" : "false");
-        }
-        if (j.contains("mfa_required_pki")) {
-            db.set_setting("mfa_required_pki", j["mfa_required_pki"].get<bool>() ? "true" : "false");
-        }
-        if (j.contains("mfa_required_passkey")) {
-            db.set_setting("mfa_required_passkey", j["mfa_required_passkey"].get<bool>() ? "true" : "false");
-        }
-
-        if (mark_setup) {
-            db.set_setting("setup_completed", "true");
+        auto updates = admin_settings::collect_settings_updates(json::parse(body), mark_setup);
+        for (const auto& [key, value] : updates) {
+            db.set_setting(key, value);
         }
 
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
@@ -600,26 +658,20 @@ void AdminHandler<SSL>::handle_approve(uWS::HttpResponse<SSL>* res, const std::s
         auto user = db.create_user(request->username, request->display_name, "", "user");
 
         // Store credentials based on auth method
-        if (request->auth_method == "pki" && !request->credential_data.empty()) {
-            auto cred = json::parse(request->credential_data);
-            std::string public_key = cred.at("public_key");
-            db.store_pki_credential(user.id, public_key);
+        auto parsed = admin_approval_utils::parse_credential_data(
+            request->auth_method,
+            request->credential_data,
+            []() { return webauthn::generate_recovery_keys(); });
 
-            // Generate recovery keys for PKI users
-            auto [plaintext_keys, key_hashes] = webauthn::generate_recovery_keys();
-            db.store_recovery_keys(user.id, key_hashes);
-        } else if (request->auth_method == "passkey" && !request->credential_data.empty()) {
-            auto cred = json::parse(request->credential_data);
-            std::string credential_id = cred.at("credential_id");
-            auto pk_b64 = cred.at("public_key").get<std::string>();
-            auto pk_bytes = webauthn::base64url_decode(pk_b64);
-            uint32_t sign_count = cred.value("sign_count", 0);
-            std::string transports = cred.value("transports", "[]");
-            db.store_webauthn_credential(user.id, credential_id, pk_bytes, sign_count, "Passkey", transports);
-        } else if (request->auth_method == "password" && !request->credential_data.empty()) {
-            auto cred = json::parse(request->credential_data);
-            std::string password_hash = cred.at("password_hash");
-            db.store_password(user.id, password_hash);
+        if (parsed.pki_public_key) {
+            db.store_pki_credential(user.id, *parsed.pki_public_key);
+            db.store_recovery_keys(user.id, parsed.recovery_key_hashes);
+        } else if (parsed.passkey_credential_id) {
+            db.store_webauthn_credential(user.id, *parsed.passkey_credential_id,
+                                         parsed.passkey_public_key, parsed.passkey_sign_count,
+                                         "Passkey", parsed.passkey_transports);
+        } else if (parsed.password_hash) {
+            db.store_password(user.id, *parsed.password_hash);
         }
 
         // Create session token for polling pickup

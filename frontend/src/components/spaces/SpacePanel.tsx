@@ -6,7 +6,7 @@ import {
   faLock,
   faMagnifyingGlass,
   faGear,
-  faFile,
+  faFolderOpen,
   faCalendar,
   faListCheck,
 } from '@fortawesome/free-solid-svg-icons';
@@ -32,6 +32,8 @@ export function SpacePanel({
   const spaces = useChatStore((s) => s.spaces);
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
+  const activeToolView = useChatStore((s) => s.activeToolView);
+  const setActiveToolView = useChatStore((s) => s.setActiveToolView);
   const user = useChatStore((s) => s.user);
   const mentionCounts = useChatStore((s) => s.mentionCounts);
 
@@ -39,6 +41,11 @@ export function SpacePanel({
   const channels = useMemo(
     () => allChannels.filter((c) => !c.is_direct && c.space_id === spaceId),
     [allChannels, spaceId],
+  );
+
+  const enabledTools = useMemo(
+    () => new Set(space?.enabled_tools || []),
+    [space?.enabled_tools],
   );
 
   const canManage =
@@ -55,6 +62,9 @@ export function SpacePanel({
       </div>
     );
   }
+
+  const isFilesActive =
+    activeToolView?.type === 'files' && activeToolView.spaceId === spaceId;
 
   return (
     <div className='flex flex-col h-full'>
@@ -165,29 +175,47 @@ export function SpacePanel({
           )}
         </div>
 
-        {/* Future feature placeholders */}
+        {/* Tools section */}
         <div className='space-y-1 px-3'>
-          <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
-            <FontAwesomeIcon icon={faFile} className='text-xs w-4' />
-            <span>Documents</span>
-            <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
-              Soon
-            </span>
-          </div>
-          <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
-            <FontAwesomeIcon icon={faCalendar} className='text-xs w-4' />
-            <span>Calendar</span>
-            <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
-              Soon
-            </span>
-          </div>
-          <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
-            <FontAwesomeIcon icon={faListCheck} className='text-xs w-4' />
-            <span>Tasks</span>
-            <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
-              Soon
-            </span>
-          </div>
+          {/* Files — enabled */}
+          {enabledTools.has('files') && (
+            <button
+              onClick={() => {
+                setActiveToolView({ type: 'files', spaceId });
+                onSelect?.();
+              }}
+              className={`w-full text-left flex items-center gap-2 py-2 text-sm rounded-md px-0 transition-colors ${
+                isFilesActive
+                  ? 'text-primary font-medium'
+                  : 'text-default-500 hover:text-foreground'
+              }`}
+            >
+              <FontAwesomeIcon icon={faFolderOpen} className='text-xs w-4' />
+              <span>Files</span>
+            </button>
+          )}
+
+          {/* Calendar — placeholder if not enabled */}
+          {!enabledTools.has('calendar') && (
+            <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
+              <FontAwesomeIcon icon={faCalendar} className='text-xs w-4' />
+              <span>Calendar</span>
+              <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
+                Soon
+              </span>
+            </div>
+          )}
+
+          {/* Tasks — placeholder if not enabled */}
+          {!enabledTools.has('tasks') && (
+            <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
+              <FontAwesomeIcon icon={faListCheck} className='text-xs w-4' />
+              <span>Tasks</span>
+              <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
+                Soon
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </div>

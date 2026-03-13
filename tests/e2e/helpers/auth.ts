@@ -90,8 +90,8 @@ export async function loginViaToken(
   }, token);
   // Reload to pick up the token
   await page.goto("/");
-  // Wait for the app to be loaded - look for the header with "Isle Chat"
-  await page.getByText("Isle Chat").first().waitFor({ timeout: 10_000 });
+  // Wait for the app to be loaded - look for the header with "EnclaveStation"
+  await page.getByText("EnclaveStation").first().waitFor({ timeout: 10_000 });
 }
 
 /**

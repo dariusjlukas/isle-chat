@@ -52,7 +52,10 @@ export interface Space {
   my_role: ChannelRole;
   created_at: string;
   members: ChannelMemberInfo[];
+  enabled_tools?: string[];
 }
+
+export type SpaceToolName = 'files' | 'calendar' | 'tasks';
 
 export type SidebarView =
   | { type: 'space'; spaceId: string }
@@ -117,6 +120,49 @@ export interface Notification {
   content: string;
   created_at: string;
   is_read: boolean;
+}
+
+export interface SpaceFile {
+  id: string;
+  space_id: string;
+  parent_id: string | null;
+  name: string;
+  is_folder: boolean;
+  file_size: number;
+  mime_type: string;
+  created_by: string;
+  created_by_username: string;
+  created_at: string;
+  updated_at: string;
+  my_permission?: string;
+}
+
+export interface SpaceFilePath {
+  id: string;
+  name: string;
+}
+
+export interface SpaceFilePermission {
+  id: string;
+  file_id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  permission: string;
+  granted_by: string;
+  granted_by_username: string;
+  created_at: string;
+}
+
+export interface SpaceFileVersion {
+  id: string;
+  file_id: string;
+  version_number: number;
+  file_size: number;
+  mime_type: string;
+  uploaded_by: string;
+  uploaded_by_username: string;
+  created_at: string;
 }
 
 export interface InviteToken {

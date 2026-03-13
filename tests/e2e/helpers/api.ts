@@ -523,6 +523,109 @@ export async function apiSetMfaRequired(
 }
 
 /**
+ * Enable the "files" tool on a space.
+ */
+export async function apiEnableFilesTool(
+  spaceId: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const res = await apiPut(
+    `/api/spaces/${spaceId}/tools`,
+    { tool: "files", enabled: true },
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiEnableFilesTool failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * Upload a file to a space via the API.
+ */
+export async function apiUploadSpaceFile(
+  spaceId: string,
+  filename: string,
+  content: string,
+  token: string,
+  parentId?: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ id: string; name: string }> {
+  const params = new URLSearchParams({
+    filename,
+    content_type: "text/plain",
+  });
+  if (parentId) params.set("parent_id", parentId);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+  const res = await fetch(
+    `${config.apiBase}/api/spaces/${spaceId}/files/upload?${params}`,
+    { method: "POST", headers, body: content },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiUploadSpaceFile failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as { id: string; name: string };
+}
+
+/**
+ * Create a folder in a space via the API.
+ */
+export async function apiCreateSpaceFolder(
+  spaceId: string,
+  name: string,
+  token: string,
+  parentId?: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ id: string; name: string }> {
+  const res = await apiPost(
+    `/api/spaces/${spaceId}/files/folder`,
+    { name, parent_id: parentId ?? "" },
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiCreateSpaceFolder failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as { id: string; name: string };
+}
+
+/**
+ * Accept a pending space invite for a user.
+ * Fetches the user's pending invites and accepts the one for the given space.
+ */
+export async function apiAcceptSpaceInvite(
+  spaceId: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const listRes = await apiGet("/api/space-invites", token, config);
+  const invites = (await listRes.json()) as Array<{
+    id: string;
+    space_id: string;
+  }>;
+  const invite = invites.find((i) => i.space_id === spaceId);
+  if (!invite) {
+    throw new Error(`No pending invite found for space ${spaceId}`);
+  }
+  const res = await apiPost(
+    `/api/space-invites/${invite.id}/accept`,
+    {},
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiAcceptSpaceInvite failed (${res.status}): ${text}`);
+  }
+}
+
+/**
  * Update a channel's settings via the API.
  */
 export async function apiUpdateChannel(

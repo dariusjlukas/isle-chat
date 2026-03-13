@@ -17,8 +17,8 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
-import logoSmall from '../../assets/isle-chat-logo-small.png';
-import logoSmallDark from '../../assets/isle-chat-logo-small-dark.png';
+import logoLight from '../../assets/enclavestation-light-mode-icon.png';
+import logoDark from '../../assets/enclavestation-dark-mode-icon.png';
 import { GlobalSearch } from '../search/GlobalSearch';
 import { UserAvatar } from '../common/UserAvatar';
 import { NotificationDropdown } from './NotificationDropdown';
@@ -43,6 +43,9 @@ export function Header({
   const activeChannelId = useChatStore((s) => s.activeChannelId);
   const channels = useChatStore((s) => s.channels);
   const spaces = useChatStore((s) => s.spaces);
+  const serverName = useChatStore((s) => s.serverName);
+  const serverIconFileId = useChatStore((s) => s.serverIconFileId);
+  const serverIconDarkFileId = useChatStore((s) => s.serverIconDarkFileId);
 
   const activeChannel = channels.find((c) => c.id === activeChannelId);
   const activeSpace = activeChannel?.space_id
@@ -85,18 +88,41 @@ export function Header({
         >
           <FontAwesomeIcon icon={faBars} />
         </Button>
-        <img
-          src={logoSmall}
-          alt='Isle Chat'
-          className='h-7 w-7 flex-shrink-0 dark:hidden'
-        />
-        <img
-          src={logoSmallDark}
-          alt='Isle Chat'
-          className='h-7 w-7 flex-shrink-0 hidden dark:block'
-        />
+        {serverIconFileId && serverIconDarkFileId ? (
+          <>
+            <img
+              src={api.getAvatarUrl(serverIconFileId)}
+              alt={serverName}
+              className='h-7 w-7 flex-shrink-0 rounded-md object-cover dark:hidden'
+            />
+            <img
+              src={api.getAvatarUrl(serverIconDarkFileId)}
+              alt={serverName}
+              className='h-7 w-7 flex-shrink-0 rounded-md object-cover hidden dark:block'
+            />
+          </>
+        ) : serverIconFileId ? (
+          <img
+            src={api.getAvatarUrl(serverIconFileId)}
+            alt={serverName}
+            className='h-7 w-7 flex-shrink-0 rounded-md object-cover'
+          />
+        ) : (
+          <>
+            <img
+              src={logoLight}
+              alt={serverName}
+              className='h-7 w-7 flex-shrink-0 dark:hidden'
+            />
+            <img
+              src={logoDark}
+              alt={serverName}
+              className='h-7 w-7 flex-shrink-0 hidden dark:block'
+            />
+          </>
+        )}
         <span className='text-foreground font-bold hidden md:inline flex-shrink-0'>
-          Isle Chat
+          {serverName}
         </span>
         {activeChannel && (
           <h2 className='text-foreground font-semibold truncate'>

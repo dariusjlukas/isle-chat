@@ -10,6 +10,7 @@
 #include "models/channel.h"
 #include "models/message.h"
 #include "models/space.h"
+#include "models/space_file.h"
 
 class Database {
 public:
@@ -363,6 +364,53 @@ public:
     void mark_notification_read(const std::string& notification_id, const std::string& user_id);
     void mark_all_notifications_read(const std::string& user_id);
     int mark_channel_notifications_read(const std::string& channel_id, const std::string& user_id);
+
+    // Space tools
+    void enable_space_tool(const std::string& space_id, const std::string& tool_name,
+                           const std::string& user_id);
+    void disable_space_tool(const std::string& space_id, const std::string& tool_name);
+    bool is_space_tool_enabled(const std::string& space_id, const std::string& tool_name);
+    std::vector<std::string> get_space_tools(const std::string& space_id);
+
+    // Space files
+    SpaceFile create_space_folder(const std::string& space_id, const std::string& parent_id,
+                                   const std::string& name, const std::string& created_by);
+    SpaceFile create_space_file(const std::string& space_id, const std::string& parent_id,
+                                 const std::string& name, const std::string& disk_file_id,
+                                 int64_t file_size, const std::string& mime_type,
+                                 const std::string& created_by);
+    std::vector<SpaceFile> list_space_files(const std::string& space_id, const std::string& parent_id);
+    std::optional<SpaceFile> find_space_file(const std::string& file_id);
+    void rename_space_file(const std::string& file_id, const std::string& new_name);
+    void move_space_file(const std::string& file_id, const std::string& new_parent_id);
+    void soft_delete_space_file(const std::string& file_id);
+    int64_t get_space_storage_used(const std::string& space_id);
+    std::vector<SpaceFile> get_space_file_path(const std::string& file_id);
+    bool space_file_name_exists(const std::string& space_id, const std::string& parent_id,
+                                 const std::string& name, const std::string& exclude_id = "");
+
+    // Space file permissions
+    void set_file_permission(const std::string& file_id, const std::string& user_id,
+                              const std::string& permission, const std::string& granted_by);
+    void remove_file_permission(const std::string& file_id, const std::string& user_id);
+    std::vector<SpaceFilePermission> get_file_permissions(const std::string& file_id);
+    std::string get_effective_file_permission(const std::string& file_id, const std::string& user_id);
+
+    // Space file versions
+    std::vector<SpaceFileVersion> list_file_versions(const std::string& file_id);
+    SpaceFileVersion create_file_version(const std::string& file_id, const std::string& disk_file_id,
+                                          int64_t file_size, const std::string& mime_type,
+                                          const std::string& uploaded_by);
+    std::optional<SpaceFileVersion> get_file_version(const std::string& version_id);
+
+    // Storage admin
+    struct SpaceStorageInfo {
+        std::string space_id, space_name;
+        int64_t storage_used, storage_limit;
+        int file_count;
+    };
+    std::vector<SpaceStorageInfo> get_all_space_storage();
+    void delete_oldest_file_versions(const std::string& space_id, int64_t bytes_to_free);
 
     // Archive management
     void archive_channel(const std::string& channel_id);

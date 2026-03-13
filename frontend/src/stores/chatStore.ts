@@ -29,9 +29,13 @@ interface ChatState {
   // Spaces
   spaces: Space[];
   activeView: SidebarView | null;
+  activeToolView: { type: 'files'; spaceId: string } | null;
 
   // Server state
   serverArchived: boolean;
+  serverName: string;
+  serverIconFileId: string | null;
+  serverIconDarkFileId: string | null;
   pendingRequestCount: number;
   spaceInvites: SpaceInvite[];
 
@@ -71,6 +75,7 @@ interface ChatState {
   updateSpace: (updates: Partial<Space> & { id: string }) => void;
   removeSpace: (spaceId: string) => void;
   setActiveView: (view: SidebarView | null) => void;
+  setActiveToolView: (view: { type: 'files'; spaceId: string } | null) => void;
   setUnreadCounts: (counts: Record<string, number>) => void;
   setMentionCounts: (counts: Record<string, number>) => void;
   incrementUnread: (channelId: string) => void;
@@ -86,6 +91,9 @@ interface ChatState {
     receipts: Record<string, ReadReceiptInfo>,
   ) => void;
   setServerArchived: (archived: boolean) => void;
+  setServerName: (name: string) => void;
+  setServerIconFileId: (fileId: string | null) => void;
+  setServerIconDarkFileId: (fileId: string | null) => void;
   setPendingRequestCount: (count: number) => void;
   setSpaceInvites: (invites: SpaceInvite[]) => void;
   addSpaceInvite: (invite: SpaceInvite) => void;
@@ -123,7 +131,11 @@ export const useChatStore = create<ChatState>((set) => ({
   uploadProgress: null,
   spaces: [],
   activeView: null,
+  activeToolView: null,
   serverArchived: false,
+  serverName: 'EnclaveStation',
+  serverIconFileId: null,
+  serverIconDarkFileId: null,
   pendingRequestCount: 0,
   spaceInvites: [],
   notifications: [],
@@ -151,6 +163,7 @@ export const useChatStore = create<ChatState>((set) => ({
       activeChannelId: null,
       spaces: [],
       activeView: null,
+      activeToolView: null,
       unreadCounts: {},
       mentionCounts: {},
       readReceipts: {},
@@ -175,6 +188,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
       return {
         activeChannelId: channelId,
+        activeToolView: null,
         unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
         mentionCounts: { ...state.mentionCounts, [channelId]: 0 },
         notifications:
@@ -325,6 +339,13 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setActiveView: (view) => set({ activeView: view }),
 
+  setActiveToolView: (view) =>
+    set((state) => ({
+      activeToolView: view,
+      // Clear active channel when entering a tool view
+      activeChannelId: view ? null : state.activeChannelId,
+    })),
+
   setUnreadCounts: (counts) => set({ unreadCounts: counts }),
   setMentionCounts: (counts) => set({ mentionCounts: counts }),
 
@@ -370,6 +391,9 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
 
   setServerArchived: (archived) => set({ serverArchived: archived }),
+  setServerName: (name) => set({ serverName: name }),
+  setServerIconFileId: (fileId) => set({ serverIconFileId: fileId }),
+  setServerIconDarkFileId: (fileId) => set({ serverIconDarkFileId: fileId }),
   setPendingRequestCount: (count) => set({ pendingRequestCount: count }),
 
   setSpaceInvites: (invites) => set({ spaceInvites: invites }),

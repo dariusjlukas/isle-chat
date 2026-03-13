@@ -4,6 +4,10 @@ import type {
   Message,
   Space,
   SpaceInvite,
+  SpaceFile,
+  SpaceFilePath,
+  SpaceFilePermission,
+  SpaceFileVersion,
   ReadReceiptInfo,
   Notification,
 } from '../types';
@@ -596,6 +600,8 @@ export interface AdminSettings {
   storage_used: number;
   auth_methods: string[];
   server_name: string;
+  server_icon_file_id: string;
+  server_icon_dark_file_id: string;
   registration_mode: string;
   file_uploads_enabled: boolean;
   session_expiry_hours: number;
@@ -635,6 +641,66 @@ export function completeSetup(
   });
 }
 
+export function uploadServerIcon(
+  file: File,
+): Promise<{ server_icon_file_id: string }> {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/admin/server-icon`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.error || xhr.statusText));
+        } catch {
+          reject(new Error(xhr.statusText));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(file);
+  });
+}
+
+export function deleteServerIcon() {
+  return request<{ ok: boolean }>('/admin/server-icon', { method: 'DELETE' });
+}
+
+export function uploadServerIconDark(
+  file: File,
+): Promise<{ server_icon_dark_file_id: string }> {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/admin/server-icon-dark`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.error || xhr.statusText));
+        } catch {
+          reject(new Error(xhr.statusText));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(file);
+  });
+}
+
+export function deleteServerIconDark() {
+  return request<{ ok: boolean }>('/admin/server-icon-dark', {
+    method: 'DELETE',
+  });
+}
+
 // Config
 export interface PasswordPolicy {
   min_length: number;
@@ -648,6 +714,8 @@ export interface PublicConfig {
   public_url: string;
   auth_methods: string[];
   server_name: string;
+  server_icon_file_id: string;
+  server_icon_dark_file_id: string;
   registration_mode: string;
   setup_completed: boolean;
   has_users: boolean;
@@ -740,6 +808,20 @@ export function deleteSpaceAvatar(spaceId: string) {
   return request<Partial<Space>>(`/spaces/${spaceId}/avatar`, {
     method: 'DELETE',
   });
+}
+
+export function getSpaceTools(spaceId: string) {
+  return request<string[]>(`/spaces/${spaceId}/tools`);
+}
+
+export function setSpaceTool(spaceId: string, tool: string, enabled: boolean) {
+  return request<{ ok: boolean; enabled_tools: string[] }>(
+    `/spaces/${spaceId}/tools`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ tool, enabled }),
+    },
+  );
 }
 
 export function joinSpace(spaceId: string) {
@@ -1298,4 +1380,261 @@ export function getMessagesAround(
     limit: String(limit),
   });
   return request<Message[]>(`/channels/${channelId}/messages/around?${params}`);
+}
+
+// Space Files
+export function listSpaceFiles(spaceId: string, parentId?: string) {
+  const params = new URLSearchParams();
+  if (parentId) params.set('parent_id', parentId);
+  const qs = params.toString();
+  return request<{ files: SpaceFile[]; path: SpaceFilePath[] }>(
+    `/spaces/${spaceId}/files${qs ? '?' + qs : ''}`,
+  );
+}
+
+export function createSpaceFolder(
+  spaceId: string,
+  name: string,
+  parentId?: string,
+) {
+  return request<SpaceFile>(`/spaces/${spaceId}/files/folder`, {
+    method: 'POST',
+    body: JSON.stringify({ name, parent_id: parentId || '' }),
+  });
+}
+
+export function uploadSpaceFile(
+  spaceId: string,
+  file: File,
+  parentId?: string,
+  onProgress?: (percent: number) => void,
+): Promise<SpaceFile> {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const params = new URLSearchParams({
+      filename: file.name,
+      content_type: file.type || 'application/octet-stream',
+    });
+    if (parentId) params.set('parent_id', parentId);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/spaces/${spaceId}/files/upload?${params}`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.error || xhr.statusText));
+        } catch {
+          reject(new Error(xhr.statusText));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(file);
+  });
+}
+
+export function getSpaceFile(spaceId: string, fileId: string) {
+  return request<SpaceFile & { path: SpaceFilePath[] }>(
+    `/spaces/${spaceId}/files/${fileId}`,
+  );
+}
+
+export function getSpaceFileDownloadUrl(
+  spaceId: string,
+  fileId: string,
+): string {
+  const token = getToken();
+  return `${API_BASE}/spaces/${spaceId}/files/${fileId}/download?token=${token}`;
+}
+
+export async function downloadSpaceFile(
+  spaceId: string,
+  fileId: string,
+  fileName: string,
+) {
+  const token = getToken();
+  const res = await fetch(
+    `${API_BASE}/spaces/${spaceId}/files/${fileId}/download`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+  if (!res.ok) throw new Error('Download failed');
+  const blob = await res.blob();
+  triggerDownload(blob, fileName);
+}
+
+export function updateSpaceFile(
+  spaceId: string,
+  fileId: string,
+  data: { name?: string; parent_id?: string | null },
+) {
+  return request<SpaceFile>(`/spaces/${spaceId}/files/${fileId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteSpaceFile(spaceId: string, fileId: string) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/files/${fileId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function getSpaceStorageUsed(spaceId: string) {
+  return request<{ used: number }>(`/spaces/${spaceId}/storage`);
+}
+
+// Space File Permissions
+export function getFilePermissions(spaceId: string, fileId: string) {
+  return request<{ permissions: SpaceFilePermission[]; my_permission: string }>(
+    `/spaces/${spaceId}/files/${fileId}/permissions`,
+  );
+}
+
+export function setFilePermission(
+  spaceId: string,
+  fileId: string,
+  userId: string,
+  permission: string,
+) {
+  return request<{ ok: boolean }>(
+    `/spaces/${spaceId}/files/${fileId}/permissions`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ user_id: userId, permission }),
+    },
+  );
+}
+
+export function removeFilePermission(
+  spaceId: string,
+  fileId: string,
+  userId: string,
+) {
+  return request<{ ok: boolean }>(
+    `/spaces/${spaceId}/files/${fileId}/permissions/${userId}`,
+    { method: 'DELETE' },
+  );
+}
+
+// Space File Versions
+export function listFileVersions(spaceId: string, fileId: string) {
+  return request<{ versions: SpaceFileVersion[] }>(
+    `/spaces/${spaceId}/files/${fileId}/versions`,
+  );
+}
+
+export function uploadFileVersion(
+  spaceId: string,
+  fileId: string,
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<SpaceFileVersion> {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions`);
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(JSON.parse(xhr.responseText));
+      } else {
+        try {
+          const body = JSON.parse(xhr.responseText);
+          reject(new Error(body.error || xhr.statusText));
+        } catch {
+          reject(new Error(xhr.statusText));
+        }
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.send(file);
+  });
+}
+
+export function getVersionDownloadUrl(
+  spaceId: string,
+  fileId: string,
+  versionId: string,
+): string {
+  const token = getToken();
+  return `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions/${versionId}/download?token=${token}`;
+}
+
+export async function downloadFileVersion(
+  spaceId: string,
+  fileId: string,
+  versionId: string,
+  fileName: string,
+) {
+  const token = getToken();
+  const res = await fetch(
+    `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions/${versionId}/download`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+  if (!res.ok) throw new Error('Download failed');
+  const blob = await res.blob();
+  triggerDownload(blob, fileName);
+}
+
+export function revertFileVersion(
+  spaceId: string,
+  fileId: string,
+  versionId: string,
+) {
+  return request<SpaceFileVersion>(
+    `/spaces/${spaceId}/files/${fileId}/versions/${versionId}/revert`,
+    { method: 'POST' },
+  );
+}
+
+// Admin Storage
+export interface SpaceStorageInfo {
+  space_id: string;
+  space_name: string;
+  storage_used: number;
+  storage_limit: number;
+  file_count: number;
+}
+
+export function getAdminStorage() {
+  return request<{ spaces: SpaceStorageInfo[]; total_used: number }>(
+    '/admin/storage',
+  );
+}
+
+// Update listSpaceFiles return type to include my_permission
+export function listSpaceFilesWithPermission(
+  spaceId: string,
+  parentId?: string,
+) {
+  const params = new URLSearchParams();
+  if (parentId) params.set('parent_id', parentId);
+  const qs = params.toString();
+  return request<{
+    files: SpaceFile[];
+    path: SpaceFilePath[];
+    my_permission: string;
+  }>(`/spaces/${spaceId}/files${qs ? '?' + qs : ''}`);
 }

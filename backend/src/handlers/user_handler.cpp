@@ -1,4 +1,5 @@
 #include "handlers/user_handler.h"
+#include "handlers/format_utils.h"
 
 using json = nlohmann::json;
 
@@ -135,7 +136,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                 }
 
                 // Generate file ID and save
-                std::string file_id = random_hex(32);
+                std::string file_id = format_utils::random_hex(32);
                 std::string path = config.upload_dir + "/" + file_id;
                 std::ofstream out(path, std::ios::binary);
                 if (!out) {
@@ -600,7 +601,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             auto secret = totp::generate_secret();
             db.store_totp_secret(user_id, secret);
 
-            auto server_name = db.get_setting("server_name").value_or("Isle Chat");
+            auto server_name = db.get_setting("server_name").value_or("EnclaveStation");
             auto uri = totp::build_uri(secret, user->username, server_name);
 
             json resp = {{"secret", secret}, {"uri", uri}};
@@ -710,17 +711,6 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 template <bool SSL>
 std::string UserHandler<SSL>::get_user_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
     return validate_session_or_401(res, req, db);
-}
-
-template <bool SSL>
-std::string UserHandler<SSL>::random_hex(int bytes) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-    std::ostringstream oss;
-    for (int i = 0; i < bytes; ++i)
-        oss << std::hex << std::setfill('0') << std::setw(2) << dis(gen);
-    return oss.str();
 }
 
 template struct UserHandler<false>;

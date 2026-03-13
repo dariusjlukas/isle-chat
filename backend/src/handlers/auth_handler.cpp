@@ -1,4 +1,6 @@
 #include "handlers/auth_handler.h"
+#include "handlers/auth_payload_utils.h"
+#include "handlers/auth_utils.h"
 
 using json = nlohmann::json;
 
@@ -221,9 +223,9 @@ void AuthHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     return;
                 }
                 std::string challenge = webauthn::generate_challenge();
-                json extra = {{"type", "device_pki"}};
+                json extra = auth_payload_utils::build_pki_challenge_extra("device_pki");
                 db.store_webauthn_challenge(challenge, extra.dump());
-                json resp = {{"challenge", challenge}};
+                json resp = auth_payload_utils::build_challenge_response(challenge);
                 res->writeHeader("Content-Type", "application/json")->end(resp.dump());
             } catch (const std::exception& e) {
                 res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -287,8 +289,7 @@ int AuthHandler<SSL>::get_session_expiry() {
 
 template <bool SSL>
 bool AuthHandler<SSL>::is_mfa_required_for_method(const std::string& method) {
-    auto val = db.get_setting("mfa_required_" + method);
-    return val && *val == "true";
+    return auth_utils::is_required_setting_enabled(db.get_setting("mfa_required_" + method));
 }
 
 template <bool SSL>
@@ -296,51 +297,25 @@ bool AuthHandler<SSL>::check_and_handle_mfa(uWS::HttpResponse<SSL>* res, const U
                                              const std::string& auth_method) {
     bool mfa_required = is_mfa_required_for_method(auth_method);
     bool user_has_totp = db.has_totp(user.id);
-
     if (!mfa_required && !user_has_totp) return false;
-
-    if (mfa_required && !user_has_totp) {
-        // User hasn't set up TOTP but admin requires it — force setup
-        auto mfa_token = db.create_mfa_pending_token(user.id, auth_method);
-        json resp = {{"must_setup_totp", true}, {"mfa_token", mfa_token}};
-        res->writeHeader("Content-Type", "application/json")->end(resp.dump());
-        return true;
-    }
-
-    // User has TOTP — require MFA step
     auto mfa_token = db.create_mfa_pending_token(user.id, auth_method);
-    json resp = {{"mfa_required", true}, {"mfa_token", mfa_token}};
-    res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+    auto decision = auth_utils::build_mfa_decision(mfa_required, user_has_totp, mfa_token);
+
+    res->writeHeader("Content-Type", "application/json")->end(decision.response.dump());
     return true;
 }
 
 template <bool SSL>
 std::string AuthHandler<SSL>::check_registration_eligibility(const std::string& username,
                                                               const std::string& invite_token) {
-    bool is_first_user = (db.count_users() == 0);
-    if (is_first_user) return "";
-
-    auto mode = db.get_setting("registration_mode");
-    std::string reg_mode = mode.value_or("invite");
-
-    if (reg_mode == "open") return "";
-
-    if (reg_mode == "approval") {
-        return "This server requires admin approval. Please request access instead.";
-    }
-
-    // "invite" or "invite_only" — require invite token
-    if (!invite_token.empty()) {
-        if (!db.validate_invite(invite_token)) {
-            return "Invalid or expired invite token";
-        }
-        return "";
-    }
-
-    if (reg_mode == "invite_only") {
-        return "This server requires an invite token to register.";
-    }
-    return "Invite token required. You can also request access below.";
+    (void)username;
+    bool has_invite = !invite_token.empty();
+    bool invite_valid = has_invite && db.validate_invite(invite_token);
+    return auth_utils::registration_eligibility_message(
+        db.count_users() == 0,
+        db.get_setting("registration_mode").value_or("invite"),
+        has_invite,
+        invite_valid);
 }
 
 template <bool SSL>
@@ -352,25 +327,12 @@ void AuthHandler<SSL>::complete_user_creation(User& user, const std::string& inv
 
 template <bool SSL>
 std::string AuthHandler<SSL>::generate_user_handle() {
-    unsigned char buf[16];
-    RAND_bytes(buf, sizeof(buf));
-    return webauthn::base64url_encode(buf, sizeof(buf));
+    return auth_utils::generate_user_handle();
 }
 
 template <bool SSL>
 json AuthHandler<SSL>::make_user_json(const User& user) {
-    return {
-        {"id", user.id},
-        {"username", user.username},
-        {"display_name", user.display_name},
-        {"role", user.role},
-        {"bio", user.bio},
-        {"status", user.status},
-        {"avatar_file_id", user.avatar_file_id},
-        {"profile_color", user.profile_color},
-        {"has_password", db.has_password(user.id)},
-        {"has_totp", db.has_totp(user.id)}
-    };
+    return auth_utils::make_user_json(user, db.has_password(user.id), db.has_totp(user.id));
 }
 
 // --- WebAuthn (passkey) handlers ---
@@ -399,37 +361,12 @@ void AuthHandler<SSL>::handle_register_options(uWS::HttpResponse<SSL>* res, cons
         std::string challenge = webauthn::generate_challenge();
         std::string user_handle = generate_user_handle();
 
-        json extra = {
-            {"type", "registration"},
-            {"username", username},
-            {"display_name", display_name},
-            {"user_handle", user_handle},
-            {"invite_token", invite_token}
-        };
+        json extra = auth_payload_utils::build_registration_challenge_extra(
+            "registration", username, display_name, user_handle, invite_token);
         db.store_webauthn_challenge(challenge, extra.dump());
 
-        json options = {
-            {"rp", {
-                {"name", config.webauthn_rp_name},
-                {"id", config.webauthn_rp_id}
-            }},
-            {"user", {
-                {"id", user_handle},
-                {"name", username},
-                {"displayName", display_name}
-            }},
-            {"challenge", challenge},
-            {"pubKeyCredParams", json::array({
-                {{"type", "public-key"}, {"alg", -7}},
-                {{"type", "public-key"}, {"alg", -257}}
-            })},
-            {"authenticatorSelection", {
-                {"residentKey", "required"},
-                {"userVerification", "preferred"}
-            }},
-            {"attestation", "none"},
-            {"timeout", defaults::WEBAUTHN_TIMEOUT_MS}
-        };
+        json options = auth_payload_utils::build_passkey_registration_options(
+            config, challenge, user_handle, username, display_name);
 
         res->writeHeader("Content-Type", "application/json")->end(options.dump());
     } catch (const std::exception& e) {
@@ -457,10 +394,8 @@ void AuthHandler<SSL>::handle_register_verify(uWS::HttpResponse<SSL>* res, const
             transports_str = response["transports"].dump();
         }
 
-        auto cd_bytes = webauthn::base64url_decode(client_data_json);
-        std::string cd_str(cd_bytes.begin(), cd_bytes.end());
-        auto cd_json = json::parse(cd_str);
-        std::string challenge = cd_json.at("challenge");
+        std::string challenge =
+            auth_payload_utils::extract_challenge_from_client_data_b64(client_data_json);
 
         auto stored = db.get_webauthn_challenge(challenge);
         if (!stored) {
@@ -469,8 +404,8 @@ void AuthHandler<SSL>::handle_register_verify(uWS::HttpResponse<SSL>* res, const
             return;
         }
 
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "registration") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "registration")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge is not for registration"})");
             return;
@@ -496,7 +431,7 @@ void AuthHandler<SSL>::handle_register_verify(uWS::HttpResponse<SSL>* res, const
         complete_user_creation(user, invite_token);
 
         std::string token = db.create_session(user.id, get_session_expiry());
-        json resp = {{"token", token}, {"user", make_user_json(user)}};
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const pqxx::unique_violation&) {
         res->writeStatus("409")->writeHeader("Content-Type", "application/json")
@@ -517,16 +452,10 @@ void AuthHandler<SSL>::handle_login_options(uWS::HttpResponse<SSL>* res, const s
         }
 
         std::string challenge = webauthn::generate_challenge();
-        json extra = {{"type", "authentication"}};
+        json extra = auth_payload_utils::build_authentication_challenge_extra();
         db.store_webauthn_challenge(challenge, extra.dump());
 
-        json options = {
-            {"challenge", challenge},
-            {"rpId", config.webauthn_rp_id},
-            {"allowCredentials", json::array()},
-            {"userVerification", "preferred"},
-            {"timeout", defaults::WEBAUTHN_TIMEOUT_MS}
-        };
+        json options = auth_payload_utils::build_passkey_login_options(config, challenge);
 
         res->writeHeader("Content-Type", "application/json")->end(options.dump());
     } catch (const std::exception& e) {
@@ -558,10 +487,8 @@ void AuthHandler<SSL>::handle_login_verify(uWS::HttpResponse<SSL>* res, const st
             return;
         }
 
-        auto cd_bytes = webauthn::base64url_decode(client_data_json);
-        std::string cd_str(cd_bytes.begin(), cd_bytes.end());
-        auto cd_json = json::parse(cd_str);
-        std::string challenge = cd_json.at("challenge");
+        std::string challenge =
+            auth_payload_utils::extract_challenge_from_client_data_b64(client_data_json);
 
         auto stored = db.get_webauthn_challenge(challenge);
         if (!stored) {
@@ -570,8 +497,8 @@ void AuthHandler<SSL>::handle_login_verify(uWS::HttpResponse<SSL>* res, const st
             return;
         }
 
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "authentication") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "authentication")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge is not for authentication"})");
             return;
@@ -607,7 +534,7 @@ void AuthHandler<SSL>::handle_login_verify(uWS::HttpResponse<SSL>* res, const st
         if (check_and_handle_mfa(res, *user, "passkey")) return;
 
         std::string token = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", token}, {"user", make_user_json(*user)}};
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -632,11 +559,11 @@ void AuthHandler<SSL>::handle_pki_challenge(uWS::HttpResponse<SSL>* res, const s
         std::string challenge = webauthn::generate_challenge();
         std::string type = public_key.empty() ? "pki_registration" : "pki_login";
 
-        json extra = {{"type", type}};
-        if (!public_key.empty()) extra["public_key"] = public_key;
+        json extra = auth_payload_utils::build_pki_challenge_extra(
+            type, public_key.empty() ? std::nullopt : std::make_optional(public_key));
         db.store_webauthn_challenge(challenge, extra.dump());
 
-        json resp = {{"challenge", challenge}};
+        json resp = auth_payload_utils::build_challenge_response(challenge);
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -668,8 +595,8 @@ void AuthHandler<SSL>::handle_pki_register(uWS::HttpResponse<SSL>* res, const st
                 ->end(R"({"error":"Invalid or expired challenge"})");
             return;
         }
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "pki_registration") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "pki_registration")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge is not for PKI registration"})");
             return;
@@ -705,11 +632,8 @@ void AuthHandler<SSL>::handle_pki_register(uWS::HttpResponse<SSL>* res, const st
         complete_user_creation(user, invite_token);
 
         std::string token = db.create_session(user.id, get_session_expiry());
-        json resp = {
-            {"token", token},
-            {"user", make_user_json(user)},
-            {"recovery_keys", plaintext_keys}
-        };
+        json resp = auth_payload_utils::build_token_user_response(
+            token, make_user_json(user), json{{"recovery_keys", plaintext_keys}});
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const pqxx::unique_violation&) {
         res->writeStatus("409")->writeHeader("Content-Type", "application/json")
@@ -741,8 +665,8 @@ void AuthHandler<SSL>::handle_pki_login(uWS::HttpResponse<SSL>* res, const std::
                 ->end(R"({"error":"Invalid or expired challenge"})");
             return;
         }
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "pki_login") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "pki_login")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge is not for PKI login"})");
             return;
@@ -774,7 +698,7 @@ void AuthHandler<SSL>::handle_pki_login(uWS::HttpResponse<SSL>* res, const std::
         if (check_and_handle_mfa(res, *user, "pki")) return;
 
         std::string token = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", token}, {"user", make_user_json(*user)}};
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -814,8 +738,8 @@ void AuthHandler<SSL>::handle_add_device_pki(uWS::HttpResponse<SSL>* res, const 
                 ->end(R"({"error":"Invalid or expired challenge"})");
             return;
         }
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "device_pki") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "device_pki")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge mismatch"})");
             return;
@@ -839,7 +763,7 @@ void AuthHandler<SSL>::handle_add_device_pki(uWS::HttpResponse<SSL>* res, const 
         }
 
         std::string session = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", session}, {"user", make_user_json(*user)}};
+        json resp = auth_payload_utils::build_token_user_response(session, make_user_json(*user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -876,45 +800,16 @@ void AuthHandler<SSL>::handle_add_device_passkey_options(uWS::HttpResponse<SSL>*
         std::string challenge = webauthn::generate_challenge();
 
         auto existing = db.list_webauthn_credentials(*user_id);
-        json exclude = json::array();
-        for (const auto& c : existing) {
-            json cred_desc = {{"type", "public-key"}, {"id", c.credential_id}};
-            if (!c.transports.empty() && c.transports != "[]") {
-                cred_desc["transports"] = json::parse(c.transports);
-            }
-            exclude.push_back(cred_desc);
-        }
+        json exclude = auth_payload_utils::build_exclude_credentials(existing);
 
         auto uid_bytes = std::vector<unsigned char>(user_id->begin(), user_id->end());
         std::string user_handle = webauthn::base64url_encode(uid_bytes);
 
-        json extra = {{"type", "device_passkey"}, {"user_id", *user_id},
-                      {"device_token", device_token}};
+        json extra = auth_payload_utils::build_device_passkey_challenge_extra(*user_id, device_token);
         db.store_webauthn_challenge(challenge, extra.dump());
 
-        json options = {
-            {"rp", {
-                {"name", config.webauthn_rp_name},
-                {"id", config.webauthn_rp_id}
-            }},
-            {"user", {
-                {"id", user_handle},
-                {"name", user->username},
-                {"displayName", user->display_name}
-            }},
-            {"challenge", challenge},
-            {"pubKeyCredParams", json::array({
-                {{"type", "public-key"}, {"alg", -7}},
-                {{"type", "public-key"}, {"alg", -257}}
-            })},
-            {"excludeCredentials", exclude},
-            {"authenticatorSelection", {
-                {"residentKey", "required"},
-                {"userVerification", "preferred"}
-            }},
-            {"attestation", "none"},
-            {"timeout", defaults::WEBAUTHN_TIMEOUT_MS}
-        };
+        json options = auth_payload_utils::build_passkey_registration_options(
+            config, challenge, user_handle, user->username, user->display_name, exclude);
 
         res->writeHeader("Content-Type", "application/json")->end(options.dump());
     } catch (const std::exception& e) {
@@ -938,10 +833,8 @@ void AuthHandler<SSL>::handle_add_device_passkey_verify(uWS::HttpResponse<SSL>* 
             transports_str = response["transports"].dump();
         }
 
-        auto cd_bytes = webauthn::base64url_decode(client_data_json);
-        std::string cd_str(cd_bytes.begin(), cd_bytes.end());
-        auto cd_json = json::parse(cd_str);
-        std::string challenge = cd_json.at("challenge");
+        std::string challenge =
+            auth_payload_utils::extract_challenge_from_client_data_b64(client_data_json);
 
         auto stored = db.get_webauthn_challenge(challenge);
         if (!stored) {
@@ -950,8 +843,8 @@ void AuthHandler<SSL>::handle_add_device_passkey_verify(uWS::HttpResponse<SSL>* 
             return;
         }
 
-        auto extra = json::parse(stored->extra_data);
-        if (extra.at("type") != "device_passkey") {
+        auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+        if (!auth_payload_utils::challenge_has_type(extra, "device_passkey")) {
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge mismatch"})");
             return;
@@ -992,7 +885,7 @@ void AuthHandler<SSL>::handle_add_device_passkey_verify(uWS::HttpResponse<SSL>* 
         }
 
         std::string session = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", session}, {"user", make_user_json(*user)}};
+        json resp = auth_payload_utils::build_token_user_response(session, make_user_json(*user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -1030,11 +923,8 @@ void AuthHandler<SSL>::handle_recovery_login(uWS::HttpResponse<SSL>* res, const 
         }
 
         std::string token = db.create_session(user->id, get_session_expiry());
-        json resp = {
-            {"token", token},
-            {"user", make_user_json(*user)},
-            {"must_setup_key", true}
-        };
+        json resp = auth_payload_utils::build_token_user_response(
+            token, make_user_json(*user), json{{"must_setup_key", true}});
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -1073,11 +963,8 @@ void AuthHandler<SSL>::handle_recovery_token_login(uWS::HttpResponse<SSL>* res, 
         db.use_recovery_token(token);
 
         std::string session = db.create_session(user->id, get_session_expiry());
-        json resp = {
-            {"token", session},
-            {"user", make_user_json(*user)},
-            {"must_setup_key", true}
-        };
+        json resp = auth_payload_utils::build_token_user_response(
+            session, make_user_json(*user), json{{"must_setup_key", true}});
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -1111,36 +998,12 @@ void AuthHandler<SSL>::handle_request_access_options(uWS::HttpResponse<SSL>* res
         std::string challenge = webauthn::generate_challenge();
         std::string user_handle = generate_user_handle();
 
-        json extra = {
-            {"type", "join_request"},
-            {"username", username},
-            {"display_name", display_name},
-            {"user_handle", user_handle}
-        };
+        json extra = auth_payload_utils::build_registration_challenge_extra(
+            "join_request", username, display_name, user_handle);
         db.store_webauthn_challenge(challenge, extra.dump());
 
-        json options = {
-            {"rp", {
-                {"name", config.webauthn_rp_name},
-                {"id", config.webauthn_rp_id}
-            }},
-            {"user", {
-                {"id", user_handle},
-                {"name", username},
-                {"displayName", display_name}
-            }},
-            {"challenge", challenge},
-            {"pubKeyCredParams", json::array({
-                {{"type", "public-key"}, {"alg", -7}},
-                {{"type", "public-key"}, {"alg", -257}}
-            })},
-            {"authenticatorSelection", {
-                {"residentKey", "required"},
-                {"userVerification", "preferred"}
-            }},
-            {"attestation", "none"},
-            {"timeout", defaults::WEBAUTHN_TIMEOUT_MS}
-        };
+        json options = auth_payload_utils::build_passkey_registration_options(
+            config, challenge, user_handle, username, display_name);
 
         res->writeHeader("Content-Type", "application/json")->end(options.dump());
     } catch (const std::exception& e) {
@@ -1214,10 +1077,8 @@ void AuthHandler<SSL>::handle_request_access(uWS::HttpResponse<SSL>* res, const 
             }
 
             // Extract and verify challenge
-            auto cd_bytes = webauthn::base64url_decode(client_data_json);
-            std::string cd_str(cd_bytes.begin(), cd_bytes.end());
-            auto cd_json = json::parse(cd_str);
-            std::string challenge = cd_json.at("challenge");
+            std::string challenge =
+                auth_payload_utils::extract_challenge_from_client_data_b64(client_data_json);
 
             auto stored = db.get_webauthn_challenge(challenge);
             if (!stored) {
@@ -1226,8 +1087,8 @@ void AuthHandler<SSL>::handle_request_access(uWS::HttpResponse<SSL>* res, const 
                 return;
             }
 
-            auto extra = json::parse(stored->extra_data);
-            if (extra.at("type") != "join_request") {
+            auto extra = auth_payload_utils::parse_challenge_extra(stored->extra_data);
+            if (!auth_payload_utils::challenge_has_type(extra, "join_request")) {
                 res->writeStatus("400")->writeHeader("Content-Type", "application/json")
                     ->end(R"({"error":"Challenge is not for a join request"})");
                 return;
@@ -1318,22 +1179,8 @@ void AuthHandler<SSL>::handle_request_access(uWS::HttpResponse<SSL>* res, const 
 
 template <bool SSL>
 password_auth::PasswordPolicy AuthHandler<SSL>::get_password_policy() {
-    password_auth::PasswordPolicy policy;
-    auto v = db.get_setting("password_min_length");
-    if (v) { try { policy.min_length = std::stoi(*v); } catch (...) {} }
-    v = db.get_setting("password_require_uppercase");
-    if (v) policy.require_uppercase = (*v == "true");
-    v = db.get_setting("password_require_lowercase");
-    if (v) policy.require_lowercase = (*v == "true");
-    v = db.get_setting("password_require_number");
-    if (v) policy.require_number = (*v == "true");
-    v = db.get_setting("password_require_special");
-    if (v) policy.require_special = (*v == "true");
-    v = db.get_setting("password_max_age_days");
-    if (v) { try { policy.max_age_days = std::stoi(*v); } catch (...) {} }
-    v = db.get_setting("password_history_count");
-    if (v) { try { policy.history_count = std::stoi(*v); } catch (...) {} }
-    return policy;
+    return auth_utils::build_password_policy(
+        [this](const std::string& key) { return db.get_setting(key); });
 }
 
 template <bool SSL>
@@ -1383,7 +1230,7 @@ void AuthHandler<SSL>::handle_password_register(uWS::HttpResponse<SSL>* res, con
         // Create session
         auto token = db.create_session(user.id, get_session_expiry());
 
-        json resp = {{"token", token}, {"user", make_user_json(user)}};
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(user));
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const pqxx::unique_violation&) {
         res->writeStatus("409")->writeHeader("Content-Type", "application/json")
@@ -1443,10 +1290,12 @@ void AuthHandler<SSL>::handle_password_login(uWS::HttpResponse<SSL>* res, const 
 
         // Check password expiry
         auto policy = get_password_policy();
-        json resp = {{"token", token}, {"user", make_user_json(*user)}};
-        if (policy.max_age_days > 0) {
-            resp["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
-        }
+        json resp = auth_payload_utils::build_token_user_response(
+            token,
+            make_user_json(*user),
+            policy.max_age_days > 0
+                ? json{{"must_change_password", db.is_password_expired(user->id, policy.max_age_days)}}
+                : json::object());
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -1639,15 +1488,15 @@ void AuthHandler<SSL>::handle_mfa_verify(uWS::HttpResponse<SSL>* res, const std:
         }
 
         auto token = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", token}, {"user", make_user_json(*user)}};
-
-        // For password login, also check expiry
+        json extra = json::object();
         if (auth_method == "password") {
             auto policy = get_password_policy();
             if (policy.max_age_days > 0) {
-                resp["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
+                extra["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
             }
         }
+
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user), extra);
 
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
@@ -1681,10 +1530,10 @@ void AuthHandler<SSL>::handle_mfa_setup(uWS::HttpResponse<SSL>* res, const std::
         auto secret = totp::generate_secret();
         db.store_totp_secret(user_id, secret);
 
-        auto server_name = db.get_setting("server_name").value_or("Isle Chat");
+        auto server_name = db.get_setting("server_name").value_or("EnclaveStation");
         auto uri = totp::build_uri(secret, user->username, server_name);
 
-        json resp = {{"secret", secret}, {"uri", uri}};
+        json resp = auth_payload_utils::build_totp_setup_response(secret, uri);
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
         res->writeStatus("400")->writeHeader("Content-Type", "application/json")
@@ -1739,14 +1588,15 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(uWS::HttpResponse<SSL>* res, cons
         }
 
         auto token = db.create_session(user->id, get_session_expiry());
-        json resp = {{"token", token}, {"user", make_user_json(*user)}};
-
+        json extra = json::object();
         if (auth_method == "password") {
             auto policy = get_password_policy();
             if (policy.max_age_days > 0) {
-                resp["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
+                extra["must_change_password"] = db.is_password_expired(user->id, policy.max_age_days);
             }
         }
+
+        json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user), extra);
 
         res->writeHeader("Content-Type", "application/json")->end(resp.dump());
     } catch (const std::exception& e) {
@@ -1766,7 +1616,7 @@ void AuthHandler<SSL>::handle_request_status(uWS::HttpResponse<SSL>* res, const 
             return;
         }
 
-        json resp = {{"status", request->status}};
+        json resp = auth_payload_utils::build_join_request_status_response(request->status);
 
         if (request->status == "approved" && !request->session_token.empty()) {
             // Validate the session is still active
@@ -1774,8 +1624,8 @@ void AuthHandler<SSL>::handle_request_status(uWS::HttpResponse<SSL>* res, const 
             if (user_id) {
                 auto user = db.find_user_by_id(*user_id);
                 if (user) {
-                    resp["token"] = request->session_token;
-                    resp["user"] = make_user_json(*user);
+                    resp = auth_payload_utils::build_join_request_status_response(
+                        request->status, request->session_token, make_user_json(*user));
                 }
             }
         }

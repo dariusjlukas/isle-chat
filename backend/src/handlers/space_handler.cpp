@@ -1,4 +1,5 @@
 #include "handlers/space_handler.h"
+#include "handlers/format_utils.h"
 
 using json = nlohmann::json;
 
@@ -38,6 +39,10 @@ void SpaceHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                 std::string my_role = db.get_space_member_role(sp.id, user_id);
                 if (my_role.empty() && is_server_admin) my_role = "admin";
 
+                auto tools = db.get_space_tools(sp.id);
+                json tools_arr = json::array();
+                for (const auto& t : tools) tools_arr.push_back(t);
+
                 arr.push_back({{"id", sp.id}, {"name", sp.name},
                                {"description", sp.description},
                                {"is_public", sp.is_public},
@@ -47,7 +52,8 @@ void SpaceHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                                {"avatar_file_id", sp.avatar_file_id},
                                {"profile_color", sp.profile_color},
                                {"my_role", my_role},
-                               {"members", members_arr}});
+                               {"members", members_arr},
+                               {"enabled_tools", tools_arr}});
             }
             res->writeHeader("Content-Type", "application/json")
                 ->writeHeader("Access-Control-Allow-Origin", "*")
@@ -1149,7 +1155,7 @@ void SpaceHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     }
 
                     // Generate file ID and save
-                    std::string file_id = random_hex(32);
+                    std::string file_id = format_utils::random_hex(32);
                     std::string path = config.upload_dir + "/" + file_id;
                     std::ofstream out(path, std::ios::binary);
                     if (!out) {
@@ -1230,22 +1236,86 @@ void SpaceHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     ->end(json({{"error", e.what()}}).dump());
             }
         });
+
+        // Get enabled tools for a space
+        app.get("/api/spaces/:id/tools", [this](auto* res, auto* req) {
+            std::string user_id = get_user_id(res, req);
+            if (user_id.empty()) return;
+            std::string space_id(req->getParameter("id"));
+
+            if (!db.is_space_member(space_id, user_id)) {
+                auto user = db.find_user_by_id(user_id);
+                if (!user || (user->role != "admin" && user->role != "owner")) {
+                    res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                        ->end(R"({"error":"Not a member of this space"})");
+                    return;
+                }
+            }
+
+            auto tools = db.get_space_tools(space_id);
+            json arr = json::array();
+            for (const auto& t : tools) arr.push_back(t);
+            res->writeHeader("Content-Type", "application/json")
+                ->end(arr.dump());
+        });
+
+        // Enable/disable a tool for a space (admin/owner only)
+        app.put("/api/spaces/:id/tools", [this](auto* res, auto* req) {
+            auto user_id_copy = get_user_id(res, req);
+            std::string space_id_copy(req->getParameter("id"));
+            std::string body;
+            res->onData([this, res, user_id = std::move(user_id_copy),
+                         space_id = std::move(space_id_copy), body = std::move(body)](
+                std::string_view data, bool last) mutable {
+                body.append(data);
+                if (!last) return;
+                if (user_id.empty()) return;
+                try {
+                    // Check space admin/owner or server admin/owner
+                    std::string space_role = db.get_space_member_role(space_id, user_id);
+                    auto user = db.find_user_by_id(user_id);
+                    bool is_server_admin = user && (user->role == "admin" || user->role == "owner");
+                    if (space_role != "admin" && space_role != "owner" && !is_server_admin) {
+                        res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Admin access required"})");
+                        return;
+                    }
+
+                    auto j = json::parse(body);
+                    std::string tool = j.at("tool").get<std::string>();
+                    bool enabled = j.at("enabled").get<bool>();
+
+                    // Validate tool name
+                    if (tool != "files" && tool != "calendar" && tool != "tasks") {
+                        res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                            ->end(R"({"error":"Unknown tool"})");
+                        return;
+                    }
+
+                    if (enabled) {
+                        db.enable_space_tool(space_id, tool, user_id);
+                    } else {
+                        db.disable_space_tool(space_id, tool);
+                    }
+
+                    auto tools = db.get_space_tools(space_id);
+                    json tools_arr = json::array();
+                    for (const auto& t : tools) tools_arr.push_back(t);
+
+                    json resp = {{"ok", true}, {"enabled_tools", tools_arr}};
+                    res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+                } catch (const std::exception& e) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->end(json({{"error", e.what()}}).dump());
+                }
+            });
+            res->onAborted([]() {});
+        });
 }
 
 template <bool SSL>
 std::string SpaceHandler<SSL>::get_user_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
     return validate_session_or_401(res, req, db);
-}
-
-template <bool SSL>
-std::string SpaceHandler<SSL>::random_hex(int bytes) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-    std::ostringstream oss;
-    for (int i = 0; i < bytes; ++i)
-        oss << std::hex << std::setfill('0') << std::setw(2) << dis(gen);
-    return oss.str();
 }
 
 template struct SpaceHandler<false>;

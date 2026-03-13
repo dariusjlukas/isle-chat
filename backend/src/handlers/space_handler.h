@@ -23,5 +23,4 @@ struct SpaceHandler {
 
 private:
     std::string get_user_id(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req);
-    static std::string random_hex(int bytes);
 };

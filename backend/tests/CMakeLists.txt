@@ -32,6 +32,26 @@ add_executable(test_handler_utils test_handler_utils.cpp)
 target_link_libraries(test_handler_utils PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME HandlerUtilsTests COMMAND test_handler_utils)
 
+add_executable(test_auth_utils test_auth_utils.cpp)
+target_link_libraries(test_auth_utils PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME AuthUtilsTests COMMAND test_auth_utils)
+
+add_executable(test_auth_payload_utils test_auth_payload_utils.cpp)
+target_link_libraries(test_auth_payload_utils PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME AuthPayloadUtilsTests COMMAND test_auth_payload_utils)
+
+add_executable(test_admin_settings_utils test_admin_settings_utils.cpp)
+target_link_libraries(test_admin_settings_utils PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME AdminSettingsUtilsTests COMMAND test_admin_settings_utils)
+
+add_executable(test_file_access_utils test_file_access_utils.cpp)
+target_link_libraries(test_file_access_utils PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME FileAccessUtilsTests COMMAND test_file_access_utils)
+
+add_executable(test_admin_approval_utils test_admin_approval_utils.cpp)
+target_link_libraries(test_admin_approval_utils PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME AdminApprovalUtilsTests COMMAND test_admin_approval_utils)
+
 add_executable(test_search_handler test_search_handler.cpp)
 target_link_libraries(test_search_handler PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME SearchHandlerTests COMMAND test_search_handler)
@@ -45,8 +65,13 @@ add_executable(test_database test_database.cpp)
 target_link_libraries(test_database PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME DatabaseTests COMMAND test_database)
 
+add_executable(test_space_files test_space_files.cpp)
+target_link_libraries(test_space_files PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME SpaceFileTests COMMAND test_space_files)
+
 # Labels for selective test running
 set_tests_properties(PkiTests ConfigTests TotpTests PasswordTests WebAuthnTests HandlerUtilsTests
-    SearchHandlerTests FileHandlerTests
+    AuthUtilsTests AuthPayloadUtilsTests AdminSettingsUtilsTests FileAccessUtilsTests
+    AdminApprovalUtilsTests SearchHandlerTests FileHandlerTests
     PROPERTIES LABELS "unit")
-set_tests_properties(DatabaseTests PROPERTIES LABELS "integration")
+set_tests_properties(DatabaseTests SpaceFileTests PROPERTIES LABELS "integration")

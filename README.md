@@ -1,4 +1,4 @@
-# Isle Chat
+# EnclaveStation
 
 A self-hosted chat application with PKI-based authentication, multi-device support, and real-time messaging over WebSockets.
 
@@ -18,8 +18,8 @@ A self-hosted chat application with PKI-based authentication, multi-device suppo
 1. Clone the repository with submodules:
 
    ```
-   git clone --recurse-submodules https://github.com/your-org/isle-chat.git
-   cd isle-chat
+   git clone --recurse-submodules https://github.com/your-org/enclave-station.git
+   cd enclave-station
    ```
 
    If you already cloned without `--recurse-submodules`, initialize them now:
@@ -62,8 +62,8 @@ A self-hosted chat application with PKI-based authentication, multi-device suppo
 1. Clone with submodules:
 
    ```
-   git clone --recurse-submodules https://github.com/your-org/isle-chat.git
-   cd isle-chat
+   git clone --recurse-submodules https://github.com/your-org/enclave-station.git
+   cd enclave-station
    ```
 
 2. Install frontend dependencies:

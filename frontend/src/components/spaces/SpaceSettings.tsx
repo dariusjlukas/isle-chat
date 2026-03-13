@@ -15,12 +15,23 @@ import {
   Slider,
 } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCamera, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import {
+  faCamera,
+  faTrashCan,
+  faFolderOpen,
+  faCalendar,
+  faListCheck,
+} from '@fortawesome/free-solid-svg-icons';
 import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
 import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
-import type { Space, ChannelMemberInfo, ChannelRole } from '../../types';
+import type {
+  Space,
+  ChannelMemberInfo,
+  ChannelRole,
+  SpaceToolName,
+} from '../../types';
 import { UserPicker } from '../common/UserPicker';
 import { OnlineStatusDot } from '../common/OnlineStatusDot';
 import { UserPopoverCard } from '../common/UserPopoverCard';
@@ -119,6 +130,11 @@ export function SpaceSettings({ space, onClose }: Props) {
   const onCropComplete = useCallback((_: Area, croppedPixels: Area) => {
     setCroppedArea(croppedPixels);
   }, []);
+
+  const [toolsLoading, setToolsLoading] = useState<string | null>(null);
+  const [enabledTools, setEnabledTools] = useState<Set<string>>(
+    new Set(space.enabled_tools || []),
+  );
 
   const [leaveError, setLeaveError] = useState<string | null>(null);
   const user = useChatStore((s) => s.user);
@@ -265,6 +281,51 @@ export function SpaceSettings({ space, onClose }: Props) {
       setUploading(false);
     }
   };
+
+  const handleToggleTool = async (tool: SpaceToolName, enabled: boolean) => {
+    setToolsLoading(tool);
+    try {
+      const result = await api.setSpaceTool(space.id, tool, enabled);
+      const newTools = new Set(result.enabled_tools);
+      setEnabledTools(newTools);
+      updateSpace({ id: space.id, enabled_tools: result.enabled_tools });
+    } catch (e) {
+      console.error('Failed to toggle tool:', e);
+    } finally {
+      setToolsLoading(null);
+    }
+  };
+
+  const AVAILABLE_TOOLS: {
+    name: SpaceToolName;
+    label: string;
+    description: string;
+    icon: typeof faFolderOpen;
+    available: boolean;
+  }[] = [
+    {
+      name: 'files',
+      label: 'Files',
+      description:
+        'Shared file hosting with folders, permissions, and version history',
+      icon: faFolderOpen,
+      available: true,
+    },
+    {
+      name: 'calendar',
+      label: 'Calendar',
+      description: 'Shared calendar for scheduling events',
+      icon: faCalendar,
+      available: false,
+    },
+    {
+      name: 'tasks',
+      label: 'Tasks',
+      description: 'Task tracking and to-do lists',
+      icon: faListCheck,
+      available: false,
+    },
+  ];
 
   return (
     <>
@@ -562,6 +623,52 @@ export function SpaceSettings({ space, onClose }: Props) {
                     {inviteError && (
                       <p className='text-xs text-danger'>{inviteError}</p>
                     )}
+                  </div>
+                </Tab>
+              )}
+
+              {canManage && (
+                <Tab key='tools' title='Tools'>
+                  <div className='space-y-3 pt-2'>
+                    <p className='text-xs text-default-400'>
+                      Enable tools to add functionality to this space.
+                    </p>
+                    {AVAILABLE_TOOLS.map((tool) => (
+                      <div
+                        key={tool.name}
+                        className='flex items-center gap-3 p-3 rounded-lg bg-content2'
+                      >
+                        <FontAwesomeIcon
+                          icon={tool.icon}
+                          className='text-default-500 w-5'
+                        />
+                        <div className='flex-1 min-w-0'>
+                          <div className='flex items-center gap-2'>
+                            <span className='text-sm font-medium text-foreground'>
+                              {tool.label}
+                            </span>
+                            {!tool.available && (
+                              <span className='text-[10px] bg-default-100 text-default-400 px-1.5 py-0.5 rounded'>
+                                Coming soon
+                              </span>
+                            )}
+                          </div>
+                          <p className='text-xs text-default-400 mt-0.5'>
+                            {tool.description}
+                          </p>
+                        </div>
+                        <Switch
+                          size='sm'
+                          isSelected={enabledTools.has(tool.name)}
+                          isDisabled={
+                            !tool.available || toolsLoading === tool.name
+                          }
+                          onValueChange={(checked) =>
+                            handleToggleTool(tool.name, checked)
+                          }
+                        />
+                      </div>
+                    ))}
                   </div>
                 </Tab>
               )}

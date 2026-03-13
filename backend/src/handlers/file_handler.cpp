@@ -1,9 +1,8 @@
 #include "handlers/file_handler.h"
+#include "handlers/file_access_utils.h"
+#include "handlers/format_utils.h"
 #include <fstream>
 #include <filesystem>
-#include <random>
-#include <sstream>
-#include <iomanip>
 
 template <bool SSL>
 void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
@@ -48,15 +47,15 @@ void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         auto body = std::make_shared<std::string>();
 
         // Read effective max file size from DB setting, fall back to config
-        auto max_file_setting = db.get_setting("max_file_size");
-        int64_t max_size = max_file_setting ? std::stoll(*max_file_setting) : config.max_file_size;
+        int64_t max_size = file_access_utils::parse_max_file_size(
+            db.get_setting("max_file_size"), config.max_file_size);
 
         res->onData([this, res, body, max_size, channel_id, user_id, filename,
                      content_type, message_text](std::string_view data, bool last) mutable {
             body->append(data);
 
             if (static_cast<int64_t>(body->size()) > max_size) {
-                std::string msg = "File too large (max " + format_size(max_size) + ")";
+                std::string msg = file_access_utils::file_too_large_message(max_size);
                 res->writeStatus("413")->writeHeader("Content-Type", "application/json")
                     ->end(json{{"error", msg}}.dump());
                 return;
@@ -66,19 +65,17 @@ void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
             try {
                 // Check storage limit
-                auto max_storage_setting = db.get_setting("max_storage_size");
-                int64_t max_storage = max_storage_setting ? std::stoll(*max_storage_setting) : 0;
-                if (max_storage > 0) {
-                    int64_t used = db.get_total_file_size();
-                    if (used + static_cast<int64_t>(body->size()) > max_storage) {
-                        res->writeStatus("413")->writeHeader("Content-Type", "application/json")
-                            ->end(R"({"error":"Server storage limit reached"})");
-                        return;
-                    }
+                int64_t max_storage = file_access_utils::parse_max_storage_size(
+                    db.get_setting("max_storage_size"));
+                if (max_storage > 0 && file_access_utils::exceeds_storage_limit(
+                        max_storage, db.get_total_file_size(), static_cast<int64_t>(body->size()))) {
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->end(R"({"error":"Server storage limit reached"})");
+                    return;
                 }
 
                 // Generate file ID
-                std::string file_id = random_hex(32);
+                std::string file_id = format_utils::random_hex(32);
 
                 // Save to disk
                 std::string path = config.upload_dir + "/" + file_id;
@@ -147,12 +144,10 @@ void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         }
 
         // Validate file_id is hex-only (prevent path traversal)
-        for (char c : file_id) {
-            if (!std::isxdigit(static_cast<unsigned char>(c))) {
-                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
-                    ->end(R"({"error":"Invalid file ID"})");
-                return;
-            }
+        if (!file_access_utils::is_valid_hex_id(file_id)) {
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Invalid file ID"})");
+            return;
         }
 
         auto info = db.get_file_info(file_id);
@@ -175,7 +170,7 @@ void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         std::string content(size, '\0');
         in.read(content.data(), size);
 
-        std::string disposition = "inline; filename=\"" + info->file_name + "\"";
+        std::string disposition = file_access_utils::inline_disposition(info->file_name);
 
         res->writeHeader("Content-Type", info->file_type)
             ->writeHeader("Content-Disposition", disposition)
@@ -183,25 +178,6 @@ void FileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             ->writeHeader("Cache-Control", "private, max-age=86400")
             ->end(content);
     });
-}
-
-template <bool SSL>
-std::string FileHandler<SSL>::format_size(int64_t bytes) {
-    if (bytes < 1024) return std::to_string(bytes) + " B";
-    if (bytes < 1024 * 1024) return std::to_string(bytes / 1024) + " KB";
-    if (bytes < 1024LL * 1024 * 1024) return std::to_string(bytes / (1024 * 1024)) + " MB";
-    return std::to_string(bytes / (1024LL * 1024 * 1024)) + " GB";
-}
-
-template <bool SSL>
-std::string FileHandler<SSL>::random_hex(int bytes) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 255);
-    std::ostringstream oss;
-    for (int i = 0; i < bytes; ++i)
-        oss << std::hex << std::setfill('0') << std::setw(2) << dis(gen);
-    return oss.str();
 }
 
 template struct FileHandler<false>;

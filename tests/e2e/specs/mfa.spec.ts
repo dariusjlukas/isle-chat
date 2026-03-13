@@ -60,7 +60,7 @@ test.describe("Password login with MFA (TOTP)", () => {
     await page.getByLabel("Verification Code").fill(code);
 
     // Should be logged in
-    await expect(page.getByText("Isle Chat").first()).toBeVisible({
+    await expect(page.getByText("EnclaveStation").first()).toBeVisible({
       timeout: 10_000,
     });
   });

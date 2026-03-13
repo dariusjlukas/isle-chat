@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 
@@ -37,7 +38,7 @@ struct Config {
         c.max_file_size = std::stoll(env("MAX_FILE_SIZE", "1073741824"));
         c.ssl_cert_path = env("SSL_CERT_PATH", "");
         c.ssl_key_path = env("SSL_KEY_PATH", "");
-        c.webauthn_rp_name = env("WEBAUTHN_RP_NAME", "Isle Chat");
+        c.webauthn_rp_name = env("WEBAUTHN_RP_NAME", "EnclaveStation");
 
         // Derive WebAuthn RP ID and origin from PUBLIC_URL if not explicitly set
         std::string rp_id_env = env("WEBAUTHN_RP_ID", "");

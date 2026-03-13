@@ -6,8 +6,8 @@ import { browserSupportsWebAuthn, authenticate } from '../../services/webauthn';
 import * as pki from '../../services/pki';
 import * as api from '../../services/api';
 import type { LoginResult } from '../../services/api';
-import logoLarge from '../../assets/isle-chat-logo-large.png';
-import logoLargeDark from '../../assets/isle-chat-logo-large-dark.png';
+import logoLight from '../../assets/enclavestation-light-mode-icon.png';
+import logoDark from '../../assets/enclavestation-dark-mode-icon.png';
 
 interface Props {
   onSwitchToRegister: () => void;
@@ -28,7 +28,11 @@ export function LoginPage({
   const [hasLocalKey, setHasLocalKey] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [serverName, setServerName] = useState('Isle Chat');
+  const [serverName, setServerName] = useState('EnclaveStation');
+  const [serverIconUrl, setServerIconUrl] = useState<string | null>(null);
+  const [serverIconDarkUrl, setServerIconDarkUrl] = useState<string | null>(
+    null,
+  );
   const [configLoading, setConfigLoading] = useState(true);
   const [serverDown, setServerDown] = useState(false);
 
@@ -58,6 +62,14 @@ export function LoginPage({
         api.getPublicConfig().then((config) => {
           setAuthMethods(config.auth_methods);
           setServerName(config.server_name);
+          if (config.server_icon_file_id) {
+            setServerIconUrl(api.getAvatarUrl(config.server_icon_file_id));
+          }
+          if (config.server_icon_dark_file_id) {
+            setServerIconDarkUrl(
+              api.getAvatarUrl(config.server_icon_dark_file_id),
+            );
+          }
           setServerDown(false);
         }),
         pki.hasStoredKey().then(setHasLocalKey),
@@ -224,20 +236,53 @@ export function LoginPage({
   const passwordEnabled = authMethods.includes('password');
   const webauthnSupported = browserSupportsWebAuthn();
 
+  const renderServerIcon = (size = 'w-48 h-48') => {
+    if (serverIconUrl && serverIconDarkUrl) {
+      return (
+        <>
+          <img
+            src={serverIconUrl}
+            alt={serverName}
+            className={`${size} mb-4 rounded-xl object-cover dark:hidden`}
+          />
+          <img
+            src={serverIconDarkUrl}
+            alt={serverName}
+            className={`${size} mb-4 rounded-xl object-cover hidden dark:block`}
+          />
+        </>
+      );
+    }
+    if (serverIconUrl) {
+      return (
+        <img
+          src={serverIconUrl}
+          alt={serverName}
+          className={`${size} mb-4 rounded-xl object-cover`}
+        />
+      );
+    }
+    return (
+      <>
+        <img
+          src={logoLight}
+          alt={serverName}
+          className={`${size} mb-4 dark:hidden`}
+        />
+        <img
+          src={logoDark}
+          alt={serverName}
+          className={`${size} mb-4 hidden dark:block`}
+        />
+      </>
+    );
+  };
+
   // Forced TOTP setup screen
   if (setupToken) {
     return (
       <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
-        <img
-          src={logoLarge}
-          alt={serverName}
-          className='w-24 h-24 mb-4 dark:hidden'
-        />
-        <img
-          src={logoLargeDark}
-          alt={serverName}
-          className='w-24 h-24 mb-4 hidden dark:block'
-        />
+        {renderServerIcon()}
         <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
           <CardBody className='p-5 sm:p-8'>
             <h1 className='text-3xl font-bold text-foreground mb-2'>
@@ -340,16 +385,7 @@ export function LoginPage({
   if (mfaToken) {
     return (
       <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
-        <img
-          src={logoLarge}
-          alt={serverName}
-          className='w-24 h-24 mb-4 dark:hidden'
-        />
-        <img
-          src={logoLargeDark}
-          alt={serverName}
-          className='w-24 h-24 mb-4 hidden dark:block'
-        />
+        {renderServerIcon()}
         <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
           <CardBody className='p-5 sm:p-8'>
             <h1 className='text-3xl font-bold text-foreground mb-2'>
@@ -414,16 +450,7 @@ export function LoginPage({
 
   return (
     <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
-      <img
-        src={logoLarge}
-        alt={serverName}
-        className='w-24 h-24 mb-4 dark:hidden'
-      />
-      <img
-        src={logoLargeDark}
-        alt={serverName}
-        className='w-24 h-24 mb-4 hidden dark:block'
-      />
+      {renderServerIcon()}
       <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
         <CardBody className='p-5 sm:p-8'>
           <h1 className='text-3xl font-bold text-foreground mb-2'>

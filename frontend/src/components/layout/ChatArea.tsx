@@ -25,6 +25,7 @@ export function ChatArea() {
   } = useWebSocket();
 
   const serverArchived = useChatStore((s) => s.serverArchived);
+  const serverName = useChatStore((s) => s.serverName);
   const activeChannel = channels.find((c) => c.id === activeChannelId);
   const isArchived = activeChannel?.is_archived || serverArchived;
   const canWrite =
@@ -55,7 +56,7 @@ export function ChatArea() {
     return (
       <div className='flex-1 flex items-center justify-center bg-background text-default-400'>
         <div className='text-center'>
-          <p className='text-2xl mb-2'>Welcome to Isle Chat</p>
+          <p className='text-2xl mb-2'>Welcome to {serverName}</p>
           <p>Select a channel or start a conversation</p>
         </div>
       </div>
