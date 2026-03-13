@@ -10,6 +10,7 @@ import type {
   Space,
   SpaceInvite,
   ChannelMemberInfo,
+  Notification,
 } from '../types';
 
 export function useWebSocket() {
@@ -286,6 +287,25 @@ export function useWebSocket() {
           .updateChannel({ id: channel_id, conversation_name: name });
       }),
 
+      wsService.on('new_notification', (data: unknown) => {
+        const { notification } = data as { notification: Notification };
+        const state = useChatStore.getState();
+        state.addNotification(notification);
+        // If the user is viewing the channel this notification is for,
+        // immediately mark it as read on the server too
+        if (
+          notification.channel_id &&
+          notification.channel_id === state.activeChannelId
+        ) {
+          api.markNotificationRead(notification.id).catch(() => {});
+        }
+      }),
+
+      wsService.on('notification_count', (data: unknown) => {
+        const { unread_count } = data as { unread_count: number };
+        useChatStore.getState().setUnreadNotificationCount(unread_count);
+      }),
+
       wsService.on('unread_counts', (data: unknown) => {
         const { counts, mention_counts } = data as {
           counts: Record<string, number>;
@@ -379,6 +399,7 @@ export function useWebSocket() {
         timestamp,
       });
       useChatStore.getState().clearUnread(channelId);
+      api.markChannelNotificationsRead(channelId).catch(() => {});
     },
     [],
   );

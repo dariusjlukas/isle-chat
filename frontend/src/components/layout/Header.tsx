@@ -1,4 +1,10 @@
-import { Button, Tooltip } from '@heroui/react';
+import {
+  Button,
+  Dropdown,
+  DropdownTrigger,
+  DropdownMenu,
+  DropdownItem,
+} from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faBars,
@@ -14,6 +20,8 @@ import * as api from '../../services/api';
 import logoSmall from '../../assets/isle-chat-logo-small.png';
 import logoSmallDark from '../../assets/isle-chat-logo-small-dark.png';
 import { GlobalSearch } from '../search/GlobalSearch';
+import { UserAvatar } from '../common/UserAvatar';
+import { NotificationDropdown } from './NotificationDropdown';
 
 interface Props {
   onShowAdmin: () => void;
@@ -66,8 +74,8 @@ export function Header({
   };
 
   return (
-    <header className='bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] items-center gap-2'>
-      <div className='flex items-center gap-2 sm:gap-3 min-w-0'>
+    <header className='bg-content1 border-b border-default-100 px-3 sm:px-4 py-2 grid grid-cols-[minmax(0,1fr)_auto_auto] sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] items-center gap-2'>
+      <div className='flex items-center gap-2 sm:gap-3 min-w-0 overflow-hidden'>
         <Button
           isIconOnly
           variant='light'
@@ -87,14 +95,24 @@ export function Header({
           alt='Isle Chat'
           className='h-7 w-7 flex-shrink-0 hidden dark:block'
         />
-        <span className='text-foreground font-bold hidden sm:inline flex-shrink-0'>
+        <span className='text-foreground font-bold hidden md:inline flex-shrink-0'>
           Isle Chat
         </span>
         {activeChannel && (
           <h2 className='text-foreground font-semibold truncate'>
             {activeSpace && (
               <span className='text-default-400 font-normal'>
-                {activeSpace.name}
+                <button
+                  className='hover:text-default-600 transition-colors cursor-pointer'
+                  onClick={() =>
+                    useChatStore.getState().setActiveView({
+                      type: 'space',
+                      spaceId: activeSpace.id,
+                    })
+                  }
+                >
+                  {activeSpace.name}
+                </button>
                 <span className='mx-1.5'>/</span>
               </span>
             )}
@@ -105,18 +123,19 @@ export function Header({
               />
             )}
             {getChannelDisplayName()}
+            {activeChannel?.description && !activeChannel.is_direct && (
+              <span className='ml-1 text-default-500 text-sm'>
+                | {activeChannel.description}
+              </span>
+            )}
           </h2>
-        )}
-        {activeChannel?.description && !activeChannel.is_direct && (
-          <span className='text-default-500 text-sm hidden md:inline'>
-            | {activeChannel.description}
-          </span>
         )}
         {showChannelSettings && (
           <Button
             isIconOnly
             variant='light'
             size='sm'
+            className='flex-shrink-0'
             onPress={onShowChannelSettings}
             title='Channel Settings'
           >
@@ -128,41 +147,74 @@ export function Header({
       <GlobalSearch />
 
       <div className='flex items-center gap-1 sm:gap-2 justify-end'>
-        {(user?.role === 'admin' || user?.role === 'owner') && (
-          <Tooltip content='Admin Panel'>
-            <Button
-              isIconOnly
-              variant='light'
-              size='sm'
-              onPress={onShowAdmin}
-              className='relative overflow-visible'
-            >
-              <FontAwesomeIcon icon={faShieldHalved} />
-              {adminNotificationCount > 0 && (
-                <span className='absolute -bottom-1 -right-1 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1'>
-                  {adminNotificationCount}
-                </span>
+        <NotificationDropdown />
+        <Dropdown placement='bottom-end'>
+          <DropdownTrigger>
+            <button className='cursor-pointer rounded-full relative focus:outline-none focus-visible:ring-2 focus-visible:ring-primary'>
+              {user && (
+                <UserAvatar
+                  username={user.username}
+                  avatarFileId={user.avatar_file_id}
+                  profileColor={user.profile_color}
+                  size='md'
+                />
               )}
-            </Button>
-          </Tooltip>
-        )}
-        <Tooltip content='User Settings'>
-          <Button isIconOnly variant='light' size='sm' onPress={onShowSettings}>
-            <FontAwesomeIcon icon={faSliders} />
-          </Button>
-        </Tooltip>
-        <Tooltip content='Logout'>
-          <Button
-            isIconOnly
-            variant='light'
-            size='sm'
-            color='default'
-            onPress={handleLogout}
-            className='hover:text-danger'
-          >
-            <FontAwesomeIcon icon={faRightFromBracket} />
-          </Button>
-        </Tooltip>
+              {adminNotificationCount > 0 &&
+                (user?.role === 'admin' || user?.role === 'owner') && (
+                  <span className='absolute -bottom-1 -right-1 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1'>
+                    {adminNotificationCount}
+                  </span>
+                )}
+            </button>
+          </DropdownTrigger>
+          <DropdownMenu aria-label='User menu'>
+            {user?.role === 'admin' || user?.role === 'owner' ? (
+              <DropdownItem
+                key='admin'
+                startContent={
+                  <FontAwesomeIcon
+                    icon={faShieldHalved}
+                    className='text-default-500'
+                  />
+                }
+                onPress={onShowAdmin}
+              >
+                Admin Panel
+                {adminNotificationCount > 0 && (
+                  <span className='ml-2 bg-danger text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] inline-flex items-center justify-center px-1'>
+                    {adminNotificationCount}
+                  </span>
+                )}
+              </DropdownItem>
+            ) : null}
+            <DropdownItem
+              key='settings'
+              startContent={
+                <FontAwesomeIcon
+                  icon={faSliders}
+                  className='text-default-500'
+                />
+              }
+              onPress={onShowSettings}
+            >
+              User Settings
+            </DropdownItem>
+            <DropdownItem
+              key='logout'
+              startContent={
+                <FontAwesomeIcon
+                  icon={faRightFromBracket}
+                  className='text-danger'
+                />
+              }
+              className='text-danger hover:text-white-50'
+              color='danger'
+              onPress={handleLogout}
+            >
+              Logout
+            </DropdownItem>
+          </DropdownMenu>
+        </Dropdown>
       </div>
     </header>
   );

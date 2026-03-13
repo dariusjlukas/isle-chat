@@ -52,6 +52,7 @@ struct ChannelHandler {
                                {"is_direct", ch.is_direct},
                                {"is_public", ch.is_public},
                                {"default_role", ch.default_role},
+                               {"default_join", ch.default_join},
                                {"created_at", ch.created_at},
                                {"my_role", my_role},
                                {"is_archived", ch.is_archived},
@@ -113,6 +114,7 @@ struct ChannelHandler {
                                {"description", ch.description},
                                {"is_public", ch.is_public},
                                {"default_role", ch.default_role},
+                               {"default_join", ch.default_join},
                                {"is_archived", ch.is_archived},
                                {"space_id", ch.space_id},
                                {"created_at", ch.created_at}});
@@ -459,13 +461,15 @@ struct ChannelHandler {
                     std::string description = j.value("description", current->description);
                     bool is_public = j.value("is_public", current->is_public);
                     std::string default_role = j.value("default_role", current->default_role);
+                    bool default_join = j.value("default_join", current->default_join);
 
-                    auto updated = db.update_channel(channel_id, name, description, is_public, default_role);
+                    auto updated = db.update_channel(channel_id, name, description, is_public, default_role, default_join);
 
                     json resp = {{"id", updated.id}, {"name", updated.name},
                                  {"description", updated.description},
                                  {"is_public", updated.is_public},
-                                 {"default_role", updated.default_role}};
+                                 {"default_role", updated.default_role},
+                                 {"default_join", updated.default_join}};
 
                     // Broadcast update to channel members
                     json broadcast = {{"type", "channel_updated"}, {"channel", resp}};
@@ -659,6 +663,7 @@ private:
                                  {"is_direct", ch.is_direct},
                                  {"is_public", ch.is_public},
                                  {"default_role", ch.default_role},
+                                 {"default_join", ch.default_join},
                                  {"created_at", ch.created_at},
                                  {"members", members}};
             if (!ch.space_id.empty()) channel_data["space_id"] = ch.space_id;

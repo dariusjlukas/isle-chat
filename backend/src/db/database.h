@@ -85,7 +85,7 @@ public:
                            bool is_direct, const std::string& created_by,
                            const std::vector<std::string>& member_ids,
                            bool is_public = true, const std::string& default_role = "write",
-                           const std::string& space_id = "");
+                           const std::string& space_id = "", bool default_join = false);
     std::vector<Channel> list_user_channels(const std::string& user_id);
     std::vector<Channel> list_space_channels(const std::string& space_id);
     std::optional<Channel> find_dm_channel(const std::string& user1_id, const std::string& user2_id);
@@ -101,7 +101,8 @@ public:
                             const std::string& role);
     Channel update_channel(const std::string& channel_id, const std::string& name,
                            const std::string& description, bool is_public,
-                           const std::string& default_role);
+                           const std::string& default_role, bool default_join = false);
+    std::vector<Channel> get_default_join_channels(const std::string& space_id);
     std::vector<Channel> list_public_channels(const std::string& user_id,
                                                const std::string& search = "");
     std::vector<Channel> list_browsable_space_channels(const std::string& space_id,
@@ -122,6 +123,9 @@ public:
     Message edit_message(const std::string& message_id, const std::string& user_id,
                           const std::string& new_content);
     Message delete_message(const std::string& message_id, const std::string& user_id);
+    Message admin_delete_message(const std::string& message_id);
+    struct MessageOwnership { std::string channel_id, user_id; };
+    std::optional<MessageOwnership> get_message_ownership(const std::string& message_id);
     struct FileInfo { std::string file_name, file_type; };
     std::optional<FileInfo> get_file_info(const std::string& file_id);
 
@@ -318,6 +322,8 @@ public:
     std::vector<User> search_users(const std::string& query, int limit, int offset);
     std::vector<MessageSearchResult> search_messages(const std::string& tsquery_expr,
         const std::string& user_id, bool is_admin, int limit, int offset);
+    std::vector<MessageSearchResult> browse_messages(const std::string& user_id,
+        bool is_admin, int limit, int offset);
     std::vector<FileSearchResult> search_files(const std::string& query,
         const std::string& user_id, bool is_admin, int limit, int offset);
     std::vector<SpaceSearchResult> search_spaces(const std::string& query,
@@ -341,6 +347,22 @@ public:
         const std::string& user_id, bool is_admin, int limit, int offset);
     std::vector<Message> get_messages_around(const std::string& channel_id,
         const std::string& message_id, int limit);
+
+    // Notifications
+    struct Notification {
+        std::string id, user_id, type, source_user_id, source_username;
+        std::string channel_id, channel_name, message_id, space_id;
+        std::string content, created_at;
+        bool is_read;
+    };
+    std::string create_notification(const std::string& user_id, const std::string& type,
+        const std::string& source_user_id, const std::string& channel_id,
+        const std::string& message_id, const std::string& content);
+    std::vector<Notification> get_notifications(const std::string& user_id, int limit, int offset);
+    int get_unread_notification_count(const std::string& user_id);
+    void mark_notification_read(const std::string& notification_id, const std::string& user_id);
+    void mark_all_notifications_read(const std::string& user_id);
+    int mark_channel_notifications_read(const std::string& channel_id, const std::string& user_id);
 
     // Archive management
     void archive_channel(const std::string& channel_id);

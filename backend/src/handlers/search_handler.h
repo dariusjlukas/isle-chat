@@ -23,9 +23,9 @@ struct SearchHandler {
             std::string limit_str(req->getQuery("limit"));
             std::string offset_str(req->getQuery("offset"));
 
-            if (query.empty() || type.empty()) {
+            if (type.empty()) {
                 res->writeStatus("400")->writeHeader("Content-Type", "application/json")
-                    ->end(R"({"error":"Missing q or type parameter"})");
+                    ->end(R"({"error":"Missing type parameter"})");
                 return;
             }
 
@@ -34,7 +34,7 @@ struct SearchHandler {
             if (mode.empty()) mode = "and";
 
             // Split query by | delimiter for multi-term
-            auto terms = split_terms(query);
+            auto terms = query.empty() ? std::vector<std::string>{""} : split_terms(query);
 
             try {
                 if (type == "users") {
@@ -52,8 +52,13 @@ struct SearchHandler {
                 } else if (type == "messages") {
                     auto user = db.find_user_by_id(user_id);
                     bool is_admin = user && (user->role == "admin" || user->role == "owner");
-                    std::string tsquery = build_tsquery(terms, mode);
-                    auto results = db.search_messages(tsquery, user_id, is_admin, limit, offset);
+                    std::vector<Database::MessageSearchResult> results;
+                    if (query.empty()) {
+                        results = db.browse_messages(user_id, is_admin, limit, offset);
+                    } else {
+                        std::string tsquery = build_tsquery(terms, mode);
+                        results = db.search_messages(tsquery, user_id, is_admin, limit, offset);
+                    }
                     json arr = json::array();
                     for (const auto& m : results) {
                         arr.push_back({{"id", m.id}, {"channel_id", m.channel_id},

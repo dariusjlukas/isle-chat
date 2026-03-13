@@ -257,7 +257,11 @@ if [ "$NEED_BACKEND" = true ] && [ "$SKIP_BUILD" = false ]; then
         RESULTS["Backend Build"]="FAIL"
         BUILD_OK=false
     else
-        run_check_bg "Backend Build" bash -c "cd '$BACKEND_DIR' && cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON && cmake --build build -j\$(nproc)"
+        COVERAGE_FLAG=""
+        if [ "$RUN_BACKEND_UNIT" = true ]; then
+            COVERAGE_FLAG="-DCODE_COVERAGE=ON"
+        fi
+        run_check_bg "Backend Build" bash -c "cd '$BACKEND_DIR' && cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON $COVERAGE_FLAG && cmake --build build -j\$(nproc)"
         BACKEND_BUILD_BG=true
     fi
 fi
@@ -311,6 +315,48 @@ fi
 
 if [ "$BUILD_OK" = true ] && [ "$RUN_BACKEND_UNIT" = true ]; then
     run_check "Backend Unit Tests" bash -c "cd '$BUILD_DIR' && ctest --output-on-failure -L unit --timeout 30"
+
+    # Report code coverage if unit tests passed
+    if [ "${RESULTS["Backend Unit Tests"]}" = "PASS" ] && command -v gcov &>/dev/null; then
+        printf "\n${BLUE}${BOLD}=== Code Coverage Report ===${NC}\n"
+        GCDA_DIR="$BUILD_DIR/CMakeFiles/chat-lib.dir/src"
+        if [ -d "$GCDA_DIR" ]; then
+            TOTAL_LINES=0
+            COVERED_LINES=0
+
+            while IFS= read -r gcda_file; do
+                gcda_dir=$(dirname "$gcda_file")
+                gcda_base=$(basename "$gcda_file")
+                gcov_output=$(cd "$gcda_dir" && gcov -n "$gcda_base" 2>/dev/null)
+                current_file=""
+                while IFS= read -r line; do
+                    if [[ "$line" =~ ^File\ \'.*/src/ ]]; then
+                        current_file=$(echo "$line" | sed "s|.*src/|src/|; s|'$||")
+                    elif [[ "$line" =~ ^Lines\ executed: ]] && [ -n "$current_file" ]; then
+                        pct=$(echo "$line" | sed -n 's/Lines executed:\([0-9.]*\)% of \([0-9]*\)/\1 \2/p')
+                        if [ -n "$pct" ]; then
+                            file_pct=$(echo "$pct" | cut -d' ' -f1)
+                            file_lines=$(echo "$pct" | cut -d' ' -f2)
+                            file_covered=$(echo "$file_pct $file_lines" | awk '{printf "%d", ($1/100)*$2}')
+                            TOTAL_LINES=$((TOTAL_LINES + file_lines))
+                            COVERED_LINES=$((COVERED_LINES + file_covered))
+                            pct_display="${file_pct}% (${file_lines} lines)"
+                            printf "  %-40s %s\n" "$current_file" "$pct_display"
+                        fi
+                        current_file=""
+                    else
+                        current_file=""
+                    fi
+                done <<< "$gcov_output"
+            done < <(find "$GCDA_DIR" -name '*.gcda' 2>/dev/null)
+
+            if [ "$TOTAL_LINES" -gt 0 ]; then
+                COVERAGE_PCT=$(awk "BEGIN {printf \"%.1f\", ($COVERED_LINES/$TOTAL_LINES)*100}")
+                printf "\n  ${BOLD}%-40s %s${NC}\n" "Overall coverage:" "$COVERAGE_PCT% ($COVERED_LINES/$TOTAL_LINES lines)"
+            fi
+        fi
+        printf "${BLUE}${BOLD}=============================${NC}\n"
+    fi
 fi
 
 # Wait for PostgreSQL to be ready (it was started during phase 1)

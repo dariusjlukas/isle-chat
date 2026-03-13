@@ -278,6 +278,38 @@ struct SpaceHandler {
             db.add_space_member(space_id, user_id, sp->default_role);
             ws.subscribe_user_to_space(user_id, space_id);
 
+            // Auto-join default channels
+            auto default_channels = db.get_default_join_channels(space_id);
+            for (const auto& ch : default_channels) {
+                if (!db.is_channel_member(ch.id, user_id)) {
+                    db.add_channel_member(ch.id, user_id, ch.default_role);
+                    ws.subscribe_user_to_channel(user_id, ch.id);
+
+                    // Send channel_added to the new member
+                    auto member_list = db.get_channel_members_with_roles(ch.id);
+                    json members = json::array();
+                    for (const auto& m : member_list) {
+                        members.push_back({{"id", m.user_id}, {"username", m.username},
+                                           {"display_name", m.display_name},
+                                           {"is_online", m.is_online}, {"last_seen", m.last_seen}, {"role", m.role}});
+                    }
+                    std::string my_role = db.get_effective_role(ch.id, user_id);
+                    json ch_data = {{"id", ch.id}, {"name", ch.name},
+                                    {"description", ch.description},
+                                    {"is_direct", ch.is_direct},
+                                    {"is_public", ch.is_public},
+                                    {"default_role", ch.default_role},
+                                    {"default_join", ch.default_join},
+                                    {"space_id", ch.space_id},
+                                    {"is_archived", ch.is_archived},
+                                    {"created_at", ch.created_at},
+                                    {"my_role", my_role},
+                                    {"members", members}};
+                    json notify = {{"type", "channel_added"}, {"channel", ch_data}};
+                    ws.send_to_user(user_id, notify.dump());
+                }
+            }
+
             res->writeHeader("Content-Type", "application/json")
                 ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"ok":true})");
@@ -334,6 +366,19 @@ struct SpaceHandler {
                                         {"created_at", ""}};
                     json notify = {{"type", "space_invite"}, {"invite", invite_data}};
                     ws.send_to_user(target_user_id, notify.dump());
+
+                    // Create bell notification for the invite
+                    std::string notif_content = "Invited you to " + (sp ? sp->name : "a space");
+                    auto nid = db.create_notification(target_user_id, "space_invite",
+                        user_id, "", "", notif_content);
+                    json notif = {{"type", "new_notification"}, {"notification", {
+                        {"id", nid}, {"user_id", target_user_id}, {"type", "space_invite"},
+                        {"source_user_id", user_id}, {"source_username", inviter ? inviter->username : ""},
+                        {"channel_id", ""}, {"channel_name", ""},
+                        {"message_id", ""}, {"space_id", space_id},
+                        {"content", notif_content}, {"created_at", ""}, {"is_read", false}
+                    }}};
+                    ws.send_to_user(target_user_id, notif.dump());
 
                     res->writeHeader("Content-Type", "application/json")
                         ->writeHeader("Access-Control-Allow-Origin", "*")
@@ -488,6 +533,7 @@ struct SpaceHandler {
                                {"is_direct", ch.is_direct},
                                {"is_public", ch.is_public},
                                {"default_role", ch.default_role},
+                               {"default_join", ch.default_join},
                                {"space_id", ch.space_id},
                                {"is_archived", ch.is_archived},
                                {"created_at", ch.created_at},
@@ -530,6 +576,7 @@ struct SpaceHandler {
                     std::string description = j.value("description", "");
                     bool is_public = j.value("is_public", true);
                     std::string default_role = j.value("default_role", "write");
+                    bool default_join = j.value("default_join", false);
 
                     std::vector<std::string> member_ids = {user_id};
                     if (j.contains("member_ids")) {
@@ -540,7 +587,7 @@ struct SpaceHandler {
                     }
 
                     auto ch = db.create_channel(name, description, false, user_id, member_ids,
-                                                 is_public, default_role, space_id);
+                                                 is_public, default_role, space_id, default_join);
 
                     json members = json::array();
                     auto member_list = db.get_channel_members_with_roles(ch.id);
@@ -555,6 +602,7 @@ struct SpaceHandler {
                                          {"is_direct", ch.is_direct},
                                          {"is_public", ch.is_public},
                                          {"default_role", ch.default_role},
+                                         {"default_join", ch.default_join},
                                          {"space_id", ch.space_id},
                                          {"is_archived", ch.is_archived},
                                          {"created_at", ch.created_at},
@@ -978,6 +1026,37 @@ struct SpaceHandler {
             db.update_space_invite_status(invite_id, "accepted");
             db.add_space_member(invite->space_id, user_id, invite->role);
             ws.subscribe_user_to_space(user_id, invite->space_id);
+
+            // Auto-join default channels
+            auto default_channels = db.get_default_join_channels(invite->space_id);
+            for (const auto& ch : default_channels) {
+                if (!db.is_channel_member(ch.id, user_id)) {
+                    db.add_channel_member(ch.id, user_id, ch.default_role);
+                    ws.subscribe_user_to_channel(user_id, ch.id);
+
+                    auto ch_members = db.get_channel_members_with_roles(ch.id);
+                    json ch_members_arr = json::array();
+                    for (const auto& m : ch_members) {
+                        ch_members_arr.push_back({{"id", m.user_id}, {"username", m.username},
+                                                  {"display_name", m.display_name},
+                                                  {"is_online", m.is_online}, {"last_seen", m.last_seen}, {"role", m.role}});
+                    }
+                    std::string my_role = db.get_effective_role(ch.id, user_id);
+                    json ch_data = {{"id", ch.id}, {"name", ch.name},
+                                    {"description", ch.description},
+                                    {"is_direct", ch.is_direct},
+                                    {"is_public", ch.is_public},
+                                    {"default_role", ch.default_role},
+                                    {"default_join", ch.default_join},
+                                    {"space_id", ch.space_id},
+                                    {"is_archived", ch.is_archived},
+                                    {"created_at", ch.created_at},
+                                    {"my_role", my_role},
+                                    {"members", ch_members_arr}};
+                    json ch_notify = {{"type", "channel_added"}, {"channel", ch_data}};
+                    ws.send_to_user(user_id, ch_notify.dump());
+                }
+            }
 
             // Send space_added to the accepting user
             auto sp = db.find_space_by_id(invite->space_id);

@@ -86,6 +86,30 @@ export function SpaceSettings({ space, onClose }: Props) {
   const [avatarMsg, setAvatarMsg] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [savedPayload, setSavedPayload] = useState(() =>
+    JSON.stringify({
+      name,
+      description,
+      isPublic,
+      defaultRole,
+      profileColor,
+    }),
+  );
+
+  const currentPayload = useMemo(
+    () =>
+      JSON.stringify({
+        name,
+        description,
+        isPublic,
+        defaultRole,
+        profileColor,
+      }),
+    [name, description, isPublic, defaultRole, profileColor],
+  );
+
+  const isDirty = currentPayload !== savedPayload;
+
   // Crop state
   const [cropImage, setCropImage] = useState<string | null>(null);
   const [crop, setCrop] = useState({ x: 0, y: 0 });
@@ -133,6 +157,15 @@ export function SpaceSettings({ space, onClose }: Props) {
         profile_color: profileColor,
       });
       updateSpace({ id: space.id, ...updated });
+      setSavedPayload(
+        JSON.stringify({
+          name,
+          description,
+          isPublic,
+          defaultRole,
+          profileColor,
+        }),
+      );
     } catch (e) {
       console.error('Space operation failed:', e);
     }
@@ -245,7 +278,16 @@ export function SpaceSettings({ space, onClose }: Props) {
         backdrop='opaque'
       >
         <ModalContent>
-          <ModalHeader>Space Settings — {space.name}</ModalHeader>
+          <ModalHeader>
+            <div className='flex items-center gap-3'>
+              <span>Space Settings — {space.name}</span>
+              {isDirty && (
+                <span className='text-xs font-normal text-warning bg-warning/10 px-2 py-0.5 rounded-full'>
+                  Unsaved changes
+                </span>
+              )}
+            </div>
+          </ModalHeader>
           <ModalBody className='pb-6'>
             <Tabs color='primary' classNames={{ tabList: 'bg-content2' }}>
               {canManage && (
@@ -398,11 +440,13 @@ export function SpaceSettings({ space, onClose }: Props) {
                       </SelectItem>
                     </Select>
                     <Button
-                      color='primary'
+                      color={isDirty ? 'warning' : 'primary'}
                       onPress={handleSave}
                       isLoading={saving}
                     >
-                      Save Settings
+                      {isDirty
+                        ? 'Save Settings (unsaved changes)'
+                        : 'Save Settings'}
                     </Button>
                   </div>
                 </Tab>

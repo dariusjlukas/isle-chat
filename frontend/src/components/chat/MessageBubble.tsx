@@ -580,6 +580,20 @@ export function MessageBubble({
   const [menuOpen, setMenuOpen] = useState(false);
 
   const activeChannel = channels.find((c) => c.id === message.channel_id);
+  const messageAuthor = !isOwn
+    ? users.find((u) => u.id === message.user_id)
+    : null;
+  const canModerate = (() => {
+    if (isOwn || !currentUser || !activeChannel) return false;
+    const myRole = activeChannel.my_role;
+    if (myRole !== 'owner' && myRole !== 'admin') return false;
+    // Check that the message author is lower-ranked (server role)
+    const authorServerRole = messageAuthor?.role || 'user';
+    if (authorServerRole === 'owner') return false;
+    if (currentUser.role === 'owner') return true;
+    if (authorServerRole === 'admin') return false;
+    return true;
+  })();
   const mentionComponents = useMentionMarkdownComponents(
     activeChannel?.members || [],
   );
@@ -612,18 +626,24 @@ export function MessageBubble({
         {!isOwn && (
           <div className='flex-shrink-0 mr-2 mt-1'>
             {author ? (
-              <UserAvatar
-                username={message.username}
-                avatarFileId={author.avatar_file_id}
-                profileColor={author.profile_color}
-                size='sm'
-              />
+              <UserPopoverCard user={author} channelId={message.channel_id}>
+                <button className='cursor-pointer'>
+                  <UserAvatar
+                    username={message.username}
+                    avatarFileId={author.avatar_file_id}
+                    profileColor={author.profile_color}
+                    size='sm'
+                  />
+                </button>
+              </UserPopoverCard>
             ) : (
               <UserAvatar username={message.username} size='sm' />
             )}
           </div>
         )}
-        <div className='max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2 bg-content1 border border-divider rounded-br-md'>
+        <div
+          className={`max-w-[85%] sm:max-w-[70%] rounded-2xl px-4 py-2 bg-content1 border border-divider ${isOwn ? 'rounded-br-md' : 'rounded-bl-md'}`}
+        >
           {!isOwn && (
             <p className='text-xs font-semibold text-default-400 mb-1'>
               {author ? (
@@ -856,7 +876,7 @@ export function MessageBubble({
                 </button>
               </Tooltip>
             )}
-            {isOwn && (
+            {(isOwn || canModerate) && (
               <Dropdown
                 placement='bottom-end'
                 isOpen={menuOpen}
@@ -878,7 +898,7 @@ export function MessageBubble({
                     }
                   }}
                 >
-                  {!message.file_id ? (
+                  {isOwn && !message.file_id ? (
                     <DropdownItem
                       key='edit'
                       startContent={<FontAwesomeIcon icon={faPencil} />}

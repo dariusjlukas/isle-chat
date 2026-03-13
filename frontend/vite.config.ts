@@ -20,6 +20,24 @@ const backendPort = process.env.VITE_BACKEND_PORT ?? '9001'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-heroui': ['@heroui/react'],
+          'vendor-motion': ['framer-motion'],
+          'vendor-emoji': ['@emoji-mart/react', '@emoji-mart/data', 'emoji-mart'],
+          'vendor-icons': [
+            '@fortawesome/fontawesome-svg-core',
+            '@fortawesome/free-solid-svg-icons',
+            '@fortawesome/react-fontawesome',
+          ],
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+        },
+      },
+    },
+  },
   define: {
     __BUILD_INFO__: JSON.stringify(getBuildInfo()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

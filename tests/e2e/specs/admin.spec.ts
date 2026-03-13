@@ -18,26 +18,31 @@ test.beforeEach(async ({ workerConfig }) => {
   admin = await setupAdminUser(workerConfig.apiConfig);
 });
 
-/** Click the Nth button (0-indexed) in the header's right button group. */
-async function clickHeaderButton(
-  page: import("@playwright/test").Page,
-  index: number,
-) {
-  const buttons = page.locator(
-    "header .flex.items-center.justify-end button",
+/** Open the user avatar dropdown menu in the header. */
+async function openAvatarMenu(page: import("@playwright/test").Page) {
+  const avatarBtn = page.locator(
+    "header .flex.items-center.justify-end button.rounded-full",
   );
-  await buttons.nth(index).click();
+  await avatarBtn.click();
 }
 
-// Header right buttons for admin: [0]=Admin, [1]=Settings, [2]=Logout
-const ADMIN_BTN = 0;
-const SETTINGS_BTN = 1;
+/** Open Admin Panel via the avatar dropdown. */
+async function clickAdminPanel(page: import("@playwright/test").Page) {
+  await openAvatarMenu(page);
+  await page.getByRole("menuitem", { name: "Admin Panel" }).click();
+}
+
+/** Open User Settings via the avatar dropdown. */
+async function clickUserSettings(page: import("@playwright/test").Page) {
+  await openAvatarMenu(page);
+  await page.getByRole("menuitem", { name: "User Settings" }).click();
+}
 
 test.describe("Admin panel access", () => {
   test("admin can open admin panel", async ({ page }) => {
     await loginViaToken(page, admin.token);
 
-    await clickHeaderButton(page, ADMIN_BTN);
+    await clickAdminPanel(page);
 
     await expect(page.getByText("Admin Panel").first()).toBeVisible({
       timeout: 10_000,
@@ -68,10 +73,11 @@ test.describe("Admin panel access", () => {
     );
     await loginViaToken(page, regular.token);
 
-    const headerButtons = page.locator(
-      "header .flex.items-center.justify-end button",
-    );
-    await expect(headerButtons).toHaveCount(2);
+    // Open avatar menu and verify no Admin Panel item
+    await openAvatarMenu(page);
+    await expect(
+      page.getByRole("menuitem", { name: "Admin Panel" }),
+    ).not.toBeVisible();
   });
 });
 
@@ -79,7 +85,7 @@ test.describe("Server settings", () => {
   test("admin can view server settings", async ({ page }) => {
     await loginViaToken(page, admin.token);
 
-    await clickHeaderButton(page, ADMIN_BTN);
+    await clickAdminPanel(page);
     await expect(page.getByText("Admin Panel").first()).toBeVisible();
 
     await page.getByRole("button", { name: "Server Settings" }).click();
@@ -94,7 +100,7 @@ test.describe("Invite tokens", () => {
   test("admin can view invite tokens section", async ({ page }) => {
     await loginViaToken(page, admin.token);
 
-    await clickHeaderButton(page, ADMIN_BTN);
+    await clickAdminPanel(page);
 
     await page.getByRole("button", { name: "Invite Tokens" }).click();
 
@@ -106,7 +112,7 @@ test.describe("Invite tokens", () => {
   test("admin can generate and revoke an invite token", async ({ page }) => {
     await loginViaToken(page, admin.token);
 
-    await clickHeaderButton(page, ADMIN_BTN);
+    await clickAdminPanel(page);
     await page.getByRole("button", { name: "Invite Tokens" }).click();
 
     // Generate an invite
@@ -134,7 +140,7 @@ test.describe("User settings", () => {
   test("user can open settings modal", async ({ page }) => {
     await loginViaToken(page, admin.token);
 
-    await clickHeaderButton(page, SETTINGS_BTN);
+    await clickUserSettings(page);
 
     await expect(page.getByText("Settings").first()).toBeVisible({
       timeout: 5_000,

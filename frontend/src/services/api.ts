@@ -5,6 +5,7 @@ import type {
   Space,
   SpaceInvite,
   ReadReceiptInfo,
+  Notification,
 } from '../types';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
@@ -12,6 +13,7 @@ import type {
   RegistrationResponseJSON,
   AuthenticationResponseJSON,
 } from '@simplewebauthn/browser';
+import { useChatStore } from '../stores/chatStore';
 
 const API_BASE = '/api';
 
@@ -35,7 +37,6 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     // If the server rejects our session (expired, banned, etc.), clear auth
     if (res.status === 401 && token) {
-      const { useChatStore } = await import('../stores/chatStore');
       const store = useChatStore.getState();
       if (store.isAuthenticated) {
         store.clearAuth(
@@ -268,6 +269,7 @@ export function updateChannelSettings(
     description?: string;
     is_public?: boolean;
     default_role?: string;
+    default_join?: boolean;
   },
 ) {
   return request<Channel>(`/channels/${channelId}`, {
@@ -885,6 +887,7 @@ export function createSpaceChannel(
   memberIds?: string[],
   isPublic = true,
   defaultRole = 'write',
+  defaultJoin = false,
 ) {
   return request<Channel>(`/spaces/${spaceId}/channels`, {
     method: 'POST',
@@ -894,6 +897,7 @@ export function createSpaceChannel(
       member_ids: memberIds,
       is_public: isPublic,
       default_role: defaultRole,
+      default_join: defaultJoin,
     }),
   });
 }
@@ -1252,6 +1256,36 @@ export function searchComposite<T = MessageSearchResult>(
     offset: String(offset),
   });
   return request<SearchResponse<T>>(`/search/composite?${params}`);
+}
+
+// Notifications
+export function getNotifications(limit = 50, offset = 0) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return request<{ notifications: Notification[]; unread_count: number }>(
+    `/notifications?${params}`,
+  );
+}
+
+export function markNotificationRead(notificationId: string) {
+  return request<{ ok: boolean }>(`/notifications/${notificationId}/read`, {
+    method: 'POST',
+  });
+}
+
+export function markAllNotificationsRead() {
+  return request<{ ok: boolean }>('/notifications/read-all', {
+    method: 'POST',
+  });
+}
+
+export function markChannelNotificationsRead(channelId: string) {
+  return request<{ ok: boolean; marked_count: number }>(
+    `/notifications/read-by-channel/${channelId}`,
+    { method: 'POST' },
+  );
 }
 
 export function getMessagesAround(

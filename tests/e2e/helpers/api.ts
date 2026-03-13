@@ -521,3 +521,33 @@ export async function apiSetMfaRequired(
 ): Promise<void> {
   await apiPut("/api/admin/settings", settings, token, config);
 }
+
+/**
+ * Update a channel's settings via the API.
+ */
+export async function apiUpdateChannel(
+  channelId: string,
+  settings: {
+    name: string;
+    description?: string;
+    is_public?: boolean;
+    default_role?: string;
+    default_join?: boolean;
+  },
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ id: string; name: string; default_join: boolean }> {
+  const res = await apiPut(
+    `/api/channels/${channelId}`,
+    settings,
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `apiUpdateChannel failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+  return (await res.json()) as { id: string; name: string; default_join: boolean };
+}

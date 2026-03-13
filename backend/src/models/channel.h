@@ -14,6 +14,7 @@ struct Channel {
     std::string space_id;
     std::string conversation_name;
     bool is_archived = false;
+    bool default_join = false;
     std::vector<std::string> member_ids;
 };
 

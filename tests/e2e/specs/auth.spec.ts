@@ -118,11 +118,12 @@ test.describe("Logout", () => {
     const admin = await setupAdminUser(workerConfig.apiConfig);
     await loginViaToken(page, admin.token);
 
-    // Click the logout button - last button in the header right section
-    const headerButtons = page.locator(
-      "header .flex.items-center.justify-end button",
+    // Click the avatar to open the dropdown, then click Logout
+    const avatarBtn = page.locator(
+      "header .flex.items-center.justify-end button.rounded-full",
     );
-    await headerButtons.last().click();
+    await avatarBtn.click();
+    await page.getByRole("menuitem", { name: "Logout" }).click();
 
     // Should return to login page
     await expect(

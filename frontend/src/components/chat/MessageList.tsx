@@ -176,6 +176,32 @@ export function MessageList({
     return () => clearTimeout(markReadTimer.current);
   }, [channelId, lastMessage, onMarkRead]);
 
+  // Stable helper: starts the 5-second separator dismiss countdown (no-op if
+  // a timer is already running).  Once started it is never cancelled — the
+  // user has already "viewed" the latest message so the line should fade.
+  const startSeparatorDismiss = useCallback(() => {
+    if (separatorDismissTimer.current) return;
+    separatorDismissTimer.current = setTimeout(() => {
+      setSeparatorFading(true);
+      separatorDismissTimer.current = undefined;
+      // Fallback: clear separator after transition duration
+      // in case onTransitionEnd doesn't fire
+      setTimeout(() => {
+        setInitialLastReadId(null);
+        setSeparatorFading(false);
+      }, 600);
+    }, 5000);
+  }, []);
+
+  // Keep refs in sync so the rAF callback below can read current values
+  // without adding them as effect deps (which would cause spurious scrolls).
+  const initialLastReadIdRef = useRef(initialLastReadId);
+  const separatorFadingRef = useRef(separatorFading);
+  useEffect(() => {
+    initialLastReadIdRef.current = initialLastReadId;
+    separatorFadingRef.current = separatorFading;
+  }, [initialLastReadId, separatorFading]);
+
   useEffect(() => {
     if (!isViewingAround) {
       requestAnimationFrame(() => {
@@ -186,12 +212,17 @@ export function MessageList({
           el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
         if (atBottom) {
           bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+          // Start separator dismiss when already at the bottom (covers the
+          // case where all messages fit on screen and no scroll event fires)
+          if (initialLastReadIdRef.current && !separatorFadingRef.current) {
+            startSeparatorDismiss();
+          }
         } else {
           setIsScrolledUp(true);
         }
       });
     }
-  }, [messages.length, isViewingAround]);
+  }, [messages.length, isViewingAround, startSeparatorDismiss]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
@@ -203,18 +234,9 @@ export function MessageList({
 
     // When user reaches bottom with separator visible, start fade after 5s
     if (atBottom && initialLastReadId && !separatorFading) {
-      if (!separatorDismissTimer.current) {
-        separatorDismissTimer.current = setTimeout(() => {
-          setSeparatorFading(true);
-          separatorDismissTimer.current = undefined;
-        }, 5000);
-      }
-    } else if (!atBottom && !separatorFading) {
-      // Scrolled away from bottom — cancel pending dismiss
-      clearTimeout(separatorDismissTimer.current);
-      separatorDismissTimer.current = undefined;
+      startSeparatorDismiss();
     }
-  }, [initialLastReadId, separatorFading]);
+  }, [initialLastReadId, separatorFading, startSeparatorDismiss]);
 
   const handleJumpToLatest = useCallback(() => {
     if (isViewingAround) {

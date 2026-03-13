@@ -25,6 +25,7 @@ export function CreateChannel({ onClose, spaceId }: Props) {
   const [description, setDescription] = useState('');
   const [isPublic, setIsPublic] = useState(true);
   const [defaultRole, setDefaultRole] = useState('write');
+  const [defaultJoin, setDefaultJoin] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const setActiveChannel = useChatStore((s) => s.setActiveChannel);
@@ -46,6 +47,7 @@ export function CreateChannel({ onClose, spaceId }: Props) {
         undefined,
         isPublic,
         defaultRole,
+        defaultJoin,
       );
       const channels = await api.listChannels();
       useChatStore.getState().setChannels(channels);
@@ -115,6 +117,23 @@ export function CreateChannel({ onClose, spaceId }: Props) {
               <SelectItem key='write'>Write (can send messages)</SelectItem>
               <SelectItem key='read'>Read Only (can view only)</SelectItem>
             </Select>
+            <div className='flex items-center justify-between'>
+              <div>
+                <p className='text-sm font-medium text-foreground'>
+                  Auto-Join for New Members
+                </p>
+                <p className='text-xs text-default-400'>
+                  {defaultJoin
+                    ? 'New space members are automatically added'
+                    : 'New space members must join manually'}
+                </p>
+              </div>
+              <Switch
+                isSelected={defaultJoin}
+                onValueChange={setDefaultJoin}
+                size='sm'
+              />
+            </div>
           </ModalBody>
           <ModalFooter>
             <Button variant='light' color='default' onPress={onClose}>

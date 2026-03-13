@@ -1288,9 +1288,22 @@ private:
             // Notify admin/owner users via WebSocket
             json notify = {{"type", "join_request_created"}, {"request_id", id}};
             auto all_users = db.list_users();
+            std::string notif_content = username + " requested to join";
             for (const auto& u : all_users) {
                 if (u.role == "admin" || u.role == "owner") {
                     ws.send_to_user(u.id, notify.dump());
+
+                    // Create bell notification for the join request
+                    auto nid = db.create_notification(u.id, "join_request",
+                        "", "", "", notif_content);
+                    json notif = {{"type", "new_notification"}, {"notification", {
+                        {"id", nid}, {"user_id", u.id}, {"type", "join_request"},
+                        {"source_user_id", ""}, {"source_username", username},
+                        {"channel_id", ""}, {"channel_name", ""},
+                        {"message_id", ""}, {"space_id", ""},
+                        {"content", notif_content}, {"created_at", ""}, {"is_read", false}
+                    }}};
+                    ws.send_to_user(u.id, notif.dump());
                 }
             }
 

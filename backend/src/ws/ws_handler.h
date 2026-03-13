@@ -5,21 +5,25 @@
 #include <unordered_set>
 #include <mutex>
 #include <iostream>
+#include <filesystem>
 #include "db/database.h"
+#include "config.h"
 
 using json = nlohmann::json;
 
 struct WsUserData {
     std::string user_id;
     std::string username;
+    std::string role;
 };
 
 template <bool SSL>
 class WsHandler {
 public:
     Database& db;
+    const Config& config;
 
-    explicit WsHandler(Database& db) : db(db) {}
+    WsHandler(Database& db, const Config& config) : db(db), config(config) {}
 
     void register_routes(uWS::TemplatedApp<SSL>& app) {
         app.template ws<WsUserData>("/ws", {
@@ -43,7 +47,7 @@ public:
                 }
 
                 res->template upgrade<WsUserData>(
-                    {.user_id = user->id, .username = user->username},
+                    {.user_id = user->id, .username = user->username, .role = user->role},
                     req->getHeader("sec-websocket-key"),
                     req->getHeader("sec-websocket-protocol"),
                     req->getHeader("sec-websocket-extensions"),
@@ -103,6 +107,16 @@ public:
                         counts_msg["mention_counts"][mc.channel_id] = mc.count;
                     }
                     ws->send(counts_msg.dump(), uWS::OpCode::TEXT);
+                }
+
+                // Send initial unread notification count
+                {
+                    int notif_count = db.get_unread_notification_count(data->user_id);
+                    json notif_msg = {
+                        {"type", "notification_count"},
+                        {"unread_count", notif_count}
+                    };
+                    ws->send(notif_msg.dump(), uWS::OpCode::TEXT);
                 }
 
                 // Subscribe to presence before broadcasting so other users' events are received
@@ -406,6 +420,115 @@ private:
             db.store_mentions(msg.id, channel_id, content, members, data->user_id);
         }
 
+        // Create notifications for mentions
+        std::string preview = content.size() > 200 ? content.substr(0, 200) + "..." : content;
+        for (const auto& mention : mentioned) {
+            if (mention == "@channel") {
+                // Notify all channel members except sender
+                for (const auto& m : members) {
+                    if (m.user_id != data->user_id) {
+                        auto nid = db.create_notification(m.user_id, "mention",
+                            data->user_id, channel_id, msg.id, preview);
+                        json notif = {{"type", "new_notification"}, {"notification", {
+                            {"id", nid}, {"user_id", m.user_id}, {"type", "mention"},
+                            {"source_user_id", data->user_id}, {"source_username", data->username},
+                            {"channel_id", channel_id}, {"channel_name", msg.channel_id},
+                            {"message_id", msg.id}, {"space_id", ""},
+                            {"content", preview}, {"created_at", msg.created_at}, {"is_read", false}
+                        }}};
+                        send_to_user(m.user_id, notif.dump());
+                    }
+                }
+            } else {
+                // Individual mention
+                for (const auto& m : members) {
+                    if (m.username == mention && m.user_id != data->user_id) {
+                        auto nid = db.create_notification(m.user_id, "mention",
+                            data->user_id, channel_id, msg.id, preview);
+                        json notif = {{"type", "new_notification"}, {"notification", {
+                            {"id", nid}, {"user_id", m.user_id}, {"type", "mention"},
+                            {"source_user_id", data->user_id}, {"source_username", data->username},
+                            {"channel_id", channel_id}, {"channel_name", ""},
+                            {"message_id", msg.id}, {"space_id", ""},
+                            {"content", preview}, {"created_at", msg.created_at}, {"is_read", false}
+                        }}};
+                        send_to_user(m.user_id, notif.dump());
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Create notification for reply (if replying to someone else's message)
+        if (!reply_to.empty()) {
+            auto reply_owner = db.get_message_ownership(reply_to);
+            if (reply_owner && reply_owner->user_id != data->user_id) {
+                // Check if this user was already notified via mention
+                bool already_notified = false;
+                for (const auto& mention : mentioned) {
+                    for (const auto& m : members) {
+                        if (m.username == mention && m.user_id == reply_owner->user_id) {
+                            already_notified = true;
+                            break;
+                        }
+                    }
+                    if (already_notified) break;
+                }
+                if (!already_notified) {
+                    auto nid = db.create_notification(reply_owner->user_id, "reply",
+                        data->user_id, channel_id, msg.id, preview);
+                    json notif = {{"type", "new_notification"}, {"notification", {
+                        {"id", nid}, {"user_id", reply_owner->user_id}, {"type", "reply"},
+                        {"source_user_id", data->user_id}, {"source_username", data->username},
+                        {"channel_id", channel_id}, {"channel_name", ""},
+                        {"message_id", msg.id}, {"space_id", ""},
+                        {"content", preview}, {"created_at", msg.created_at}, {"is_read", false}
+                    }}};
+                    send_to_user(reply_owner->user_id, notif.dump());
+                }
+            }
+        }
+
+        // Create notifications for DM messages (for recipients not already notified)
+        if (ch && ch->is_direct) {
+            // Collect user IDs already notified via mention or reply
+            std::unordered_set<std::string> already_notified;
+            for (const auto& mention : mentioned) {
+                if (mention == "@channel") {
+                    for (const auto& m : members) {
+                        if (m.user_id != data->user_id) already_notified.insert(m.user_id);
+                    }
+                } else {
+                    for (const auto& m : members) {
+                        if (m.username == mention && m.user_id != data->user_id) {
+                            already_notified.insert(m.user_id);
+                        }
+                    }
+                }
+            }
+            if (!reply_to.empty()) {
+                auto reply_owner = db.get_message_ownership(reply_to);
+                if (reply_owner && reply_owner->user_id != data->user_id) {
+                    already_notified.insert(reply_owner->user_id);
+                }
+            }
+
+            for (const auto& m : members) {
+                if (m.user_id != data->user_id && already_notified.count(m.user_id) == 0) {
+                    auto nid = db.create_notification(m.user_id, "direct_message",
+                        data->user_id, channel_id, msg.id, preview);
+                    json notif = {{"type", "new_notification"}, {"notification", {
+                        {"id", nid}, {"user_id", m.user_id}, {"type", "direct_message"},
+                        {"source_user_id", data->user_id}, {"source_username", data->username},
+                        {"channel_id", channel_id}, {"channel_name", ""},
+                        {"message_id", msg.id}, {"space_id", ""},
+                        {"content", preview}, {"created_at", msg.created_at}, {"is_read", false}
+                    }}};
+                    send_to_user(m.user_id, notif.dump());
+                }
+            }
+        }
+
         json broadcast = {
             {"type", "new_message"},
             {"message", message_to_json(msg)}
@@ -440,7 +563,54 @@ private:
                                 WsUserData* data, const json& j) {
         std::string message_id = j.at("message_id");
 
-        auto msg = db.delete_message(message_id, data->user_id);
+        // Look up the message to determine ownership and channel
+        auto ownership = db.get_message_ownership(message_id);
+        if (!ownership) {
+            json err = {{"type", "error"}, {"message", "Message not found"}};
+            ws->send(err.dump(), uWS::OpCode::TEXT);
+            return;
+        }
+
+        Message msg;
+        if (ownership->user_id == data->user_id) {
+            // Own message — always allowed
+            msg = db.delete_message(message_id, data->user_id);
+        } else {
+            // Not own message — check if user has admin/owner effective role in this channel
+            std::string effective = db.get_effective_role(ownership->channel_id, data->user_id);
+            if (effective != "admin" && effective != "owner") {
+                json err = {{"type", "error"}, {"message", "You don't have permission to delete this message"}};
+                ws->send(err.dump(), uWS::OpCode::TEXT);
+                return;
+            }
+
+            // Check that the message author is lower-ranked (server role hierarchy)
+            auto author = db.find_user_by_id(ownership->user_id);
+            if (author) {
+                bool blocked = false;
+                if (author->role == "owner") {
+                    // Nobody can delete an owner's messages (except themselves)
+                    blocked = true;
+                } else if (author->role == "admin" && data->role != "owner") {
+                    // Only owners can delete admin messages
+                    blocked = true;
+                }
+                if (blocked) {
+                    json err = {{"type", "error"}, {"message", "You don't have permission to delete this message"}};
+                    ws->send(err.dump(), uWS::OpCode::TEXT);
+                    return;
+                }
+            }
+
+            msg = db.admin_delete_message(message_id);
+        }
+
+        // Delete file from disk if message had an attachment
+        if (!msg.file_id.empty()) {
+            std::string path = config.upload_dir + "/" + msg.file_id;
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
 
         json broadcast = {
             {"type", "message_deleted"},

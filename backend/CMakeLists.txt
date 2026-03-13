@@ -82,6 +82,13 @@ set_source_files_properties(src/db/database.cpp PROPERTIES
 add_executable(chat-server src/main.cpp)
 target_link_libraries(chat-server PRIVATE chat-lib)
 
+# Code coverage
+option(CODE_COVERAGE "Enable code coverage instrumentation (gcov)" OFF)
+if(CODE_COVERAGE)
+    target_compile_options(chat-lib PUBLIC --coverage -fprofile-arcs -ftest-coverage)
+    target_link_options(chat-lib PUBLIC --coverage)
+endif()
+
 # Testing
 option(BUILD_TESTS "Build test suite" OFF)
 if(BUILD_TESTS)

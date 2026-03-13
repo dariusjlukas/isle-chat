@@ -177,11 +177,12 @@ test.describe("TOTP setup in user settings", () => {
     );
     await loginViaToken(page, user.token);
 
-    // Open settings
-    const headerButtons = page.locator(
-      "header .flex.items-center.justify-end button",
+    // Open settings via avatar dropdown
+    const avatarBtn = page.locator(
+      "header .flex.items-center.justify-end button.rounded-full",
     );
-    await headerButtons.nth(0).click(); // Settings button for non-admin
+    await avatarBtn.click();
+    await page.getByRole("menuitem", { name: "User Settings" }).click();
 
     await expect(page.getByText("Settings").first()).toBeVisible({
       timeout: 5_000,
@@ -213,11 +214,12 @@ test.describe("MFA admin settings UI", () => {
   }) => {
     await loginViaToken(page, admin.token);
 
-    // Open admin panel
-    const headerButtons = page.locator(
-      "header .flex.items-center.justify-end button",
+    // Open admin panel via avatar dropdown
+    const avatarBtn = page.locator(
+      "header .flex.items-center.justify-end button.rounded-full",
     );
-    await headerButtons.nth(0).click(); // Admin button
+    await avatarBtn.click();
+    await page.getByRole("menuitem", { name: "Admin Panel" }).click();
 
     await expect(page.getByText("Admin Panel").first()).toBeVisible({
       timeout: 10_000,

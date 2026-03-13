@@ -24,22 +24,18 @@ test.beforeEach(async ({ workerConfig }) => {
   admin = await setupAdminUser(workerConfig.apiConfig);
 });
 
-/** Click the Nth button (0-indexed) in the header's right button group. */
-async function clickHeaderButton(
-  page: import("@playwright/test").Page,
-  index: number,
-) {
-  const buttons = page.locator(
-    "header .flex.items-center.justify-end button",
+/** Open Admin Panel via the avatar dropdown. */
+async function clickAdminPanel(page: import("@playwright/test").Page) {
+  const avatarBtn = page.locator(
+    "header .flex.items-center.justify-end button.rounded-full",
   );
-  await buttons.nth(index).click();
+  await avatarBtn.click();
+  await page.getByRole("menuitem", { name: "Admin Panel" }).click();
 }
-
-const ADMIN_BTN = 0;
 
 /** Open admin panel → User Management, then click a user in the picker. */
 async function openUserManagement(page: import("@playwright/test").Page) {
-  await clickHeaderButton(page, ADMIN_BTN);
+  await clickAdminPanel(page);
   await expect(page.getByText("Admin Panel").first()).toBeVisible({
     timeout: 10_000,
   });

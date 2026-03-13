@@ -31,10 +31,23 @@ export function ChannelSettings({ channel, onClose }: Props) {
   const [defaultRole, setDefaultRole] = useState<ChannelRole>(
     channel.default_role,
   );
+  const [defaultJoin, setDefaultJoin] = useState(channel.default_join ?? false);
   const [saving, setSaving] = useState(false);
   const [inviteUserId, setInviteUserId] = useState<string[]>([]);
   const [inviteRole, setInviteRole] = useState('write');
   const [inviting, setInviting] = useState(false);
+
+  const [savedPayload, setSavedPayload] = useState(() =>
+    JSON.stringify({ name, description, isPublic, defaultRole, defaultJoin }),
+  );
+
+  const currentPayload = useMemo(
+    () =>
+      JSON.stringify({ name, description, isPublic, defaultRole, defaultJoin }),
+    [name, description, isPublic, defaultRole, defaultJoin],
+  );
+
+  const isDirty = currentPayload !== savedPayload;
 
   const [leaveError, setLeaveError] = useState<string | null>(null);
   const user = useChatStore((s) => s.user);
@@ -61,8 +74,18 @@ export function ChannelSettings({ channel, onClose }: Props) {
         description,
         is_public: isPublic,
         default_role: defaultRole,
+        default_join: defaultJoin,
       });
       updateChannel(updated);
+      setSavedPayload(
+        JSON.stringify({
+          name,
+          description,
+          isPublic,
+          defaultRole,
+          defaultJoin,
+        }),
+      );
     } catch (e) {
       console.error('Channel operation failed:', e);
     }
@@ -116,7 +139,16 @@ export function ChannelSettings({ channel, onClose }: Props) {
       backdrop='opaque'
     >
       <ModalContent>
-        <ModalHeader>Channel Settings — #{channel.name}</ModalHeader>
+        <ModalHeader>
+          <div className='flex items-center gap-3'>
+            <span>Channel Settings — #{channel.name}</span>
+            {isDirty && (
+              <span className='text-xs font-normal text-warning bg-warning/10 px-2 py-0.5 rounded-full'>
+                Unsaved changes
+              </span>
+            )}
+          </div>
+        </ModalHeader>
         <ModalBody className='pb-6'>
           <Tabs color='primary' classNames={{ tabList: 'bg-content2' }}>
             {canManage && (
@@ -164,12 +196,33 @@ export function ChannelSettings({ channel, onClose }: Props) {
                       Read Only (can view only)
                     </SelectItem>
                   </Select>
+                  {channel.space_id && (
+                    <div className='flex items-center justify-between'>
+                      <div>
+                        <p className='text-sm font-medium text-foreground'>
+                          Auto-Join for New Members
+                        </p>
+                        <p className='text-xs text-default-400'>
+                          {defaultJoin
+                            ? 'New space members are automatically added'
+                            : 'New space members must join manually'}
+                        </p>
+                      </div>
+                      <Switch
+                        isSelected={defaultJoin}
+                        onValueChange={setDefaultJoin}
+                        size='sm'
+                      />
+                    </div>
+                  )}
                   <Button
-                    color='primary'
+                    color={isDirty ? 'warning' : 'primary'}
                     onPress={handleSave}
                     isLoading={saving}
                   >
-                    Save Settings
+                    {isDirty
+                      ? 'Save Settings (unsaved changes)'
+                      : 'Save Settings'}
                   </Button>
                 </div>
               </Tab>

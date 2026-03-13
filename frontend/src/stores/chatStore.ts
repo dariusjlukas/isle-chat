@@ -8,6 +8,7 @@ import type {
   SpaceInvite,
   SidebarView,
   ReadReceiptInfo,
+  Notification,
 } from '../types';
 
 interface ChatState {
@@ -42,6 +43,10 @@ interface ChatState {
   unreadCounts: Record<string, number>;
   mentionCounts: Record<string, number>;
   readReceipts: Record<string, Record<string, ReadReceiptInfo>>;
+
+  // Notifications
+  notifications: Notification[];
+  unreadNotificationCount: number;
 
   // Actions
   setAuth: (user: User, token: string) => void;
@@ -98,6 +103,11 @@ interface ChatState {
     emoji: string,
     userId: string,
   ) => void;
+  setNotifications: (notifications: Notification[]) => void;
+  addNotification: (notification: Notification) => void;
+  setUnreadNotificationCount: (count: number) => void;
+  markNotificationRead: (notificationId: string) => void;
+  markAllNotificationsRead: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -116,6 +126,8 @@ export const useChatStore = create<ChatState>((set) => ({
   serverArchived: false,
   pendingRequestCount: 0,
   spaceInvites: [],
+  notifications: [],
+  unreadNotificationCount: 0,
   jumpToMessageId: null,
   jumpToChannelId: null,
   unreadCounts: {},
@@ -143,25 +155,48 @@ export const useChatStore = create<ChatState>((set) => ({
       mentionCounts: {},
       readReceipts: {},
       spaceInvites: [],
+      notifications: [],
+      unreadNotificationCount: 0,
     });
   },
 
   setChannels: (channels) => set({ channels }),
 
   setActiveChannel: (channelId) =>
-    set((state) => ({
-      activeChannelId: channelId,
-      unreadCounts: channelId
-        ? { ...state.unreadCounts, [channelId]: 0 }
-        : state.unreadCounts,
-      mentionCounts: channelId
-        ? { ...state.mentionCounts, [channelId]: 0 }
-        : state.mentionCounts,
-    })),
+    set((state) => {
+      if (!channelId) {
+        return { activeChannelId: null };
+      }
+
+      // Count unread notifications for this channel that will be marked read
+      const channelNotifCount = state.notifications.filter(
+        (n) => !n.is_read && n.channel_id === channelId,
+      ).length;
+
+      return {
+        activeChannelId: channelId,
+        unreadCounts: { ...state.unreadCounts, [channelId]: 0 },
+        mentionCounts: { ...state.mentionCounts, [channelId]: 0 },
+        notifications:
+          channelNotifCount > 0
+            ? state.notifications.map((n) =>
+                n.channel_id === channelId && !n.is_read
+                  ? { ...n, is_read: true }
+                  : n,
+              )
+            : state.notifications,
+        unreadNotificationCount: Math.max(
+          0,
+          state.unreadNotificationCount - channelNotifCount,
+        ),
+      };
+    }),
 
   addChannel: (channel) =>
     set((state) => ({
-      channels: [...state.channels, channel],
+      channels: state.channels.some((c) => c.id === channel.id)
+        ? state.channels
+        : [...state.channels, channel],
     })),
 
   setMessages: (channelId, messages) =>
@@ -391,6 +426,104 @@ export const useChatStore = create<ChatState>((set) => ({
             };
           }),
         },
+      };
+    }),
+
+  setNotifications: (notifications) => set({ notifications }),
+
+  addNotification: (notification) =>
+    set((state) => {
+      // If the user is currently viewing the channel this notification is for,
+      // add it as already read so the bell badge doesn't flash
+      const isActiveChannel =
+        notification.channel_id &&
+        notification.channel_id === state.activeChannelId;
+
+      return {
+        notifications: [
+          isActiveChannel ? { ...notification, is_read: true } : notification,
+          ...state.notifications,
+        ],
+        unreadNotificationCount: isActiveChannel
+          ? state.unreadNotificationCount
+          : state.unreadNotificationCount + 1,
+      };
+    }),
+
+  setUnreadNotificationCount: (count) =>
+    set({ unreadNotificationCount: count }),
+
+  markNotificationRead: (notificationId) =>
+    set((state) => {
+      const notification = state.notifications.find(
+        (n) => n.id === notificationId,
+      );
+      if (!notification || notification.is_read) return state;
+
+      const updates: Partial<ChatState> = {
+        notifications: state.notifications.map((n) =>
+          n.id === notificationId ? { ...n, is_read: true } : n,
+        ),
+        unreadNotificationCount: Math.max(0, state.unreadNotificationCount - 1),
+      };
+
+      // Sync channel badge counts for message-related notifications
+      if (
+        notification.channel_id &&
+        (notification.type === 'mention' ||
+          notification.type === 'reply' ||
+          notification.type === 'direct_message')
+      ) {
+        const cid = notification.channel_id;
+        updates.unreadCounts = {
+          ...state.unreadCounts,
+          [cid]: Math.max(0, (state.unreadCounts[cid] || 0) - 1),
+        };
+        if (notification.type === 'mention') {
+          updates.mentionCounts = {
+            ...state.mentionCounts,
+            [cid]: Math.max(0, (state.mentionCounts[cid] || 0) - 1),
+          };
+        }
+      }
+
+      return updates;
+    }),
+
+  markAllNotificationsRead: () =>
+    set((state) => {
+      const newUnreadCounts = { ...state.unreadCounts };
+      const newMentionCounts = { ...state.mentionCounts };
+
+      for (const n of state.notifications) {
+        if (
+          !n.is_read &&
+          n.channel_id &&
+          (n.type === 'mention' ||
+            n.type === 'reply' ||
+            n.type === 'direct_message')
+        ) {
+          newUnreadCounts[n.channel_id] = Math.max(
+            0,
+            (newUnreadCounts[n.channel_id] || 0) - 1,
+          );
+          if (n.type === 'mention') {
+            newMentionCounts[n.channel_id] = Math.max(
+              0,
+              (newMentionCounts[n.channel_id] || 0) - 1,
+            );
+          }
+        }
+      }
+
+      return {
+        notifications: state.notifications.map((n) => ({
+          ...n,
+          is_read: true,
+        })),
+        unreadNotificationCount: 0,
+        unreadCounts: newUnreadCounts,
+        mentionCounts: newMentionCounts,
       };
     }),
 }));

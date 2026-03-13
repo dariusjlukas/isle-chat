@@ -8,6 +8,7 @@ import {
   faMessage,
   faArrowUpRightFromSquare,
   faHashtag,
+  faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import * as api from '../../services/api';
 import type { User } from '../../types';
@@ -45,6 +46,7 @@ export function GlobalSearch() {
   const [inputValue, setInputValue] = useState('');
   const [chips, setChips] = useState<SearchChip[]>([]);
   const [isOpen, setIsOpen] = useState(false);
+  const [mobileExpanded, setMobileExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState<SearchTab>('messages');
   const [mode, setMode] = useState<'and' | 'or'>('and');
   const [loading, setLoading] = useState(false);
@@ -81,6 +83,7 @@ export function GlobalSearch() {
     setChips([]);
     clearAllResults();
     setIsOpen(false);
+    setMobileExpanded(false);
   }, [clearAllResults]);
 
   // Close on click outside
@@ -96,6 +99,13 @@ export function GlobalSearch() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [clearSearch]);
+
+  // Auto-focus search input when mobile overlay opens
+  useEffect(() => {
+    if (mobileExpanded) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [mobileExpanded]);
 
   // Ref to avoid forward-declaration issues with addChipFromInput
   const addChipRef = useRef<() => void>(() => {});
@@ -119,11 +129,6 @@ export function GlobalSearch() {
   // Search for a single tab (no chips, live preview while typing)
   const doSingleSearch = useCallback(
     (searchQuery: string, tab: SearchTab, searchMode: 'and' | 'or') => {
-      if (!searchQuery.trim()) {
-        clearAllResults();
-        return;
-      }
-
       setLoading(true);
 
       let promise: Promise<void>;
@@ -300,7 +305,7 @@ export function GlobalSearch() {
     if (chips.length > 0) {
       // Re-fire composite search for the new tab's result type
       doCompositeSearch(chips, tab, mode);
-    } else if (inputValue.trim()) {
+    } else {
       doSingleSearch(inputValue, tab, mode);
     }
   };
@@ -310,7 +315,7 @@ export function GlobalSearch() {
     setMode(newMode);
     if (chips.length > 0) {
       doCompositeSearch(chips, activeTab, newMode);
-    } else if (inputValue.trim()) {
+    } else {
       doSingleSearch(inputValue, activeTab, newMode);
     }
   };
@@ -362,8 +367,6 @@ export function GlobalSearch() {
       console.error('Download failed:', e);
     }
   };
-
-  const hasContent = chips.length > 0 || inputValue.trim();
 
   const renderResults = () => {
     if (loading) {
@@ -455,65 +458,115 @@ export function GlobalSearch() {
   };
 
   return (
-    <div ref={containerRef} className='relative w-full max-w-xl mx-auto'>
-      <Input
-        ref={inputRef}
-        placeholder={
-          chips.length > 0 ? `Add ${activeTab} filter...` : 'Search...'
-        }
-        variant='bordered'
-        size='sm'
-        value={inputValue}
-        onValueChange={handleInputChange}
-        onKeyDown={handleKeyDown}
-        onFocus={() => {
-          if (hasContent) setIsOpen(true);
-        }}
-        startContent={
-          <FontAwesomeIcon
-            icon={faMagnifyingGlass}
-            className='text-default-400 text-sm'
-          />
-        }
-        classNames={{
-          inputWrapper: 'h-8',
-          input: 'text-sm',
-        }}
-        endContent={
-          <div className='flex items-center gap-1'>
-            {inputValue.trim() && (
-              <Button
-                size='sm'
-                variant='flat'
-                className='h-5 min-w-0 px-1.5 gap-1 text-[10px]'
-                onPress={addChipFromInput}
-              >
-                Add Filter{' '}
-                <Kbd
-                  className='text-[10px] px-1 py-0 min-h-0 h-3.5 bg-default-100'
-                  keys={['enter']}
-                />
-              </Button>
-            )}
-            {(inputValue || chips.length > 0) && (
-              <button
-                className='text-default-400 hover:text-default-600 text-sm px-0.5'
-                onClick={() => {
-                  setInputValue('');
-                  setChips([]);
-                  clearAllResults();
-                  setIsOpen(false);
-                }}
-              >
-                &times;
-              </button>
-            )}
-          </div>
-        }
-      />
+    <div
+      ref={containerRef}
+      className={
+        mobileExpanded
+          ? 'fixed inset-x-0 top-0 z-50 bg-content1 border-b border-default-200 shadow-lg px-3 py-2'
+          : 'relative w-full max-w-xl ml-auto md:mx-auto'
+      }
+    >
+      {/* Mobile: search icon button (visible below sm when not expanded) */}
+      {!mobileExpanded && (
+        <div className='sm:hidden flex justify-end'>
+          <Button
+            isIconOnly
+            variant='light'
+            size='sm'
+            onPress={() => setMobileExpanded(true)}
+          >
+            <FontAwesomeIcon
+              icon={faMagnifyingGlass}
+              className='text-default-500'
+            />
+          </Button>
+        </div>
+      )}
 
-      {isOpen && hasContent && (
-        <div className='absolute top-full left-0 right-0 mt-1 bg-content1 border border-default-200 rounded-xl shadow-lg z-50 overflow-hidden'>
+      {/* Search input: hidden on mobile unless expanded, always shown on sm+ */}
+      <div
+        className={
+          mobileExpanded ? 'flex items-center gap-2' : 'hidden sm:block'
+        }
+      >
+        {mobileExpanded && (
+          <Button
+            isIconOnly
+            variant='light'
+            size='sm'
+            onPress={clearSearch}
+            className='flex-shrink-0'
+          >
+            <FontAwesomeIcon icon={faXmark} />
+          </Button>
+        )}
+        <div className={mobileExpanded ? 'flex-1' : ''}>
+          <Input
+            ref={inputRef}
+            placeholder={
+              chips.length > 0 ? `Add ${activeTab} filter...` : 'Search...'
+            }
+            variant='bordered'
+            size='sm'
+            value={inputValue}
+            onValueChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            onFocus={() => {
+              setIsOpen(true);
+              if (chips.length === 0) {
+                setLoading(true);
+                doSingleSearch(inputValue, activeTab, mode);
+              }
+            }}
+            startContent={
+              <FontAwesomeIcon
+                icon={faMagnifyingGlass}
+                className='text-default-400 text-sm'
+              />
+            }
+            classNames={{
+              inputWrapper: 'h-8',
+              input: 'text-sm',
+            }}
+            endContent={
+              <div className='flex items-center gap-1'>
+                {inputValue.trim() && (
+                  <Button
+                    size='sm'
+                    variant='flat'
+                    className='h-5 min-w-0 px-1.5 gap-1 text-[10px]'
+                    onPress={addChipFromInput}
+                  >
+                    Add Filter{' '}
+                    <Kbd
+                      className='text-[10px] px-1 py-0 min-h-0 h-3.5 bg-default-100'
+                      keys={['enter']}
+                    />
+                  </Button>
+                )}
+                {(inputValue || chips.length > 0) && (
+                  <button
+                    className='text-default-400 hover:text-default-600 text-sm px-0.5'
+                    onClick={() => {
+                      setInputValue('');
+                      setChips([]);
+                      clearAllResults();
+                      setIsOpen(false);
+                    }}
+                  >
+                    &times;
+                  </button>
+                )}
+              </div>
+            }
+          />
+        </div>
+      </div>
+
+      {isOpen && (
+        <div
+          className={`${mobileExpanded ? '' : 'absolute top-full left-0 right-0'} mt-1 bg-content1 border border-default-200 rounded-xl shadow-lg z-50 overflow-hidden`}
+        >
           {/* Chips area */}
           {chips.length > 0 && (
             <div className='flex flex-wrap items-center gap-1 px-3 pt-2'>

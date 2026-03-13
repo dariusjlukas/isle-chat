@@ -31,6 +31,7 @@ export interface Channel {
   is_direct: boolean;
   is_public: boolean;
   default_role: ChannelRole;
+  default_join?: boolean;
   my_role: ChannelRole;
   created_at: string;
   is_archived?: boolean;
@@ -96,6 +97,26 @@ export interface SpaceInvite {
   invited_by_username: string;
   role: ChannelRole;
   created_at: string;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  type:
+    | 'mention'
+    | 'reply'
+    | 'direct_message'
+    | 'space_invite'
+    | 'join_request';
+  source_user_id: string;
+  source_username: string;
+  channel_id: string;
+  channel_name: string;
+  message_id: string;
+  space_id: string;
+  content: string;
+  created_at: string;
+  is_read: boolean;
 }
 
 export interface InviteToken {
