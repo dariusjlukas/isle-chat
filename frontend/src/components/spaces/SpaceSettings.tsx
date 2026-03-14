@@ -316,7 +316,7 @@ export function SpaceSettings({ space, onClose }: Props) {
       label: 'Calendar',
       description: 'Shared calendar for scheduling events',
       icon: faCalendar,
-      available: false,
+      available: true,
     },
     {
       name: 'tasks',

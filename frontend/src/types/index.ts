@@ -165,6 +165,46 @@ export interface SpaceFileVersion {
   created_at: string;
 }
 
+export interface CalendarEvent {
+  id: string;
+  space_id: string;
+  title: string;
+  description: string;
+  location: string;
+  color: string;
+  start_time: string;
+  end_time: string;
+  all_day: boolean;
+  rrule: string;
+  occurrence_date?: string | null;
+  is_exception?: boolean;
+  created_by: string;
+  created_by_username: string;
+  created_at: string;
+  updated_at: string;
+  my_rsvp?: string;
+}
+
+export interface CalendarEventRsvp {
+  user_id: string;
+  username: string;
+  display_name: string;
+  status: string;
+  responded_at: string;
+}
+
+export interface CalendarPermission {
+  id: string;
+  space_id: string;
+  user_id: string;
+  username: string;
+  display_name: string;
+  permission: string;
+  granted_by: string;
+  granted_by_username: string;
+  created_at: string;
+}
+
 export interface InviteToken {
   id: string;
   token: string;

@@ -28,6 +28,10 @@ int64_t parse_space_storage_limit(const std::optional<std::string>& setting) {
     return parse_i64_setting_or(setting, 0);
 }
 
+bool exceeds_file_size_limit(int64_t max_size, int64_t file_size) {
+    return max_size > 0 && file_size > max_size;
+}
+
 bool exceeds_storage_limit(int64_t limit, int64_t used, int64_t incoming_size) {
     return limit > 0 && used + incoming_size > limit;
 }

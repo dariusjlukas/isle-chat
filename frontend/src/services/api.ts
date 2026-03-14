@@ -10,6 +10,9 @@ import type {
   SpaceFileVersion,
   ReadReceiptInfo,
   Notification,
+  CalendarEvent,
+  CalendarEventRsvp,
+  CalendarPermission,
 } from '../types';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
@@ -493,35 +496,33 @@ export function deleteAccount() {
   return request<{ ok: boolean }>('/users/me', { method: 'DELETE' });
 }
 
-// Files
-export function uploadFile(
-  channelId: string,
-  file: File,
-  messageText: string,
-  onProgress?: (percent: number) => void,
-): Promise<Record<string, unknown>> {
+// --- Chunked upload helper ---
+const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+const MAX_RETRIES = 3;
+
+async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function uploadChunk(
+  url: string,
+  token: string | null,
+  chunk: Blob,
+  onProgress?: (loaded: number) => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const token = getToken();
-    const params = new URLSearchParams({
-      filename: file.name,
-      content_type: file.type || 'application/octet-stream',
-    });
-    if (messageText) params.set('message', messageText);
-
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/channels/${channelId}/upload?${params}`);
+    xhr.open('POST', url);
     if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-
     xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
+      if (e.lengthComputable && onProgress) onProgress(e.loaded);
     };
-
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else {
         try {
           const body = JSON.parse(xhr.responseText);
           reject(new Error(body.error || xhr.statusText));
@@ -530,10 +531,110 @@ export function uploadFile(
         }
       }
     };
-
-    xhr.onerror = () => reject(new Error('Upload failed'));
-    xhr.send(file);
+    xhr.onerror = () => reject(new Error('Chunk upload failed'));
+    xhr.send(chunk);
   });
+}
+
+async function chunkedUpload<T>(
+  baseUrl: string,
+  file: File,
+  initBody: Record<string, unknown>,
+  onProgress?: (percent: number) => void,
+): Promise<T> {
+  const token = getToken();
+  const chunkCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+
+  // Init
+  const initRes = await fetch(`${baseUrl}/init`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      ...initBody,
+      total_size: file.size,
+      chunk_count: chunkCount,
+      chunk_size: CHUNK_SIZE,
+    }),
+  });
+  if (!initRes.ok) {
+    const body = await initRes.json().catch(() => ({}));
+    throw new Error(body.error || initRes.statusText);
+  }
+  const { upload_id } = await initRes.json();
+
+  // Upload chunks with retry
+  let completedBytes = 0;
+  for (let i = 0; i < chunkCount; i++) {
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunk = file.slice(start, end);
+    const chunkBytes = end - start;
+    const chunkHash = await sha256Hex(await chunk.arrayBuffer());
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        await uploadChunk(
+          `${baseUrl}/${upload_id}/chunk?index=${i}&hash=${chunkHash}`,
+          token,
+          chunk,
+          (loaded) => {
+            if (onProgress && file.size > 0) {
+              onProgress(
+                Math.round(((completedBytes + loaded) / file.size) * 100),
+              );
+            }
+          },
+        );
+        lastError = undefined;
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+    }
+    if (lastError) throw lastError;
+    completedBytes += chunkBytes;
+  }
+
+  // Complete (send empty body so uWebSockets triggers onData)
+  const completeRes = await fetch(`${baseUrl}/${upload_id}/complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: '{}',
+  });
+  if (!completeRes.ok) {
+    const body = await completeRes.json().catch(() => ({}));
+    throw new Error(body.error || completeRes.statusText);
+  }
+  return completeRes.json();
+}
+
+// Files
+export function uploadFile(
+  channelId: string,
+  file: File,
+  messageText: string,
+  onProgress?: (percent: number) => void,
+): Promise<Record<string, unknown>> {
+  return chunkedUpload(
+    `${API_BASE}/channels/${channelId}/upload`,
+    file,
+    {
+      filename: file.name,
+      content_type: file.type || 'application/octet-stream',
+      message: messageText,
+    },
+    onProgress,
+  );
 }
 
 export function getFileUrl(fileId: string): string {
@@ -607,6 +708,7 @@ export interface AdminSettings {
   session_expiry_hours: number;
   setup_completed: boolean;
   server_archived: boolean;
+  server_locked_down: boolean;
   password_min_length: number;
   password_require_uppercase: boolean;
   password_require_lowercase: boolean;
@@ -721,6 +823,7 @@ export interface PublicConfig {
   has_users: boolean;
   file_uploads_enabled: boolean;
   server_archived: boolean;
+  server_locked_down: boolean;
   password_policy?: PasswordPolicy;
   mfa_required_password?: boolean;
   mfa_required_pki?: boolean;
@@ -920,6 +1023,18 @@ export function archiveServer() {
 
 export function unarchiveServer() {
   return request<{ ok: boolean }>('/admin/unarchive-server', {
+    method: 'POST',
+  });
+}
+
+export function lockdownServer() {
+  return request<{ ok: boolean }>('/admin/lockdown-server', {
+    method: 'POST',
+  });
+}
+
+export function unlockServer() {
+  return request<{ ok: boolean }>('/admin/unlock-server', {
     method: 'POST',
   });
 }
@@ -1409,39 +1524,16 @@ export function uploadSpaceFile(
   parentId?: string,
   onProgress?: (percent: number) => void,
 ): Promise<SpaceFile> {
-  return new Promise((resolve, reject) => {
-    const token = getToken();
-    const params = new URLSearchParams({
+  return chunkedUpload(
+    `${API_BASE}/spaces/${spaceId}/files/upload`,
+    file,
+    {
       filename: file.name,
       content_type: file.type || 'application/octet-stream',
-    });
-    if (parentId) params.set('parent_id', parentId);
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/spaces/${spaceId}/files/upload?${params}`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        try {
-          const body = JSON.parse(xhr.responseText);
-          reject(new Error(body.error || xhr.statusText));
-        } catch {
-          reject(new Error(xhr.statusText));
-        }
-      }
-    };
-    xhr.onerror = () => reject(new Error('Upload failed'));
-    xhr.send(file);
-  });
+      parent_id: parentId || '',
+    },
+    onProgress,
+  );
 }
 
 export function getSpaceFile(spaceId: string, fileId: string) {
@@ -1453,9 +1545,11 @@ export function getSpaceFile(spaceId: string, fileId: string) {
 export function getSpaceFileDownloadUrl(
   spaceId: string,
   fileId: string,
+  inline?: boolean,
 ): string {
   const token = getToken();
-  return `${API_BASE}/spaces/${spaceId}/files/${fileId}/download?token=${token}`;
+  const base = `${API_BASE}/spaces/${spaceId}/files/${fileId}/download?token=${token}`;
+  return inline ? `${base}&inline=1` : base;
 }
 
 export async function downloadSpaceFile(
@@ -1542,33 +1636,14 @@ export function uploadFileVersion(
   file: File,
   onProgress?: (percent: number) => void,
 ): Promise<SpaceFileVersion> {
-  return new Promise((resolve, reject) => {
-    const token = getToken();
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        onProgress(Math.round((e.loaded / e.total) * 100));
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(JSON.parse(xhr.responseText));
-      } else {
-        try {
-          const body = JSON.parse(xhr.responseText);
-          reject(new Error(body.error || xhr.statusText));
-        } catch {
-          reject(new Error(xhr.statusText));
-        }
-      }
-    };
-    xhr.onerror = () => reject(new Error('Upload failed'));
-    xhr.send(file);
-  });
+  return chunkedUpload(
+    `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions`,
+    file,
+    {
+      total_size: file.size,
+    },
+    onProgress,
+  );
 }
 
 export function getVersionDownloadUrl(
@@ -1624,6 +1699,23 @@ export function getAdminStorage() {
   );
 }
 
+export interface SystemStats {
+  cpu_percent: number;
+  load_1m: number;
+  load_5m: number;
+  load_15m: number;
+  mem_total_kb: number;
+  mem_available_kb: number;
+  swap_total_kb: number;
+  swap_free_kb: number;
+  net_rx_bytes: number;
+  net_tx_bytes: number;
+}
+
+export function getSystemStats() {
+  return request<SystemStats>('/admin/system-stats');
+}
+
 // Update listSpaceFiles return type to include my_permission
 export function listSpaceFilesWithPermission(
   spaceId: string,
@@ -1637,4 +1729,146 @@ export function listSpaceFilesWithPermission(
     path: SpaceFilePath[];
     my_permission: string;
   }>(`/spaces/${spaceId}/files${qs ? '?' + qs : ''}`);
+}
+
+// --- Calendar ---
+
+export function listCalendarEvents(
+  spaceId: string,
+  start: string,
+  end: string,
+) {
+  const params = new URLSearchParams({ start, end });
+  return request<{ events: CalendarEvent[]; my_permission: string }>(
+    `/spaces/${spaceId}/calendar/events?${params}`,
+  );
+}
+
+export function createCalendarEvent(
+  spaceId: string,
+  event: {
+    title: string;
+    description?: string;
+    location?: string;
+    color?: string;
+    start_time: string;
+    end_time: string;
+    all_day?: boolean;
+    rrule?: string;
+  },
+) {
+  return request<CalendarEvent>(`/spaces/${spaceId}/calendar/events`, {
+    method: 'POST',
+    body: JSON.stringify(event),
+  });
+}
+
+export function updateCalendarEvent(
+  spaceId: string,
+  eventId: string,
+  updates: {
+    title?: string;
+    description?: string;
+    location?: string;
+    color?: string;
+    start_time?: string;
+    end_time?: string;
+    all_day?: boolean;
+    rrule?: string;
+  },
+) {
+  return request<CalendarEvent>(
+    `/spaces/${spaceId}/calendar/events/${eventId}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    },
+  );
+}
+
+export function deleteCalendarEvent(spaceId: string, eventId: string) {
+  return request<{ ok: boolean }>(
+    `/spaces/${spaceId}/calendar/events/${eventId}`,
+    { method: 'DELETE' },
+  );
+}
+
+export function createEventException(
+  spaceId: string,
+  eventId: string,
+  exception: {
+    original_date: string;
+    is_deleted?: boolean;
+    title?: string;
+    description?: string;
+    location?: string;
+    color?: string;
+    start_time?: string;
+    end_time?: string;
+    all_day?: boolean;
+  },
+) {
+  return request<{ id: string }>(
+    `/spaces/${spaceId}/calendar/events/${eventId}/exception`,
+    {
+      method: 'POST',
+      body: JSON.stringify(exception),
+    },
+  );
+}
+
+export function setEventRsvp(
+  spaceId: string,
+  eventId: string,
+  status: 'yes' | 'no' | 'maybe',
+  occurrenceDate?: string,
+) {
+  return request<{ status: string }>(
+    `/spaces/${spaceId}/calendar/events/${eventId}/rsvp`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        status,
+        occurrence_date: occurrenceDate || '1970-01-01 00:00:00+00',
+      }),
+    },
+  );
+}
+
+export function getEventRsvps(
+  spaceId: string,
+  eventId: string,
+  occurrenceDate?: string,
+) {
+  const params = new URLSearchParams();
+  if (occurrenceDate) params.set('date', occurrenceDate);
+  const qs = params.toString();
+  return request<{ rsvps: CalendarEventRsvp[] }>(
+    `/spaces/${spaceId}/calendar/events/${eventId}/rsvps${qs ? '?' + qs : ''}`,
+  );
+}
+
+export function getCalendarPermissions(spaceId: string) {
+  return request<{
+    permissions: CalendarPermission[];
+    my_permission: string;
+  }>(`/spaces/${spaceId}/calendar/permissions`);
+}
+
+export function setCalendarPermission(
+  spaceId: string,
+  userId: string,
+  permission: string,
+) {
+  return request<{ ok: boolean }>(`/spaces/${spaceId}/calendar/permissions`, {
+    method: 'POST',
+    body: JSON.stringify({ user_id: userId, permission }),
+  });
+}
+
+export function removeCalendarPermission(spaceId: string, userId: string) {
+  return request<{ ok: boolean }>(
+    `/spaces/${spaceId}/calendar/permissions/${userId}`,
+    { method: 'DELETE' },
+  );
 }

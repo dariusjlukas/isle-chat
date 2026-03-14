@@ -88,39 +88,22 @@ export function Header({
         >
           <FontAwesomeIcon icon={faBars} />
         </Button>
-        {serverIconFileId && serverIconDarkFileId ? (
-          <>
-            <img
-              src={api.getAvatarUrl(serverIconFileId)}
-              alt={serverName}
-              className='h-7 w-7 flex-shrink-0 rounded-md object-cover dark:hidden'
-            />
-            <img
-              src={api.getAvatarUrl(serverIconDarkFileId)}
-              alt={serverName}
-              className='h-7 w-7 flex-shrink-0 rounded-md object-cover hidden dark:block'
-            />
-          </>
-        ) : serverIconFileId ? (
-          <img
-            src={api.getAvatarUrl(serverIconFileId)}
-            alt={serverName}
-            className='h-7 w-7 flex-shrink-0 rounded-md object-cover'
-          />
-        ) : (
-          <>
-            <img
-              src={logoLight}
-              alt={serverName}
-              className='h-7 w-7 flex-shrink-0 dark:hidden'
-            />
-            <img
-              src={logoDark}
-              alt={serverName}
-              className='h-7 w-7 flex-shrink-0 hidden dark:block'
-            />
-          </>
-        )}
+        <img
+          src={
+            serverIconFileId ? api.getAvatarUrl(serverIconFileId) : logoLight
+          }
+          alt={serverName}
+          className='h-7 w-7 flex-shrink-0 rounded-md object-cover dark:hidden'
+        />
+        <img
+          src={
+            serverIconDarkFileId
+              ? api.getAvatarUrl(serverIconDarkFileId)
+              : logoDark
+          }
+          alt={serverName}
+          className='h-7 w-7 flex-shrink-0 rounded-md object-cover hidden dark:block'
+        />
         <span className='text-foreground font-bold hidden md:inline flex-shrink-0'>
           {serverName}
         </span>
@@ -230,10 +213,10 @@ export function Header({
               startContent={
                 <FontAwesomeIcon
                   icon={faRightFromBracket}
-                  className='text-danger'
+                  className='text-danger group-hover:text-white transition-colors'
                 />
               }
-              className='text-danger hover:text-white-50'
+              className='text-danger group'
               color='danger'
               onPress={handleLogout}
             >

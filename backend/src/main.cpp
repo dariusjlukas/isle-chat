@@ -14,6 +14,8 @@
 #include "handlers/search_handler.h"
 #include "handlers/notification_handler.h"
 #include "handlers/space_file_handler.h"
+#include "handlers/calendar_handler.h"
+#include "upload_manager.h"
 #include "ws/ws_handler.h"
 
 us_listen_socket_t* global_listen_socket = nullptr;
@@ -36,17 +38,19 @@ void shutdown_handler(int signum) {
 }
 
 template <bool SSL>
-void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
+void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db,
+                UploadManager& upload_manager) {
     WsHandler<SSL> ws_handler(db, config);
     AuthHandler<SSL> auth_handler{db, config, ws_handler};
     ChannelHandler<SSL> channel_handler{db, ws_handler};
     SpaceHandler<SSL> space_handler{db, ws_handler, config};
     UserHandler<SSL> user_handler{db, ws_handler, config};
     AdminHandler<SSL> admin_handler{db, config, ws_handler};
-    FileHandler<SSL> file_handler{db, config};
+    FileHandler<SSL> file_handler{db, config, upload_manager};
     SearchHandler<SSL> search_handler{db};
     NotificationHandler<SSL> notification_handler{db};
-    SpaceFileHandler<SSL> space_file_handler{db, config};
+    SpaceFileHandler<SSL> space_file_handler{db, config, upload_manager};
+    CalendarHandler<SSL> calendar_handler{db, config};
 
     // CORS preflight
     app.options("/*", [](auto* res, auto* req) {
@@ -60,6 +64,7 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
     auth_handler.register_routes(app);
     notification_handler.register_routes(app);
     search_handler.register_routes(app);
+    calendar_handler.register_routes(app);
     space_file_handler.register_routes(app);
     space_handler.register_routes(app);
     channel_handler.register_routes(app);
@@ -96,6 +101,7 @@ void run_server(uWS::TemplatedApp<SSL>&& app, Config& config, Database& db) {
         resp["file_uploads_enabled"] = (!uploads || *uploads == "true");
 
         resp["server_archived"] = db.is_server_archived();
+        resp["server_locked_down"] = db.is_server_locked_down();
 
         // MFA requirements
         auto mfa_pw = db.get_setting("mfa_required_password");
@@ -169,6 +175,9 @@ int main() {
     db.run_migrations();
     db.set_all_users_offline();
 
+    // Upload manager for chunked uploads
+    UploadManager upload_manager(config.upload_dir);
+
     std::signal(SIGTERM, shutdown_handler);
     std::signal(SIGINT, shutdown_handler);
 
@@ -178,9 +187,9 @@ int main() {
         run_server(uWS::SSLApp({
             .key_file_name = config.ssl_key_path.c_str(),
             .cert_file_name = config.ssl_cert_path.c_str()
-        }), config, db);
+        }), config, db, upload_manager);
     } else {
-        run_server(uWS::App(), config, db);
+        run_server(uWS::App(), config, db, upload_manager);
     }
 
     return 0;

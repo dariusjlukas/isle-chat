@@ -60,6 +60,10 @@ add_executable(test_file_handler test_file_handler.cpp)
 target_link_libraries(test_file_handler PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME FileHandlerTests COMMAND test_file_handler)
 
+add_executable(test_recurrence test_recurrence.cpp)
+target_link_libraries(test_recurrence PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME RecurrenceTests COMMAND test_recurrence)
+
 # Integration tests (require PostgreSQL)
 add_executable(test_database test_database.cpp)
 target_link_libraries(test_database PRIVATE chat-lib GTest::gtest_main)
@@ -69,9 +73,13 @@ add_executable(test_space_files test_space_files.cpp)
 target_link_libraries(test_space_files PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME SpaceFileTests COMMAND test_space_files)
 
+add_executable(test_calendar test_calendar.cpp)
+target_link_libraries(test_calendar PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME CalendarTests COMMAND test_calendar)
+
 # Labels for selective test running
 set_tests_properties(PkiTests ConfigTests TotpTests PasswordTests WebAuthnTests HandlerUtilsTests
     AuthUtilsTests AuthPayloadUtilsTests AdminSettingsUtilsTests FileAccessUtilsTests
-    AdminApprovalUtilsTests SearchHandlerTests FileHandlerTests
+    AdminApprovalUtilsTests SearchHandlerTests FileHandlerTests RecurrenceTests
     PROPERTIES LABELS "unit")
-set_tests_properties(DatabaseTests SpaceFileTests PROPERTIES LABELS "integration")
+set_tests_properties(DatabaseTests SpaceFileTests CalendarTests PROPERTIES LABELS "integration")

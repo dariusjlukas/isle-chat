@@ -531,6 +531,12 @@ void AuthHandler<SSL>::handle_login_verify(uWS::HttpResponse<SSL>* res, const st
             return;
         }
 
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
+            return;
+        }
+
         if (check_and_handle_mfa(res, *user, "passkey")) return;
 
         std::string token = db.create_session(user->id, get_session_expiry());
@@ -692,6 +698,12 @@ void AuthHandler<SSL>::handle_pki_login(uWS::HttpResponse<SSL>* res, const std::
         if (user->is_banned) {
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Your account has been banned"})");
+            return;
+        }
+
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
             return;
         }
 
@@ -922,6 +934,12 @@ void AuthHandler<SSL>::handle_recovery_login(uWS::HttpResponse<SSL>* res, const 
             return;
         }
 
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
+            return;
+        }
+
         std::string token = db.create_session(user->id, get_session_expiry());
         json resp = auth_payload_utils::build_token_user_response(
             token, make_user_json(*user), json{{"must_setup_key", true}});
@@ -957,6 +975,12 @@ void AuthHandler<SSL>::handle_recovery_token_login(uWS::HttpResponse<SSL>* res, 
         if (user->is_banned) {
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Your account has been banned"})");
+            return;
+        }
+
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
             return;
         }
 
@@ -1283,6 +1307,12 @@ void AuthHandler<SSL>::handle_password_login(uWS::HttpResponse<SSL>* res, const 
             return;
         }
 
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
+            return;
+        }
+
         if (check_and_handle_mfa(res, *user, "password")) return;
 
         // Create session
@@ -1487,6 +1517,12 @@ void AuthHandler<SSL>::handle_mfa_verify(uWS::HttpResponse<SSL>* res, const std:
             return;
         }
 
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
+            return;
+        }
+
         auto token = db.create_session(user->id, get_session_expiry());
         json extra = json::object();
         if (auth_method == "password") {
@@ -1584,6 +1620,12 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(uWS::HttpResponse<SSL>* res, cons
         if (user->is_banned) {
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Your account has been banned"})");
+            return;
+        }
+
+        if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+            res->writeStatus("403")->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server is in lockdown mode. Only administrators may log in."})");
             return;
         }
 

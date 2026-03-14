@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 #include "db/database.h"
 #include "config.h"
+#include "upload_manager.h"
 #include "handlers/handler_utils.h"
 
 using json = nlohmann::json;
@@ -11,6 +12,7 @@ template <bool SSL>
 struct SpaceFileHandler {
     Database& db;
     const Config& config;
+    UploadManager& uploads;
 
     void register_routes(uWS::TemplatedApp<SSL>& app);
 

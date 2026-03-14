@@ -65,6 +65,8 @@ export function SpacePanel({
 
   const isFilesActive =
     activeToolView?.type === 'files' && activeToolView.spaceId === spaceId;
+  const isCalendarActive =
+    activeToolView?.type === 'calendar' && activeToolView.spaceId === spaceId;
 
   return (
     <div className='flex flex-col h-full'>
@@ -175,8 +177,10 @@ export function SpacePanel({
           )}
         </div>
 
+        <div className='border-t border-default-100 mx-3 my-1' />
+
         {/* Tools section */}
-        <div className='space-y-1 px-3'>
+        <div className='space-y-1'>
           {/* Files — enabled */}
           {enabledTools.has('files') && (
             <button
@@ -184,10 +188,10 @@ export function SpacePanel({
                 setActiveToolView({ type: 'files', spaceId });
                 onSelect?.();
               }}
-              className={`w-full text-left flex items-center gap-2 py-2 text-sm rounded-md px-0 transition-colors ${
+              className={`w-full text-left flex items-center gap-2 py-2.5 text-sm rounded-md px-3 transition-colors ${
                 isFilesActive
-                  ? 'text-primary font-medium'
-                  : 'text-default-500 hover:text-foreground'
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-default-500 hover:bg-content2/50 hover:text-foreground'
               }`}
             >
               <FontAwesomeIcon icon={faFolderOpen} className='text-xs w-4' />
@@ -195,20 +199,27 @@ export function SpacePanel({
             </button>
           )}
 
-          {/* Calendar — placeholder if not enabled */}
-          {!enabledTools.has('calendar') && (
-            <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
+          {/* Calendar — enabled */}
+          {enabledTools.has('calendar') && (
+            <button
+              onClick={() => {
+                setActiveToolView({ type: 'calendar', spaceId });
+                onSelect?.();
+              }}
+              className={`w-full text-left flex items-center gap-2 py-2.5 text-sm rounded-md px-3 transition-colors ${
+                isCalendarActive
+                  ? 'bg-primary/20 text-primary font-medium'
+                  : 'text-default-500 hover:bg-content2/50 hover:text-foreground'
+              }`}
+            >
               <FontAwesomeIcon icon={faCalendar} className='text-xs w-4' />
               <span>Calendar</span>
-              <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>
-                Soon
-              </span>
-            </div>
+            </button>
           )}
 
           {/* Tasks — placeholder if not enabled */}
           {!enabledTools.has('tasks') && (
-            <div className='flex items-center gap-2 py-2 text-default-300 text-sm'>
+            <div className='flex items-center gap-2 py-2.5 px-3 text-default-300 text-sm rounded-md'>
               <FontAwesomeIcon icon={faListCheck} className='text-xs w-4' />
               <span>Tasks</span>
               <span className='text-xs bg-default-100 text-default-400 px-1.5 py-0.5 rounded ml-auto'>

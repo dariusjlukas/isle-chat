@@ -340,39 +340,16 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
 
   return (
     <div className='min-h-screen flex flex-col items-center justify-center bg-background'>
-      {serverIconUrl && serverIconDarkUrl ? (
-        <>
-          <img
-            src={serverIconUrl}
-            alt='Server'
-            className='w-24 h-24 mb-4 rounded-xl object-cover dark:hidden'
-          />
-          <img
-            src={serverIconDarkUrl}
-            alt='Server'
-            className='w-24 h-24 mb-4 rounded-xl object-cover hidden dark:block'
-          />
-        </>
-      ) : serverIconUrl ? (
-        <img
-          src={serverIconUrl}
-          alt='Server'
-          className='w-24 h-24 mb-4 rounded-xl object-cover'
-        />
-      ) : (
-        <>
-          <img
-            src={logoLight}
-            alt='EnclaveStation'
-            className='w-24 h-24 mb-4 dark:hidden'
-          />
-          <img
-            src={logoDark}
-            alt='EnclaveStation'
-            className='w-24 h-24 mb-4 hidden dark:block'
-          />
-        </>
-      )}
+      <img
+        src={serverIconUrl || logoLight}
+        alt='Server'
+        className='w-24 h-24 mb-4 rounded-xl object-cover dark:hidden'
+      />
+      <img
+        src={serverIconDarkUrl || logoDark}
+        alt='Server'
+        className='w-24 h-24 mb-4 rounded-xl object-cover hidden dark:block'
+      />
       <Card className='w-full max-w-md mx-4 sm:mx-auto shadow-2xl'>
         <CardBody className='p-5 sm:p-8'>
           <h1 className='text-3xl font-bold text-foreground mb-2'>Register</h1>

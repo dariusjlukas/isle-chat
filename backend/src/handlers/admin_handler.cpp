@@ -4,9 +4,80 @@
 #include "handlers/format_utils.h"
 #include <pqxx/pqxx>
 #include <fstream>
+#include <sstream>
 #include <filesystem>
+#include <thread>
+#include <cmath>
 #include "auth/webauthn.h"
 #include "auth/password.h"
+
+namespace {
+
+// Read /proc/meminfo and extract a value in kB by key
+int64_t read_meminfo_kb(const std::string& key) {
+    std::ifstream f("/proc/meminfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind(key, 0) == 0) {
+            std::istringstream iss(line.substr(key.size()));
+            int64_t val = 0;
+            iss >> val;
+            return val;
+        }
+    }
+    return -1;
+}
+
+// Parse /proc/stat to get total and idle jiffies
+struct CpuJiffies { int64_t total = 0; int64_t idle = 0; };
+
+CpuJiffies read_cpu_jiffies() {
+    std::ifstream f("/proc/stat");
+    std::string line;
+    if (std::getline(f, line) && line.rfind("cpu ", 0) == 0) {
+        std::istringstream iss(line.substr(4));
+        int64_t user, nice, system, idle, iowait, irq, softirq, steal;
+        user = nice = system = idle = iowait = irq = softirq = steal = 0;
+        iss >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+        CpuJiffies j;
+        j.idle = idle + iowait;
+        j.total = user + nice + system + idle + iowait + irq + softirq + steal;
+        return j;
+    }
+    return {};
+}
+
+// Parse /proc/net/dev for cumulative bytes rx/tx (skip loopback)
+struct NetCounters { int64_t rx_bytes = 0; int64_t tx_bytes = 0; };
+
+NetCounters read_net_counters() {
+    std::ifstream f("/proc/net/dev");
+    std::string line;
+    NetCounters total;
+    // Skip the two header lines
+    std::getline(f, line);
+    std::getline(f, line);
+    while (std::getline(f, line)) {
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        std::string iface = line.substr(0, colon);
+        // Trim whitespace from interface name
+        auto start = iface.find_first_not_of(' ');
+        if (start != std::string::npos) iface = iface.substr(start);
+        if (iface == "lo") continue; // skip loopback
+
+        std::istringstream iss(line.substr(colon + 1));
+        int64_t rx_bytes, rx_packets, rx_errs, rx_drop, rx_fifo, rx_frame, rx_compressed, rx_multicast;
+        int64_t tx_bytes;
+        iss >> rx_bytes >> rx_packets >> rx_errs >> rx_drop >> rx_fifo >> rx_frame >> rx_compressed >> rx_multicast
+            >> tx_bytes;
+        total.rx_bytes += rx_bytes;
+        total.tx_bytes += tx_bytes;
+    }
+    return total;
+}
+
+} // anonymous namespace
 
 using json = nlohmann::json;
 
@@ -370,6 +441,28 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
     });
 
+    // Lockdown server (owner only) — kicks all non-admin users
+    app.post("/api/admin/lockdown-server", [this](auto* res, auto* req) {
+        auto user_id = get_owner_id(res, req);
+        if (user_id.empty()) return;
+        db.set_server_locked_down(true);
+        json notify = {{"type", "server_lockdown_changed"}, {"locked_down", true}};
+        ws.broadcast_to_presence(notify.dump());
+        // Kick all non-admin/non-owner users
+        json kick = {{"type", "server_locked_down"}};
+        ws.disconnect_non_admins(kick.dump());
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+    });
+
+    app.post("/api/admin/unlock-server", [this](auto* res, auto* req) {
+        auto user_id = get_owner_id(res, req);
+        if (user_id.empty()) return;
+        db.set_server_locked_down(false);
+        json notify = {{"type", "server_lockdown_changed"}, {"locked_down", false}};
+        ws.broadcast_to_presence(notify.dump());
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+    });
+
     // List users (admin or owner)
     app.get("/api/admin/users", [this](auto* res, auto* req) {
         auto user_id = get_admin_id(res, req);
@@ -567,6 +660,55 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
     });
+
+    // System resource monitoring
+    app.get("/api/admin/system-stats", [this](auto* res, auto* req) {
+        auto user_id = get_admin_id(res, req);
+        if (user_id.empty()) return;
+
+        // Memory from /proc/meminfo (values in kB)
+        int64_t mem_total = read_meminfo_kb("MemTotal:");
+        int64_t mem_available = read_meminfo_kb("MemAvailable:");
+        int64_t swap_total = read_meminfo_kb("SwapTotal:");
+        int64_t swap_free = read_meminfo_kb("SwapFree:");
+
+        // CPU: sample two readings ~100ms apart
+        auto cpu1 = read_cpu_jiffies();
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        auto cpu2 = read_cpu_jiffies();
+
+        double cpu_percent = 0.0;
+        int64_t total_diff = cpu2.total - cpu1.total;
+        int64_t idle_diff = cpu2.idle - cpu1.idle;
+        if (total_diff > 0) {
+            cpu_percent = 100.0 * (1.0 - static_cast<double>(idle_diff) / static_cast<double>(total_diff));
+        }
+
+        // Load averages from /proc/loadavg
+        double load1 = 0, load5 = 0, load15 = 0;
+        {
+            std::ifstream f("/proc/loadavg");
+            f >> load1 >> load5 >> load15;
+        }
+
+        // Network cumulative counters
+        auto net = read_net_counters();
+
+        json resp = {
+            {"cpu_percent", std::round(cpu_percent * 10.0) / 10.0},
+            {"load_1m", std::round(load1 * 100.0) / 100.0},
+            {"load_5m", std::round(load5 * 100.0) / 100.0},
+            {"load_15m", std::round(load15 * 100.0) / 100.0},
+            {"mem_total_kb", mem_total},
+            {"mem_available_kb", mem_available},
+            {"swap_total_kb", swap_total},
+            {"swap_free_kb", swap_free},
+            {"net_rx_bytes", net.rx_bytes},
+            {"net_tx_bytes", net.tx_bytes},
+        };
+
+        res->writeHeader("Content-Type", "application/json")->end(resp.dump());
+    });
 }
 
 template <bool SSL>
@@ -592,6 +734,7 @@ json AdminHandler<SSL>::build_settings_response() {
     snapshot.config_session_expiry_hours = config.session_expiry_hours;
     snapshot.storage_used = db.get_total_file_size();
     snapshot.server_archived = db.is_server_archived();
+    snapshot.server_locked_down = db.is_server_locked_down();
 
     snapshot.max_file_size = db.get_setting("max_file_size");
     snapshot.max_storage_size = db.get_setting("max_storage_size");

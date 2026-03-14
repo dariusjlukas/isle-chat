@@ -11,6 +11,7 @@
 #include "models/message.h"
 #include "models/space.h"
 #include "models/space_file.h"
+#include "models/calendar_event.h"
 
 class Database {
 public:
@@ -419,6 +420,8 @@ public:
     void unarchive_space(const std::string& space_id);
     bool is_server_archived();
     void set_server_archived(bool archived);
+    bool is_server_locked_down();
+    void set_server_locked_down(bool locked_down);
 
     // Role counting
     int count_channel_members_with_role(const std::string& channel_id, const std::string& role);
@@ -438,6 +441,53 @@ public:
     void use_recovery_token(const std::string& token);
     bool delete_recovery_token(const std::string& id);
     std::vector<RecoveryTokenInfo> list_recovery_tokens();
+
+    // Calendar events
+    CalendarEvent create_calendar_event(const std::string& space_id, const std::string& title,
+                                         const std::string& description, const std::string& location,
+                                         const std::string& color, const std::string& start_time,
+                                         const std::string& end_time, bool all_day,
+                                         const std::string& rrule, const std::string& created_by);
+    CalendarEvent update_calendar_event(const std::string& event_id, const std::string& title,
+                                         const std::string& description, const std::string& location,
+                                         const std::string& color, const std::string& start_time,
+                                         const std::string& end_time, bool all_day,
+                                         const std::string& rrule);
+    void delete_calendar_event(const std::string& event_id);
+    std::optional<CalendarEvent> find_calendar_event(const std::string& event_id);
+    std::vector<CalendarEvent> list_calendar_events(const std::string& space_id,
+                                                      const std::string& range_start,
+                                                      const std::string& range_end);
+
+    // Calendar event exceptions
+    CalendarEventException create_event_exception(const std::string& event_id,
+                                                    const std::string& original_date,
+                                                    bool is_deleted,
+                                                    const std::string& title,
+                                                    const std::string& description,
+                                                    const std::string& location,
+                                                    const std::string& color,
+                                                    const std::string& start_time,
+                                                    const std::string& end_time,
+                                                    bool all_day);
+    void delete_event_exception(const std::string& exception_id);
+    std::vector<CalendarEventException> get_event_exceptions(const std::string& event_id);
+
+    // Calendar RSVP
+    void set_event_rsvp(const std::string& event_id, const std::string& user_id,
+                         const std::string& occurrence_date, const std::string& status);
+    std::vector<CalendarEventRsvp> get_event_rsvps(const std::string& event_id,
+                                                     const std::string& occurrence_date);
+    std::optional<std::string> get_user_rsvp(const std::string& event_id,
+                                               const std::string& user_id,
+                                               const std::string& occurrence_date);
+
+    // Calendar permissions
+    void set_calendar_permission(const std::string& space_id, const std::string& user_id,
+                                  const std::string& permission, const std::string& granted_by);
+    void remove_calendar_permission(const std::string& space_id, const std::string& user_id);
+    std::vector<CalendarPermission> get_calendar_permissions(const std::string& space_id);
+    std::string get_calendar_permission(const std::string& space_id, const std::string& user_id);
 
 private:
     pqxx::connection& get_conn();

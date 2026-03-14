@@ -18,6 +18,7 @@ json build_settings_response(const Snapshot& snapshot) {
                                                        snapshot.config_session_expiry_hours)},
         {"setup_completed", parse_bool_setting_or(snapshot.setup_completed, false)},
         {"server_archived", snapshot.server_archived},
+        {"server_locked_down", snapshot.server_locked_down},
         {"password_min_length", parse_int_setting_or(snapshot.password_min_length, 8)},
         {"password_require_uppercase",
          parse_bool_setting_or(snapshot.password_require_uppercase, true)},

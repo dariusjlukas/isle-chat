@@ -7,6 +7,8 @@ import {
   faKey,
   faUserPlus,
   faHardDrive,
+  faGauge,
+  faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from './hooks/useAuth';
 import { useChatStore } from './stores/chatStore';
@@ -18,6 +20,7 @@ import { NewSidebar } from './components/sidebar/NewSidebar';
 import { Header } from './components/layout/Header';
 import { ChatArea } from './components/layout/ChatArea';
 import { FileBrowser } from './components/files/FileBrowser';
+import { CalendarView } from './components/calendar/CalendarView';
 import { CreateChannel } from './components/channels/CreateChannel';
 import { ChannelBrowser } from './components/channels/ChannelBrowser';
 import { ChannelSettings } from './components/channels/ChannelSettings';
@@ -37,6 +40,8 @@ import { RecoveryTokenManager } from './components/admin/RecoveryTokenManager';
 import { SetupWizard } from './components/admin/SetupWizard';
 import { UserManager } from './components/admin/UserManager';
 import { StorageManager } from './components/admin/StorageManager';
+import { DangerZone } from './components/admin/DangerZone';
+import { SystemMonitor } from './components/admin/SystemMonitor';
 import { UserSettings } from './components/settings/UserSettings';
 import { ConnectionLostModal } from './components/common/ConnectionLostModal';
 import { useConnectionState } from './hooks/useConnectionState';
@@ -127,12 +132,28 @@ function App() {
       content: <StorageManager />,
     },
     {
+      key: 'system',
+      label: 'System',
+      icon: faGauge,
+      content: <SystemMonitor />,
+    },
+    {
       key: 'join-requests',
       label: 'Join Requests',
       icon: faUserPlus,
       badge: pendingRequestCount,
       content: <JoinRequests />,
     },
+    ...(isOwner
+      ? [
+          {
+            key: 'danger-zone',
+            label: 'Danger Zone',
+            icon: faTriangleExclamation,
+            content: <DangerZone />,
+          },
+        ]
+      : []),
   ];
 
   const activeChannel = channels.find((c) => c.id === activeChannelId);
@@ -168,6 +189,7 @@ function App() {
     api.getPublicConfig().then((config) => {
       const store = useChatStore.getState();
       store.setServerArchived(config.server_archived);
+      store.setServerLockedDown(config.server_locked_down);
       store.setServerName(config.server_name);
       store.setServerIconFileId(config.server_icon_file_id || null);
       store.setServerIconDarkFileId(config.server_icon_dark_file_id || null);
@@ -310,6 +332,8 @@ function App() {
         />
         {activeToolView?.type === 'files' ? (
           <FileBrowser spaceId={activeToolView.spaceId} />
+        ) : activeToolView?.type === 'calendar' ? (
+          <CalendarView spaceId={activeToolView.spaceId} />
         ) : (
           <ChatArea />
         )}

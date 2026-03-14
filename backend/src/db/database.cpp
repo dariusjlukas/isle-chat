@@ -545,6 +545,71 @@ void Database::run_migrations() {
         ALTER TABLE spaces ADD COLUMN IF NOT EXISTS auto_delete_old_versions BOOLEAN DEFAULT FALSE;
     )SQL");
 
+    // Calendar events
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS calendar_events (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+            title VARCHAR(255) NOT NULL,
+            description TEXT DEFAULT '',
+            location TEXT DEFAULT '',
+            color VARCHAR(20) DEFAULT 'blue',
+            start_time TIMESTAMPTZ NOT NULL,
+            end_time TIMESTAMPTZ NOT NULL,
+            all_day BOOLEAN DEFAULT FALSE,
+            rrule TEXT DEFAULT '',
+            created_by UUID NOT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_space ON calendar_events(space_id);
+        CREATE INDEX IF NOT EXISTS idx_calendar_events_time ON calendar_events(space_id, start_time, end_time);
+    )SQL");
+
+    // Calendar event exceptions (modified/deleted occurrences of recurring events)
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS calendar_event_exceptions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+            original_date TIMESTAMPTZ NOT NULL,
+            is_deleted BOOLEAN DEFAULT FALSE,
+            title VARCHAR(255),
+            description TEXT,
+            location TEXT,
+            color VARCHAR(20),
+            start_time TIMESTAMPTZ,
+            end_time TIMESTAMPTZ,
+            all_day BOOLEAN,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(event_id, original_date)
+        );
+    )SQL");
+
+    // Calendar RSVP responses
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS calendar_event_rsvps (
+            event_id UUID NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            occurrence_date TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01',
+            status VARCHAR(10) NOT NULL,
+            responded_at TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (event_id, user_id, occurrence_date)
+        );
+    )SQL");
+
+    // Calendar per-space permission overrides
+    txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS calendar_permissions (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            space_id UUID NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            permission VARCHAR(20) NOT NULL,
+            granted_by UUID NOT NULL REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE(space_id, user_id)
+        );
+    )SQL");
+
     txn.commit();
     std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -3325,10 +3390,22 @@ std::vector<SpaceFile> Database::list_space_files(const std::string& space_id, c
     std::string parent_val = parent_id.empty() ? "" : parent_id;
     auto r = txn.exec_params(
         "SELECT sf.id::text, sf.space_id::text, sf.parent_id::text, sf.name, sf.is_folder, "
-        "sf.disk_file_id, sf.file_size, sf.mime_type, sf.created_by::text, "
+        "sf.disk_file_id, "
+        "CASE WHEN sf.is_folder THEN COALESCE(fs.total_size, 0) ELSE sf.file_size END AS file_size, "
+        "sf.mime_type, sf.created_by::text, "
         "u.username, sf.created_at::text, sf.updated_at::text "
         "FROM space_files sf "
         "LEFT JOIN users u ON u.id = sf.created_by "
+        "LEFT JOIN LATERAL ("
+        "  WITH RECURSIVE descendants AS ("
+        "    SELECT id, is_folder, file_size FROM space_files "
+        "    WHERE parent_id = sf.id AND is_deleted = FALSE "
+        "    UNION ALL "
+        "    SELECT c.id, c.is_folder, c.file_size FROM space_files c "
+        "    INNER JOIN descendants d ON c.parent_id = d.id "
+        "    WHERE c.is_deleted = FALSE"
+        "  ) SELECT SUM(file_size) AS total_size FROM descendants WHERE NOT is_folder"
+        ") fs ON sf.is_folder "
         "WHERE sf.space_id = $1 AND sf.is_deleted = FALSE "
         "AND (($2 = '' AND sf.parent_id IS NULL) OR sf.parent_id::text = $2) "
         "ORDER BY sf.is_folder DESC, sf.name ASC",
@@ -3714,6 +3791,15 @@ void Database::set_server_archived(bool archived) {
     set_setting("server_archived", archived ? "true" : "false");
 }
 
+bool Database::is_server_locked_down() {
+    auto val = get_setting("server_locked_down");
+    return val && *val == "true";
+}
+
+void Database::set_server_locked_down(bool locked_down) {
+    set_setting("server_locked_down", locked_down ? "true" : "false");
+}
+
 int Database::count_channel_members_with_role(const std::string& channel_id, const std::string& role) {
     std::lock_guard<std::mutex> lock(mutex_);
     pqxx::work txn(get_conn());
@@ -3955,4 +4041,352 @@ void Database::cleanup_expired_mfa_tokens() {
     pqxx::work txn(get_conn());
     txn.exec("DELETE FROM mfa_pending_tokens WHERE expires_at < NOW()");
     txn.commit();
+}
+
+// --- Calendar Events ---
+
+CalendarEvent Database::create_calendar_event(const std::string& space_id, const std::string& title,
+                                                const std::string& description, const std::string& location,
+                                                const std::string& color, const std::string& start_time,
+                                                const std::string& end_time, bool all_day,
+                                                const std::string& rrule, const std::string& created_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "INSERT INTO calendar_events (space_id, title, description, location, color, "
+        "start_time, end_time, all_day, rrule, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+        "RETURNING id::text, created_at::text, updated_at::text",
+        space_id, title, description, location, color,
+        start_time, end_time, all_day, rrule, created_by);
+    txn.commit();
+    CalendarEvent e;
+    e.id = r[0][0].as<std::string>();
+    e.space_id = space_id;
+    e.title = title;
+    e.description = description;
+    e.location = location;
+    e.color = color;
+    e.start_time = start_time;
+    e.end_time = end_time;
+    e.all_day = all_day;
+    e.rrule = rrule;
+    e.created_by = created_by;
+    e.created_at = r[0][1].as<std::string>();
+    e.updated_at = r[0][2].as<std::string>();
+    return e;
+}
+
+CalendarEvent Database::update_calendar_event(const std::string& event_id, const std::string& title,
+                                                const std::string& description, const std::string& location,
+                                                const std::string& color, const std::string& start_time,
+                                                const std::string& end_time, bool all_day,
+                                                const std::string& rrule) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "UPDATE calendar_events SET title = $2, description = $3, location = $4, color = $5, "
+        "start_time = $6, end_time = $7, all_day = $8, rrule = $9, updated_at = NOW() "
+        "WHERE id = $1 "
+        "RETURNING space_id::text, created_by::text, created_at::text, updated_at::text",
+        event_id, title, description, location, color, start_time, end_time, all_day, rrule);
+    txn.commit();
+    CalendarEvent e;
+    e.id = event_id;
+    e.space_id = r[0][0].as<std::string>();
+    e.title = title;
+    e.description = description;
+    e.location = location;
+    e.color = color;
+    e.start_time = start_time;
+    e.end_time = end_time;
+    e.all_day = all_day;
+    e.rrule = rrule;
+    e.created_by = r[0][1].as<std::string>();
+    e.created_at = r[0][2].as<std::string>();
+    e.updated_at = r[0][3].as<std::string>();
+    return e;
+}
+
+void Database::delete_calendar_event(const std::string& event_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("DELETE FROM calendar_events WHERE id = $1", event_id);
+    txn.commit();
+}
+
+std::optional<CalendarEvent> Database::find_calendar_event(const std::string& event_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT e.id::text, e.space_id::text, e.title, e.description, e.location, e.color, "
+        "e.start_time::text, e.end_time::text, e.all_day, e.rrule, "
+        "e.created_by::text, u.username, e.created_at::text, e.updated_at::text "
+        "FROM calendar_events e "
+        "LEFT JOIN users u ON u.id = e.created_by "
+        "WHERE e.id = $1",
+        event_id);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    CalendarEvent e;
+    e.id = r[0][0].as<std::string>();
+    e.space_id = r[0][1].as<std::string>();
+    e.title = r[0][2].as<std::string>();
+    e.description = r[0][3].is_null() ? "" : r[0][3].as<std::string>();
+    e.location = r[0][4].is_null() ? "" : r[0][4].as<std::string>();
+    e.color = r[0][5].is_null() ? "blue" : r[0][5].as<std::string>();
+    e.start_time = r[0][6].as<std::string>();
+    e.end_time = r[0][7].as<std::string>();
+    e.all_day = r[0][8].as<bool>();
+    e.rrule = r[0][9].is_null() ? "" : r[0][9].as<std::string>();
+    e.created_by = r[0][10].as<std::string>();
+    e.created_by_username = r[0][11].is_null() ? "" : r[0][11].as<std::string>();
+    e.created_at = r[0][12].as<std::string>();
+    e.updated_at = r[0][13].as<std::string>();
+    return e;
+}
+
+std::vector<CalendarEvent> Database::list_calendar_events(const std::string& space_id,
+                                                            const std::string& range_start,
+                                                            const std::string& range_end) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    // Return events that either:
+    // 1. Non-recurring and overlap the range, OR
+    // 2. Recurring (rrule != '') and started before range_end (expansion happens in handler)
+    auto r = txn.exec_params(
+        "SELECT e.id::text, e.space_id::text, e.title, e.description, e.location, e.color, "
+        "e.start_time::text, e.end_time::text, e.all_day, e.rrule, "
+        "e.created_by::text, u.username, e.created_at::text, e.updated_at::text "
+        "FROM calendar_events e "
+        "LEFT JOIN users u ON u.id = e.created_by "
+        "WHERE e.space_id = $1 "
+        "AND ((e.rrule = '' AND e.end_time >= $2 AND e.start_time < $3) "
+        "  OR (e.rrule != '' AND e.start_time < $3)) "
+        "ORDER BY e.start_time ASC",
+        space_id, range_start, range_end);
+    txn.commit();
+    std::vector<CalendarEvent> events;
+    for (const auto& row : r) {
+        CalendarEvent e;
+        e.id = row[0].as<std::string>();
+        e.space_id = row[1].as<std::string>();
+        e.title = row[2].as<std::string>();
+        e.description = row[3].is_null() ? "" : row[3].as<std::string>();
+        e.location = row[4].is_null() ? "" : row[4].as<std::string>();
+        e.color = row[5].is_null() ? "blue" : row[5].as<std::string>();
+        e.start_time = row[6].as<std::string>();
+        e.end_time = row[7].as<std::string>();
+        e.all_day = row[8].as<bool>();
+        e.rrule = row[9].is_null() ? "" : row[9].as<std::string>();
+        e.created_by = row[10].as<std::string>();
+        e.created_by_username = row[11].is_null() ? "" : row[11].as<std::string>();
+        e.created_at = row[12].as<std::string>();
+        e.updated_at = row[13].as<std::string>();
+        events.push_back(e);
+    }
+    return events;
+}
+
+// --- Calendar Event Exceptions ---
+
+CalendarEventException Database::create_event_exception(const std::string& event_id,
+                                                          const std::string& original_date,
+                                                          bool is_deleted,
+                                                          const std::string& title,
+                                                          const std::string& description,
+                                                          const std::string& location,
+                                                          const std::string& color,
+                                                          const std::string& start_time,
+                                                          const std::string& end_time,
+                                                          bool all_day) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "INSERT INTO calendar_event_exceptions "
+        "(event_id, original_date, is_deleted, title, description, location, color, "
+        "start_time, end_time, all_day) "
+        "VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), "
+        "NULLIF($8, '')::timestamptz, NULLIF($9, '')::timestamptz, $10) "
+        "ON CONFLICT (event_id, original_date) DO UPDATE SET "
+        "is_deleted = $3, title = NULLIF($4, ''), description = NULLIF($5, ''), "
+        "location = NULLIF($6, ''), color = NULLIF($7, ''), "
+        "start_time = NULLIF($8, '')::timestamptz, end_time = NULLIF($9, '')::timestamptz, all_day = $10 "
+        "RETURNING id::text, created_at::text",
+        event_id, original_date, is_deleted, title, description, location, color,
+        start_time, end_time, all_day);
+    txn.commit();
+    CalendarEventException ex;
+    ex.id = r[0][0].as<std::string>();
+    ex.event_id = event_id;
+    ex.original_date = original_date;
+    ex.is_deleted = is_deleted;
+    ex.title = title;
+    ex.description = description;
+    ex.location = location;
+    ex.color = color;
+    ex.start_time = start_time;
+    ex.end_time = end_time;
+    ex.all_day = all_day;
+    ex.created_at = r[0][1].as<std::string>();
+    return ex;
+}
+
+void Database::delete_event_exception(const std::string& exception_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params("DELETE FROM calendar_event_exceptions WHERE id = $1", exception_id);
+    txn.commit();
+}
+
+std::vector<CalendarEventException> Database::get_event_exceptions(const std::string& event_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT id::text, event_id::text, original_date::text, is_deleted, "
+        "title, description, location, color, start_time::text, end_time::text, all_day, "
+        "created_at::text "
+        "FROM calendar_event_exceptions WHERE event_id = $1 "
+        "ORDER BY original_date",
+        event_id);
+    txn.commit();
+    std::vector<CalendarEventException> exceptions;
+    for (const auto& row : r) {
+        CalendarEventException ex;
+        ex.id = row[0].as<std::string>();
+        ex.event_id = row[1].as<std::string>();
+        ex.original_date = row[2].as<std::string>();
+        ex.is_deleted = row[3].as<bool>();
+        ex.title = row[4].is_null() ? "" : row[4].as<std::string>();
+        ex.description = row[5].is_null() ? "" : row[5].as<std::string>();
+        ex.location = row[6].is_null() ? "" : row[6].as<std::string>();
+        ex.color = row[7].is_null() ? "" : row[7].as<std::string>();
+        ex.start_time = row[8].is_null() ? "" : row[8].as<std::string>();
+        ex.end_time = row[9].is_null() ? "" : row[9].as<std::string>();
+        ex.all_day = row[10].is_null() ? false : row[10].as<bool>();
+        ex.created_at = row[11].as<std::string>();
+        exceptions.push_back(ex);
+    }
+    return exceptions;
+}
+
+// --- Calendar RSVP ---
+
+void Database::set_event_rsvp(const std::string& event_id, const std::string& user_id,
+                                const std::string& occurrence_date, const std::string& status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO calendar_event_rsvps (event_id, user_id, occurrence_date, status) "
+        "VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (event_id, user_id, occurrence_date) DO UPDATE SET status = $4, responded_at = NOW()",
+        event_id, user_id, occurrence_date, status);
+    txn.commit();
+}
+
+std::vector<CalendarEventRsvp> Database::get_event_rsvps(const std::string& event_id,
+                                                           const std::string& occurrence_date) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT r.event_id::text, r.user_id::text, u.username, u.display_name, "
+        "r.occurrence_date::text, r.status, r.responded_at::text "
+        "FROM calendar_event_rsvps r "
+        "JOIN users u ON u.id = r.user_id "
+        "WHERE r.event_id = $1 AND r.occurrence_date = $2 "
+        "ORDER BY r.responded_at",
+        event_id, occurrence_date);
+    txn.commit();
+    std::vector<CalendarEventRsvp> rsvps;
+    for (const auto& row : r) {
+        CalendarEventRsvp rv;
+        rv.event_id = row[0].as<std::string>();
+        rv.user_id = row[1].as<std::string>();
+        rv.username = row[2].as<std::string>();
+        rv.display_name = row[3].as<std::string>();
+        rv.occurrence_date = row[4].as<std::string>();
+        rv.status = row[5].as<std::string>();
+        rv.responded_at = row[6].as<std::string>();
+        rsvps.push_back(rv);
+    }
+    return rsvps;
+}
+
+std::optional<std::string> Database::get_user_rsvp(const std::string& event_id,
+                                                     const std::string& user_id,
+                                                     const std::string& occurrence_date) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT status FROM calendar_event_rsvps "
+        "WHERE event_id = $1 AND user_id = $2 AND occurrence_date = $3",
+        event_id, user_id, occurrence_date);
+    txn.commit();
+    if (r.empty()) return std::nullopt;
+    return r[0][0].as<std::string>();
+}
+
+// --- Calendar Permissions ---
+
+void Database::set_calendar_permission(const std::string& space_id, const std::string& user_id,
+                                         const std::string& permission, const std::string& granted_by) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "INSERT INTO calendar_permissions (space_id, user_id, permission, granted_by) "
+        "VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (space_id, user_id) DO UPDATE SET permission = $3, granted_by = $4",
+        space_id, user_id, permission, granted_by);
+    txn.commit();
+}
+
+void Database::remove_calendar_permission(const std::string& space_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    txn.exec_params(
+        "DELETE FROM calendar_permissions WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id);
+    txn.commit();
+}
+
+std::vector<CalendarPermission> Database::get_calendar_permissions(const std::string& space_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT p.id::text, p.space_id::text, p.user_id::text, u.username, u.display_name, "
+        "p.permission, p.granted_by::text, g.username, p.created_at::text "
+        "FROM calendar_permissions p "
+        "JOIN users u ON u.id = p.user_id "
+        "LEFT JOIN users g ON g.id = p.granted_by "
+        "WHERE p.space_id = $1 "
+        "ORDER BY CASE p.permission WHEN 'owner' THEN 0 WHEN 'edit' THEN 1 ELSE 2 END, u.username",
+        space_id);
+    txn.commit();
+    std::vector<CalendarPermission> perms;
+    for (const auto& row : r) {
+        CalendarPermission p;
+        p.id = row[0].as<std::string>();
+        p.space_id = row[1].as<std::string>();
+        p.user_id = row[2].as<std::string>();
+        p.username = row[3].as<std::string>();
+        p.display_name = row[4].as<std::string>();
+        p.permission = row[5].as<std::string>();
+        p.granted_by = row[6].as<std::string>();
+        p.granted_by_username = row[7].is_null() ? "" : row[7].as<std::string>();
+        p.created_at = row[8].as<std::string>();
+        perms.push_back(p);
+    }
+    return perms;
+}
+
+std::string Database::get_calendar_permission(const std::string& space_id, const std::string& user_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pqxx::work txn(get_conn());
+    auto r = txn.exec_params(
+        "SELECT permission FROM calendar_permissions "
+        "WHERE space_id = $1 AND user_id = $2",
+        space_id, user_id);
+    txn.commit();
+    if (r.empty()) return "";
+    return r[0][0].as<std::string>();
 }

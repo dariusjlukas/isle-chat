@@ -224,6 +224,19 @@ export function useWebSocket() {
         useChatStore.getState().setServerArchived(archived);
       }),
 
+      wsService.on('server_lockdown_changed', (data: unknown) => {
+        const { locked_down } = data as { locked_down: boolean };
+        useChatStore.getState().setServerLockedDown(locked_down);
+      }),
+
+      wsService.on('server_locked_down', () => {
+        useChatStore
+          .getState()
+          .clearAuth(
+            'Server is in lockdown mode. Only administrators may log in.',
+          );
+      }),
+
       wsService.on('space_removed', (data: unknown) => {
         const { space_id } = data as { space_id: string };
         useChatStore.getState().removeSpace(space_id);

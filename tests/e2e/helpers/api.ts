@@ -654,3 +654,56 @@ export async function apiUpdateChannel(
   }
   return (await res.json()) as { id: string; name: string; default_join: boolean };
 }
+
+/**
+ * Enable the "calendar" tool on a space.
+ */
+export async function apiEnableCalendarTool(
+  spaceId: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const res = await apiPut(
+    `/api/spaces/${spaceId}/tools`,
+    { tool: "calendar", enabled: true },
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiEnableCalendarTool failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * Create a calendar event in a space via the API.
+ */
+export async function apiCreateCalendarEvent(
+  spaceId: string,
+  event: {
+    title: string;
+    start_time: string;
+    end_time: string;
+    description?: string;
+    location?: string;
+    color?: string;
+    all_day?: boolean;
+    rrule?: string;
+  },
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ id: string; title: string }> {
+  const res = await apiPost(
+    `/api/spaces/${spaceId}/calendar/events`,
+    event,
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `apiCreateCalendarEvent failed (${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+  return (await res.json()) as { id: string; title: string };
+}

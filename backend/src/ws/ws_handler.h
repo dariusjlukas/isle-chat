@@ -38,6 +38,7 @@ public:
     void broadcast_to_presence(const std::string& message);
     void broadcast_to_space(const std::string& space_id, const std::string& message);
     void subscribe_admins_to_space(Database& database, const std::string& space_id);
+    void disconnect_non_admins(const std::string& notify_message);
 
 private:
     std::mutex mutex_;

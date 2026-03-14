@@ -13,6 +13,7 @@ struct Snapshot {
     int config_session_expiry_hours = 0;
     int64_t storage_used = 0;
     bool server_archived = false;
+    bool server_locked_down = false;
 
     std::optional<std::string> max_file_size;
     std::optional<std::string> max_storage_size;

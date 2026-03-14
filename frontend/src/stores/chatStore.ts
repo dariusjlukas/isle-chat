@@ -29,10 +29,14 @@ interface ChatState {
   // Spaces
   spaces: Space[];
   activeView: SidebarView | null;
-  activeToolView: { type: 'files'; spaceId: string } | null;
+  activeToolView:
+    | { type: 'files'; spaceId: string }
+    | { type: 'calendar'; spaceId: string }
+    | null;
 
   // Server state
   serverArchived: boolean;
+  serverLockedDown: boolean;
   serverName: string;
   serverIconFileId: string | null;
   serverIconDarkFileId: string | null;
@@ -75,7 +79,12 @@ interface ChatState {
   updateSpace: (updates: Partial<Space> & { id: string }) => void;
   removeSpace: (spaceId: string) => void;
   setActiveView: (view: SidebarView | null) => void;
-  setActiveToolView: (view: { type: 'files'; spaceId: string } | null) => void;
+  setActiveToolView: (
+    view:
+      | { type: 'files'; spaceId: string }
+      | { type: 'calendar'; spaceId: string }
+      | null,
+  ) => void;
   setUnreadCounts: (counts: Record<string, number>) => void;
   setMentionCounts: (counts: Record<string, number>) => void;
   incrementUnread: (channelId: string) => void;
@@ -91,6 +100,7 @@ interface ChatState {
     receipts: Record<string, ReadReceiptInfo>,
   ) => void;
   setServerArchived: (archived: boolean) => void;
+  setServerLockedDown: (lockedDown: boolean) => void;
   setServerName: (name: string) => void;
   setServerIconFileId: (fileId: string | null) => void;
   setServerIconDarkFileId: (fileId: string | null) => void;
@@ -133,6 +143,7 @@ export const useChatStore = create<ChatState>((set) => ({
   activeView: null,
   activeToolView: null,
   serverArchived: false,
+  serverLockedDown: false,
   serverName: 'EnclaveStation',
   serverIconFileId: null,
   serverIconDarkFileId: null,
@@ -391,6 +402,7 @@ export const useChatStore = create<ChatState>((set) => ({
     })),
 
   setServerArchived: (archived) => set({ serverArchived: archived }),
+  setServerLockedDown: (lockedDown) => set({ serverLockedDown: lockedDown }),
   setServerName: (name) => set({ serverName: name }),
   setServerIconFileId: (fileId) => set({ serverIconFileId: fileId }),
   setServerIconDarkFileId: (fileId) => set({ serverIconDarkFileId: fileId }),

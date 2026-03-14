@@ -152,7 +152,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                      filename, content_type](std::string_view data, bool last) mutable {
             body->append(data);
 
-            if (static_cast<int64_t>(body->size()) > max_size) {
+            if (file_access_utils::exceeds_file_size_limit(max_size, static_cast<int64_t>(body->size()))) {
                     std::string msg = file_access_utils::file_too_large_message(max_size);
                 res->writeStatus("413")->writeHeader("Content-Type", "application/json")
                     ->writeHeader("Access-Control-Allow-Origin", "*")
@@ -242,6 +242,454 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         res->onAborted([]() {});
     });
 
+    // --- Chunked upload: init ---
+    app.post("/api/spaces/:id/files/upload/init", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string space_id(req->getParameter("id"));
+
+        auto body = std::make_shared<std::string>();
+        res->onData([this, res, body, space_id, user_id](std::string_view data, bool last) {
+            body->append(data);
+            if (!last) return;
+
+            try {
+                auto j = json::parse(*body);
+                std::string filename = j.value("filename", "upload");
+                std::string content_type = j.value("content_type", "application/octet-stream");
+                int64_t total_size = j.value("total_size", int64_t(0));
+                int chunk_count = j.value("chunk_count", 0);
+                int64_t chunk_size = j.value("chunk_size", int64_t(0));
+                std::string parent_id = j.value("parent_id", "");
+
+                if (chunk_count <= 0 || chunk_size <= 0) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Invalid chunk count or size"})");
+                    return;
+                }
+
+                if (!check_space_access(res, space_id, user_id)) return;
+                if (!require_permission(res, space_id, parent_id, user_id, "edit")) return;
+
+                if (!parent_id.empty()) {
+                    auto parent = db.find_space_file(parent_id);
+                    if (!parent || parent->space_id != space_id || !parent->is_folder || parent->is_deleted) {
+                        res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                            ->writeHeader("Access-Control-Allow-Origin", "*")
+                            ->end(R"({"error":"Invalid parent folder"})");
+                        return;
+                    }
+                }
+
+                if (db.space_file_name_exists(space_id, parent_id, filename)) {
+                    res->writeStatus("409")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"A file or folder with this name already exists"})");
+                    return;
+                }
+
+                int64_t max_size = file_access_utils::parse_max_file_size(
+                    db.get_setting("max_file_size"), config.max_file_size);
+                if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
+                    std::string msg = file_access_utils::file_too_large_message(max_size);
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(json{{"error", msg}}.dump());
+                    return;
+                }
+
+                int64_t max_storage = file_access_utils::parse_max_storage_size(
+                    db.get_setting("max_storage_size"));
+                if (max_storage > 0 && file_access_utils::exceeds_storage_limit(
+                        max_storage, db.get_total_file_size(), total_size)) {
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Server storage limit reached"})");
+                    return;
+                }
+
+                int64_t space_limit = file_access_utils::parse_space_storage_limit(
+                    db.get_setting("space_storage_limit_" + space_id));
+                if (space_limit > 0 && file_access_utils::exceeds_storage_limit(
+                        space_limit, db.get_space_storage_used(space_id), total_size)) {
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Space storage limit reached"})");
+                    return;
+                }
+
+                json metadata = {
+                    {"filename", filename}, {"content_type", content_type},
+                    {"space_id", space_id}, {"parent_id", parent_id}
+                };
+                std::string upload_id = uploads.create_session(
+                    user_id, total_size, chunk_count, chunk_size, metadata);
+
+                res->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(json{{"upload_id", upload_id}}.dump());
+            } catch (...) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Invalid request body"})");
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // --- Chunked upload: receive chunk ---
+    app.post("/api/spaces/:id/files/upload/:uploadId/chunk", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string upload_id(req->getParameter(1));
+        std::string index_str(req->getQuery("index"));
+        std::string expected_hash(req->getQuery("hash"));
+
+        int index = -1;
+        try { index = std::stoi(index_str); } catch (...) {}
+
+        auto body = std::make_shared<std::string>();
+        res->onData([this, res, body, upload_id, user_id, index, expected_hash](std::string_view data, bool last) {
+            body->append(data);
+            if (!last) return;
+
+            auto* session = uploads.get_session(upload_id);
+            if (!session || session->user_id != user_id) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Upload session not found"})");
+                return;
+            }
+
+            auto err = uploads.store_chunk_err(upload_id, index, *body, expected_hash);
+            if (!err.empty()) {
+                if (err == "hash_mismatch") {
+                    res->writeStatus("409")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Chunk integrity check failed"})");
+                } else if (err == "invalid_index") {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Invalid chunk index"})");
+                } else {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Failed to store chunk"})");
+                }
+                return;
+            }
+
+            res->writeHeader("Content-Type", "application/json")
+                ->writeHeader("Access-Control-Allow-Origin", "*")
+                ->end(R"({"ok":true})");
+        });
+        res->onAborted([]() {});
+    });
+
+    // --- Chunked upload: complete ---
+    app.post("/api/spaces/:id/files/upload/:uploadId/complete", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string space_id(req->getParameter(0));
+        std::string upload_id(req->getParameter(1));
+
+        res->onData([this, res, space_id, upload_id, user_id](std::string_view, bool last) {
+            if (!last) return;
+
+            auto* session = uploads.get_session(upload_id);
+            if (!session || session->user_id != user_id) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Upload session not found"})");
+                return;
+            }
+
+            if (!uploads.is_complete(upload_id)) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Not all chunks have been uploaded"})");
+                return;
+            }
+
+            if (!check_space_access(res, space_id, user_id)) {
+                uploads.remove_session(upload_id);
+                return;
+            }
+
+            std::string parent_id = session->metadata.value("parent_id", "");
+            if (!require_permission(res, space_id, parent_id, user_id, "edit")) {
+                uploads.remove_session(upload_id);
+                return;
+            }
+
+            try {
+                std::string filename = session->metadata.value("filename", "upload");
+                std::string content_type = session->metadata.value("content_type", "application/octet-stream");
+
+                std::string disk_file_id = format_utils::random_hex(32);
+                std::string dest_path = config.upload_dir + "/" + disk_file_id;
+
+                int64_t assembled_size = uploads.assemble(upload_id, dest_path);
+                if (assembled_size < 0) {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Failed to assemble file"})");
+                    uploads.remove_session(upload_id);
+                    return;
+                }
+
+                if (assembled_size != session->total_size) {
+                    std::filesystem::remove(dest_path);
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Assembled file size does not match expected size"})");
+                    uploads.remove_session(upload_id);
+                    return;
+                }
+
+                auto file = db.create_space_file(space_id, parent_id, filename,
+                                                  disk_file_id, assembled_size, content_type, user_id);
+                auto creator = db.find_user_by_id(user_id);
+                json resp = space_file_to_json(file, creator ? creator->username : "");
+                uploads.remove_session(upload_id);
+
+                res->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(resp.dump());
+            } catch (const pqxx::unique_violation&) {
+                uploads.remove_session(upload_id);
+                res->writeStatus("409")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"A file or folder with this name already exists"})");
+            } catch (const std::exception& e) {
+                uploads.remove_session(upload_id);
+                res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(json({{"error", e.what()}}).dump());
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // --- Chunked version upload: init ---
+    app.post("/api/spaces/:spaceId/files/:fileId/versions/init", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string space_id(req->getParameter(0));
+        std::string file_id(req->getParameter(1));
+
+        auto body = std::make_shared<std::string>();
+        res->onData([this, res, body, space_id, file_id, user_id](std::string_view data, bool last) {
+            body->append(data);
+            if (!last) return;
+
+            try {
+                auto j = json::parse(*body);
+                int64_t total_size = j.value("total_size", int64_t(0));
+                int chunk_count = j.value("chunk_count", 0);
+                int64_t chunk_size = j.value("chunk_size", int64_t(0));
+
+                if (chunk_count <= 0 || chunk_size <= 0) {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Invalid chunk count or size"})");
+                    return;
+                }
+
+                if (!check_space_access(res, space_id, user_id)) return;
+                if (!require_permission(res, space_id, file_id, user_id, "edit")) return;
+
+                auto file = db.find_space_file(file_id);
+                if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
+                    res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"File not found"})");
+                    return;
+                }
+
+                int64_t max_size = file_access_utils::parse_max_file_size(
+                    db.get_setting("max_file_size"), config.max_file_size);
+                if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
+                    std::string msg = file_access_utils::file_too_large_message(max_size);
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(json{{"error", msg}}.dump());
+                    return;
+                }
+
+                int64_t max_storage = file_access_utils::parse_max_storage_size(
+                    db.get_setting("max_storage_size"));
+                if (max_storage > 0 && file_access_utils::exceeds_storage_limit(
+                        max_storage, db.get_total_file_size(), total_size)) {
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Server storage limit reached"})");
+                    return;
+                }
+
+                int64_t space_limit = file_access_utils::parse_space_storage_limit(
+                    db.get_setting("space_storage_limit_" + space_id));
+                if (space_limit > 0 && file_access_utils::exceeds_storage_limit(
+                        space_limit, db.get_space_storage_used(space_id), total_size)) {
+                    res->writeStatus("413")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Space storage limit reached"})");
+                    return;
+                }
+
+                json metadata = {
+                    {"space_id", space_id}, {"file_id", file_id},
+                    {"mime_type", file->mime_type}
+                };
+                std::string upload_id = uploads.create_session(
+                    user_id, total_size, chunk_count, chunk_size, metadata);
+
+                res->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(json{{"upload_id", upload_id}}.dump());
+            } catch (...) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Invalid request body"})");
+            }
+        });
+        res->onAborted([]() {});
+    });
+
+    // --- Chunked version upload: receive chunk ---
+    app.post("/api/spaces/:spaceId/files/:fileId/versions/:uploadId/chunk", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string upload_id(req->getParameter(2));
+        std::string index_str(req->getQuery("index"));
+        std::string expected_hash(req->getQuery("hash"));
+
+        int index = -1;
+        try { index = std::stoi(index_str); } catch (...) {}
+
+        auto body = std::make_shared<std::string>();
+        res->onData([this, res, body, upload_id, user_id, index, expected_hash](std::string_view data, bool last) {
+            body->append(data);
+            if (!last) return;
+
+            auto* session = uploads.get_session(upload_id);
+            if (!session || session->user_id != user_id) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Upload session not found"})");
+                return;
+            }
+
+            auto err = uploads.store_chunk_err(upload_id, index, *body, expected_hash);
+            if (!err.empty()) {
+                if (err == "hash_mismatch") {
+                    res->writeStatus("409")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Chunk integrity check failed"})");
+                } else if (err == "invalid_index") {
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Invalid chunk index"})");
+                } else {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Failed to store chunk"})");
+                }
+                return;
+            }
+
+            res->writeHeader("Content-Type", "application/json")
+                ->writeHeader("Access-Control-Allow-Origin", "*")
+                ->end(R"({"ok":true})");
+        });
+        res->onAborted([]() {});
+    });
+
+    // --- Chunked version upload: complete ---
+    app.post("/api/spaces/:spaceId/files/:fileId/versions/:uploadId/complete", [this](auto* res, auto* req) {
+        std::string user_id = get_user_id(res, req);
+        if (user_id.empty()) return;
+        std::string space_id(req->getParameter(0));
+        std::string file_id(req->getParameter(1));
+        std::string upload_id(req->getParameter(2));
+
+        res->onData([this, res, space_id, file_id, upload_id, user_id](std::string_view, bool last) {
+            if (!last) return;
+
+            auto* session = uploads.get_session(upload_id);
+            if (!session || session->user_id != user_id) {
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Upload session not found"})");
+                return;
+            }
+
+            if (!uploads.is_complete(upload_id)) {
+                res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"Not all chunks have been uploaded"})");
+                return;
+            }
+
+            if (!check_space_access(res, space_id, user_id)) {
+                uploads.remove_session(upload_id);
+                return;
+            }
+            if (!require_permission(res, space_id, file_id, user_id, "edit")) {
+                uploads.remove_session(upload_id);
+                return;
+            }
+
+            auto file = db.find_space_file(file_id);
+            if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
+                uploads.remove_session(upload_id);
+                res->writeStatus("404")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(R"({"error":"File not found"})");
+                return;
+            }
+
+            try {
+                std::string disk_file_id = format_utils::random_hex(32);
+                std::string dest_path = config.upload_dir + "/" + disk_file_id;
+
+                int64_t assembled_size = uploads.assemble(upload_id, dest_path);
+                if (assembled_size < 0) {
+                    res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Failed to assemble file"})");
+                    uploads.remove_session(upload_id);
+                    return;
+                }
+
+                if (assembled_size != session->total_size) {
+                    std::filesystem::remove(dest_path);
+                    res->writeStatus("400")->writeHeader("Content-Type", "application/json")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->end(R"({"error":"Assembled file size does not match expected size"})");
+                    uploads.remove_session(upload_id);
+                    return;
+                }
+
+                std::string mime_type = session->metadata.value("mime_type", "");
+                auto version = db.create_file_version(file_id, disk_file_id, assembled_size, mime_type, user_id);
+                json resp = space_file_version_to_json(version);
+                uploads.remove_session(upload_id);
+
+                res->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(resp.dump());
+            } catch (const std::exception& e) {
+                uploads.remove_session(upload_id);
+                res->writeStatus("500")->writeHeader("Content-Type", "application/json")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")
+                    ->end(json({{"error", e.what()}}).dump());
+            }
+        });
+        res->onAborted([]() {});
+    });
+
     // Get file/folder details
     app.get("/api/spaces/:spaceId/files/:fileId", [this](auto* res, auto* req) {
         std::string user_id = get_user_id(res, req);
@@ -276,9 +724,18 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     });
 
     // Download file
+    // Auth via header or query param (needed for <img>/<iframe> tags)
     app.get("/api/spaces/:spaceId/files/:fileId/download", [this](auto* res, auto* req) {
-        std::string user_id = get_user_id(res, req);
-        if (user_id.empty()) return;
+        std::string token = extract_bearer_token(req);
+        if (token.empty()) token = std::string(req->getQuery("token"));
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+            res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                ->writeHeader("Access-Control-Allow-Origin", "*")
+                ->end(R"({"error":"Unauthorized"})");
+            return;
+        }
+        std::string user_id = *user_id_opt;
         std::string space_id(req->getParameter(0));
         std::string file_id(req->getParameter(1));
 
@@ -305,7 +762,9 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                           std::istreambuf_iterator<char>());
 
         std::string content_type = file->mime_type.empty() ? "application/octet-stream" : file->mime_type;
-        std::string disposition = file_access_utils::attachment_disposition(file->name);
+        std::string disposition = std::string(req->getQuery("inline")).empty()
+            ? file_access_utils::attachment_disposition(file->name)
+            : file_access_utils::inline_disposition(file->name);
 
         res->writeHeader("Content-Type", content_type)
             ->writeHeader("Content-Disposition", disposition)
@@ -626,7 +1085,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             std::string_view data, bool last) mutable {
             body->append(data);
 
-            if (static_cast<int64_t>(body->size()) > max_size) {
+            if (file_access_utils::exceeds_file_size_limit(max_size, static_cast<int64_t>(body->size()))) {
                     std::string msg = file_access_utils::file_too_large_message(max_size);
                 res->writeStatus("413")->writeHeader("Content-Type", "application/json")
                     ->writeHeader("Access-Control-Allow-Origin", "*")
@@ -701,9 +1160,18 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     });
 
     // Download a specific version
+    // Auth via header or query param (needed for <img>/<iframe> tags)
     app.get("/api/spaces/:spaceId/files/:fileId/versions/:versionId/download", [this](auto* res, auto* req) {
-        std::string user_id = get_user_id(res, req);
-        if (user_id.empty()) return;
+        std::string token = extract_bearer_token(req);
+        if (token.empty()) token = std::string(req->getQuery("token"));
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+            res->writeStatus("401")->writeHeader("Content-Type", "application/json")
+                ->writeHeader("Access-Control-Allow-Origin", "*")
+                ->end(R"({"error":"Unauthorized"})");
+            return;
+        }
+        std::string user_id = *user_id_opt;
         std::string space_id(req->getParameter(0));
         std::string file_id(req->getParameter(1));
         std::string version_id(req->getParameter(2));

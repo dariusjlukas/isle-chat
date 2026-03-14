@@ -402,7 +402,7 @@ test.describe("Admin storage panel", () => {
     });
     // Should show the space name in the breakdown (scoped to admin panel)
     await expect(
-      page.getByLabel("Admin Panel").getByText("TestSpace"),
+      page.getByLabel("Admin Panel").getByText("TestSpace").first(),
     ).toBeVisible();
   });
 });

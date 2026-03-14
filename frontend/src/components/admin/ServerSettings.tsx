@@ -24,6 +24,8 @@ import Cropper from 'react-easy-crop';
 import type { Area } from 'react-easy-crop';
 import { useChatStore } from '../../stores/chatStore';
 import * as api from '../../services/api';
+import logoLight from '../../assets/enclavestation-light-mode-icon.png';
+import logoDark from '../../assets/enclavestation-dark-mode-icon.png';
 
 const UNITS = [
   { key: 'MB', label: 'MB', bytes: 1024 * 1024 },
@@ -92,20 +94,13 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [storageUsed, setStorageUsed] = useState(0);
-  const [serverArchived, setServerArchivedLocal] = useState(false);
   const setServerArchivedGlobal = useChatStore((s) => s.setServerArchived);
+  const setServerLockedDownGlobal = useChatStore((s) => s.setServerLockedDown);
   const setServerNameGlobal = useChatStore((s) => s.setServerName);
   const setServerIconFileIdGlobal = useChatStore((s) => s.setServerIconFileId);
   const setServerIconDarkFileIdGlobal = useChatStore(
     (s) => s.setServerIconDarkFileId,
   );
-  const currentUser = useChatStore((s) => s.user);
-  const isOwner = currentUser?.role === 'owner';
-
-  const setServerArchived = (archived: boolean) => {
-    setServerArchivedLocal(archived);
-    setServerArchivedGlobal(archived);
-  };
 
   // File settings
   const [maxFileValue, setMaxFileValue] = useState('1024');
@@ -235,9 +230,14 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
   const applySettings = (data: api.AdminSettings) => {
     setStorageUsed(data.storage_used);
 
-    const file = toHumanUnit(data.max_file_size);
-    setMaxFileValue(String(file.value));
-    setMaxFileUnit(file.unit);
+    if (data.max_file_size > 0) {
+      const file = toHumanUnit(data.max_file_size);
+      setMaxFileValue(String(file.value));
+      setMaxFileUnit(file.unit);
+    } else {
+      setMaxFileValue('0');
+      setMaxFileUnit('MB');
+    }
 
     setMaxStorageBytes(data.max_storage_size);
     if (data.max_storage_size > 0) {
@@ -256,7 +256,8 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
     setRegistrationMode(data.registration_mode);
     setFileUploadsEnabled(data.file_uploads_enabled);
     setSessionExpiryHours(String(data.session_expiry_hours));
-    setServerArchived(data.server_archived);
+    setServerArchivedGlobal(data.server_archived);
+    setServerLockedDownGlobal(data.server_locked_down);
 
     setPwMinLength(String(data.password_min_length));
     setPwRequireUpper(data.password_require_uppercase);
@@ -290,8 +291,10 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
 
   const buildSettingsPayload = () => {
     const fileBytes =
-      parseFloat(maxFileValue) *
-      (UNITS.find((u) => u.key === maxFileUnit)?.bytes || 1048576);
+      parseFloat(maxFileValue) === 0
+        ? 0
+        : parseFloat(maxFileValue) *
+          (UNITS.find((u) => u.key === maxFileUnit)?.bytes || 1048576);
     const storageBytes =
       parseFloat(maxStorageValue) === 0
         ? 0
@@ -434,19 +437,11 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
         {target === 'light' ? 'Light Mode' : 'Dark Mode'}
       </p>
       <div className='relative group'>
-        {url ? (
-          <img
-            src={url}
-            alt={`Server icon (${target})`}
-            className={`w-16 h-16 rounded-xl object-cover ${target === 'dark' ? 'bg-black' : 'bg-white'}`}
-          />
-        ) : (
-          <div
-            className={`w-16 h-16 rounded-xl flex items-center justify-center text-xl font-bold ${target === 'dark' ? 'bg-zinc-800 text-zinc-500' : 'bg-default-100 text-default-400'}`}
-          >
-            {serverName.charAt(0).toUpperCase()}
-          </div>
-        )}
+        <img
+          src={url || (target === 'light' ? logoLight : logoDark)}
+          alt={`Server icon (${target})`}
+          className={`w-16 h-16 rounded-xl object-cover ${target === 'dark' ? 'bg-black' : 'bg-white'}`}
+        />
         <button
           type='button'
           className='absolute inset-0 rounded-xl bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer'
@@ -514,6 +509,39 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
                   darkFileInputRef,
                 )}
               </div>
+              {(serverIconFileId || serverIconDarkFileId) && (
+                <Button
+                  size='sm'
+                  variant='light'
+                  color='default'
+                  onPress={async () => {
+                    setUploading(true);
+                    try {
+                      if (serverIconFileId) {
+                        await api.deleteServerIcon();
+                        setServerIconFileId('');
+                        setServerIconFileIdGlobal(null);
+                      }
+                      if (serverIconDarkFileId) {
+                        await api.deleteServerIconDark();
+                        setServerIconDarkFileId('');
+                        setServerIconDarkFileIdGlobal(null);
+                      }
+                    } catch (e) {
+                      setIconMsg(
+                        e instanceof Error ? e.message : 'Failed to reset',
+                      );
+                      setTimeout(() => setIconMsg(''), 3000);
+                    } finally {
+                      setUploading(false);
+                    }
+                  }}
+                  isLoading={uploading}
+                  className='text-xs'
+                >
+                  Reset to default
+                </Button>
+              )}
               {iconMsg && (
                 <span className='text-xs text-danger'>{iconMsg}</span>
               )}
@@ -799,7 +827,7 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
 
               <div>
                 <p className='text-sm font-medium text-foreground mb-2'>
-                  Max File Upload Size
+                  Max File Upload Size (0 = unlimited)
                 </p>
                 <div className='flex gap-2'>
                   <Input
@@ -809,7 +837,7 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
                     variant='bordered'
                     size='sm'
                     className='w-28'
-                    min='1'
+                    min='0'
                   />
                   <Select
                     selectedKeys={new Set([maxFileUnit])}
@@ -875,61 +903,6 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
               ? 'Save Settings (unsaved changes)'
               : 'Save Settings'}
         </Button>
-
-        {!isSetup && isOwner && (
-          <>
-            <Divider />
-            <div>
-              <p className='text-sm font-medium text-foreground mb-1'>
-                {serverArchived ? 'Server Archived' : 'Archive Server'}
-              </p>
-              <p className='text-xs text-default-400 mb-3'>
-                {serverArchived
-                  ? 'The server is currently archived. Users cannot send messages or create channels.'
-                  : 'Archiving the server will prevent all users from sending messages or creating channels.'}
-              </p>
-              {serverArchived ? (
-                <Button
-                  color='success'
-                  variant='flat'
-                  size='sm'
-                  onPress={async () => {
-                    try {
-                      await api.unarchiveServer();
-                      setServerArchived(false);
-                    } catch (e) {
-                      console.error('Unarchive failed:', e);
-                    }
-                  }}
-                >
-                  Unarchive Server
-                </Button>
-              ) : (
-                <Button
-                  color='danger'
-                  variant='flat'
-                  size='sm'
-                  onPress={async () => {
-                    if (
-                      !confirm(
-                        'Are you sure you want to archive the server? All messaging will be disabled.',
-                      )
-                    )
-                      return;
-                    try {
-                      await api.archiveServer();
-                      setServerArchived(true);
-                    } catch (e) {
-                      console.error('Archive failed:', e);
-                    }
-                  }}
-                >
-                  Archive Server
-                </Button>
-              )}
-            </div>
-          </>
-        )}
       </div>
 
       {/* Crop Modal */}

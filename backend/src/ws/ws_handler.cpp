@@ -27,6 +27,12 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                 return;
             }
 
+            // Reject non-admin users during lockdown
+            if (db.is_server_locked_down() && user->role != "admin" && user->role != "owner") {
+                res->writeStatus("403")->end("Server is in lockdown mode");
+                return;
+            }
+
             res->template upgrade<WsUserData>(
                 {.user_id = user->id, .username = user->username, .role = user->role},
                 req->getHeader("sec-websocket-key"),
@@ -328,6 +334,28 @@ void WsHandler<SSL>::subscribe_admins_to_space(Database& database, const std::st
                 }
             }
         }
+    }
+}
+
+template <bool SSL>
+void WsHandler<SSL>::disconnect_non_admins(const std::string& notify_message) {
+    std::vector<uWS::WebSocket<SSL, true, WsUserData>*> to_close;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [uid, sockets] : user_sockets_) {
+            for (auto* ws : sockets) {
+                auto* data = ws->getUserData();
+                if (data->role != "admin" && data->role != "owner") {
+                    if (!notify_message.empty()) {
+                        ws->send(notify_message, uWS::OpCode::TEXT);
+                    }
+                    to_close.push_back(ws);
+                }
+            }
+        }
+    }
+    for (auto* ws : to_close) {
+        ws->close();
     }
 }
 

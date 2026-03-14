@@ -133,6 +133,7 @@ interface Props {
 export function FileBrowser({ spaceId }: Props) {
   const spaces = useChatStore((s) => s.spaces);
   const space = spaces.find((s) => s.id === spaceId);
+  const currentUser = useChatStore((s) => s.user);
   const users = useChatStore((s) => s.users);
 
   const [files, setFiles] = useState<SpaceFile[]>([]);
@@ -174,6 +175,11 @@ export function FileBrowser({ spaceId }: Props) {
     number | null
   >(null);
   const versionFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Drag-and-drop state
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const dragAllowedRef = useRef(true);
 
   // Preview state
   const [previewFile, setPreviewFile] = useState<SpaceFile | null>(null);
@@ -273,6 +279,80 @@ export function FileBrowser({ spaceId }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Rename failed');
     }
+  };
+
+  // --- Drag-and-drop move ---
+
+  const isInteractive = (target: HTMLElement, container: HTMLElement) => {
+    let el: HTMLElement | null = target;
+    while (el && el !== container) {
+      const tag = el.tagName;
+      if (
+        tag === 'BUTTON' ||
+        tag === 'INPUT' ||
+        tag === 'A' ||
+        el.getAttribute('role') === 'button' ||
+        el.hasAttribute('data-nodrag')
+      )
+        return true;
+      el = el.parentElement;
+    }
+    return false;
+  };
+
+  const handleRowMouseDown = (e: React.MouseEvent) => {
+    dragAllowedRef.current = !isInteractive(
+      e.target as HTMLElement,
+      e.currentTarget as HTMLElement,
+    );
+  };
+
+  const handleDragStart = (e: React.DragEvent, file: SpaceFile) => {
+    if (!dragAllowedRef.current) {
+      e.preventDefault();
+      return;
+    }
+    setDragId(file.id);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', file.id);
+  };
+
+  const handleDragOver = (e: React.DragEvent, targetFile: SpaceFile) => {
+    if (!targetFile.is_folder || targetFile.id === dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDropTargetId(targetFile.id);
+  };
+
+  const handleDragLeave = (e: React.DragEvent, targetId: string) => {
+    if (dropTargetId === targetId) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const { clientX: x, clientY: y } = e;
+      if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+        setDropTargetId(null);
+      }
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetFolder: SpaceFile) => {
+    e.preventDefault();
+    const fileId = e.dataTransfer.getData('text/plain');
+    setDragId(null);
+    setDropTargetId(null);
+    if (!fileId || fileId === targetFolder.id) return;
+    try {
+      await api.updateSpaceFile(spaceId, fileId, {
+        parent_id: targetFolder.id,
+      });
+      await loadFiles();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to move file');
+    }
+  };
+
+  const handleDragEnd = () => {
+    setDragId(null);
+    setDropTargetId(null);
   };
 
   // --- Permissions ---
@@ -445,7 +525,7 @@ export function FileBrowser({ spaceId }: Props) {
   };
 
   const previewUrl = previewFile
-    ? api.getSpaceFileDownloadUrl(spaceId, previewFile.id)
+    ? api.getSpaceFileDownloadUrl(spaceId, previewFile.id, true)
     : '';
 
   return (
@@ -477,7 +557,6 @@ export function FileBrowser({ spaceId }: Props) {
                 </Button>
                 <Button
                   size='sm'
-                  color='primary'
                   variant='flat'
                   startContent={<FontAwesomeIcon icon={faUpload} />}
                   isLoading={uploading}
@@ -502,8 +581,43 @@ export function FileBrowser({ spaceId }: Props) {
         {/* Breadcrumbs */}
         <div className='flex items-center gap-1 mt-2 text-xs text-default-500 overflow-x-auto'>
           <button
-            className='hover:text-foreground transition-colors shrink-0'
+            className={`hover:text-foreground transition-colors shrink-0 rounded px-1 ${dropTargetId === 'root' ? 'bg-primary/15 ring-1 ring-primary/40' : ''}`}
             onClick={() => navigateTo(undefined)}
+            onDragOver={
+              parentId
+                ? (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDropTargetId('root');
+                  }
+                : undefined
+            }
+            onDragLeave={() => {
+              if (dropTargetId === 'root') setDropTargetId(null);
+            }}
+            onDrop={
+              parentId
+                ? async (e) => {
+                    e.preventDefault();
+                    const fileId = e.dataTransfer.getData('text/plain');
+                    setDragId(null);
+                    setDropTargetId(null);
+                    if (!fileId) return;
+                    try {
+                      await api.updateSpaceFile(spaceId, fileId, {
+                        parent_id: null,
+                      });
+                      await loadFiles();
+                    } catch (err) {
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : 'Failed to move file',
+                      );
+                    }
+                  }
+                : undefined
+            }
           >
             <FontAwesomeIcon icon={faHome} className='text-xs' />
           </button>
@@ -517,8 +631,35 @@ export function FileBrowser({ spaceId }: Props) {
                 <span className='text-foreground font-medium'>{p.name}</span>
               ) : (
                 <button
-                  className='hover:text-foreground transition-colors'
+                  className={`hover:text-foreground transition-colors rounded px-1 ${dropTargetId === p.id ? 'bg-primary/15 ring-1 ring-primary/40' : ''}`}
                   onClick={() => navigateTo(p.id)}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                    setDropTargetId(p.id);
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetId === p.id) setDropTargetId(null);
+                  }}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    const fileId = e.dataTransfer.getData('text/plain');
+                    setDragId(null);
+                    setDropTargetId(null);
+                    if (!fileId) return;
+                    try {
+                      await api.updateSpaceFile(spaceId, fileId, {
+                        parent_id: p.id,
+                      });
+                      await loadFiles();
+                    } catch (err) {
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : 'Failed to move file',
+                      );
+                    }
+                  }}
                 >
                   {p.name}
                 </button>
@@ -590,7 +731,7 @@ export function FileBrowser({ spaceId }: Props) {
 
             {/* File table header */}
             {files.length > 0 && (
-              <div className='grid grid-cols-[1fr_100px_120px_120px_auto] gap-2 px-3 py-1.5 text-xs text-default-400 font-medium border-b border-default-100'>
+              <div className='grid grid-cols-[1fr_100px_120px_120px_220px] gap-2 px-3 py-1.5 text-xs text-default-400 font-medium border-b border-default-100'>
                 <span>Name</span>
                 <span>Size</span>
                 <span>Modified</span>
@@ -605,7 +746,30 @@ export function FileBrowser({ spaceId }: Props) {
               return (
                 <div
                   key={file.id}
-                  className='grid grid-cols-[1fr_100px_120px_120px_auto] gap-2 items-center px-3 py-2 text-sm rounded-md hover:bg-content2/50 transition-colors group'
+                  draggable={canEdit(filePerm)}
+                  onMouseDown={
+                    canEdit(filePerm) ? handleRowMouseDown : undefined
+                  }
+                  onDragStart={
+                    canEdit(filePerm)
+                      ? (e) => handleDragStart(e, file)
+                      : undefined
+                  }
+                  onDragEnd={canEdit(filePerm) ? handleDragEnd : undefined}
+                  onDragOver={
+                    file.is_folder ? (e) => handleDragOver(e, file) : undefined
+                  }
+                  onDragLeave={
+                    file.is_folder
+                      ? (e) => handleDragLeave(e, file.id)
+                      : undefined
+                  }
+                  onDrop={
+                    file.is_folder ? (e) => handleDrop(e, file) : undefined
+                  }
+                  className={`grid grid-cols-[1fr_100px_120px_120px_220px] gap-2 items-center px-3 py-2 text-sm rounded-md hover:bg-content2/50 transition-colors group ${
+                    dragId === file.id ? 'opacity-40' : ''
+                  } ${dropTargetId === file.id ? 'bg-primary/15 ring-1 ring-primary/40' : ''}`}
                 >
                   {/* Name cell */}
                   <div className='flex items-center gap-2 min-w-0'>
@@ -615,16 +779,26 @@ export function FileBrowser({ spaceId }: Props) {
                           ? faFolder
                           : getFileIcon(file.mime_type || '')
                       }
-                      className={`text-sm w-5 shrink-0 ${file.is_folder ? 'text-warning' : 'text-default-400'}`}
+                      className={`text-sm w-5 shrink-0 ${file.is_folder ? 'text-warning cursor-pointer' : isPreviewable(file.mime_type || '') ? 'text-default-400 cursor-pointer' : 'text-default-400'}`}
+                      data-nodrag={
+                        file.is_folder || isPreviewable(file.mime_type || '')
+                          ? true
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (file.is_folder) navigateTo(file.id);
+                        else if (isPreviewable(file.mime_type || ''))
+                          openPreview(file);
+                      }}
                     />
                     {renamingId === file.id ? (
                       <Input
                         size='sm'
-                        variant='flat'
+                        variant='bordered'
                         value={renameValue}
                         onValueChange={setRenameValue}
                         autoFocus
-                        classNames={{ base: 'max-w-[300px]' }}
+                        classNames={{ base: 'flex-1 min-w-0' }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter') handleRename(file.id);
                           if (e.key === 'Escape') setRenamingId(null);
@@ -633,7 +807,7 @@ export function FileBrowser({ spaceId }: Props) {
                       />
                     ) : file.is_folder ? (
                       <button
-                        className='truncate text-left hover:text-primary transition-colors'
+                        className='truncate text-left hover:text-primary transition-colors cursor-pointer'
                         onClick={() => navigateTo(file.id)}
                       >
                         {file.name}
@@ -653,7 +827,7 @@ export function FileBrowser({ spaceId }: Props) {
 
                   {/* Size */}
                   <span className='text-xs text-default-400'>
-                    {file.is_folder ? '—' : formatSize(file.file_size)}
+                    {formatSize(file.file_size)}
                   </span>
 
                   {/* Modified */}
@@ -811,21 +985,24 @@ export function FileBrowser({ spaceId }: Props) {
                           >
                             {p.permission}
                           </span>
-                          {canOwn(permMyLevel) && (
-                            <Button
-                              isIconOnly
-                              size='sm'
-                              variant='light'
-                              color='danger'
-                              title='Remove permission'
-                              onPress={() => handleRemovePermission(p.user_id)}
-                            >
-                              <FontAwesomeIcon
-                                icon={faUserMinus}
-                                className='text-xs'
-                              />
-                            </Button>
-                          )}
+                          {canOwn(permMyLevel) &&
+                            p.user_id !== currentUser?.id && (
+                              <Button
+                                isIconOnly
+                                size='sm'
+                                variant='light'
+                                color='danger'
+                                title='Remove permission'
+                                onPress={() =>
+                                  handleRemovePermission(p.user_id)
+                                }
+                              >
+                                <FontAwesomeIcon
+                                  icon={faUserMinus}
+                                  className='text-xs'
+                                />
+                              </Button>
+                            )}
                         </div>
                       </div>
                     ))}
@@ -951,7 +1128,6 @@ export function FileBrowser({ spaceId }: Props) {
                   <div className='mb-4'>
                     <Button
                       size='sm'
-                      color='primary'
                       variant='flat'
                       startContent={<FontAwesomeIcon icon={faUpload} />}
                       isLoading={versionUploading}
@@ -1050,18 +1226,22 @@ export function FileBrowser({ spaceId }: Props) {
       <Modal
         isOpen={!!previewFile}
         onClose={() => setPreviewFile(null)}
-        size='4xl'
-        scrollBehavior='inside'
+        size='5xl'
+        scrollBehavior='normal'
+        classNames={{
+          wrapper: 'overflow-hidden items-center',
+          body: 'px-3 pb-3',
+        }}
       >
         <ModalContent>
-          <ModalHeader className='flex items-center gap-2'>
+          <ModalHeader className='flex items-center gap-2 pr-20'>
             <FontAwesomeIcon icon={faEye} className='text-primary' />
-            {previewFile?.name}
+            <span className='truncate'>{previewFile?.name}</span>
             <Button
               isIconOnly
               size='sm'
               variant='light'
-              className='ml-auto'
+              className='absolute top-1 right-10'
               onPress={() => {
                 if (previewFile) handleDownload(previewFile);
               }}
@@ -1070,7 +1250,7 @@ export function FileBrowser({ spaceId }: Props) {
               <FontAwesomeIcon icon={faDownload} className='text-xs' />
             </Button>
           </ModalHeader>
-          <ModalBody className='pb-6'>
+          <ModalBody>
             {previewFile && (
               <PreviewContent
                 mime={previewFile.mime_type || ''}
@@ -1103,7 +1283,7 @@ function PreviewContent({
         <img
           src={url}
           alt='Preview'
-          className='max-w-full max-h-[70vh] object-contain rounded'
+          className='max-w-full max-h-[calc(80dvh-5rem)] object-contain rounded'
         />
       </div>
     );
@@ -1113,7 +1293,7 @@ function PreviewContent({
     return (
       <iframe
         src={url}
-        className='w-full h-[70vh] rounded border border-divider'
+        className='w-full h-[calc(80dvh-5rem)] rounded border border-divider'
         title='PDF Preview'
       />
     );
@@ -1122,7 +1302,11 @@ function PreviewContent({
   if (mime.startsWith('video/')) {
     return (
       <div className='flex justify-center'>
-        <video src={url} controls className='max-w-full max-h-[70vh] rounded' />
+        <video
+          src={url}
+          controls
+          className='max-w-full max-h-[calc(80dvh-5rem)] rounded'
+        />
       </div>
     );
   }

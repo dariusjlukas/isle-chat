@@ -236,47 +236,20 @@ export function LoginPage({
   const passwordEnabled = authMethods.includes('password');
   const webauthnSupported = browserSupportsWebAuthn();
 
-  const renderServerIcon = (size = 'w-48 h-48') => {
-    if (serverIconUrl && serverIconDarkUrl) {
-      return (
-        <>
-          <img
-            src={serverIconUrl}
-            alt={serverName}
-            className={`${size} mb-4 rounded-xl object-cover dark:hidden`}
-          />
-          <img
-            src={serverIconDarkUrl}
-            alt={serverName}
-            className={`${size} mb-4 rounded-xl object-cover hidden dark:block`}
-          />
-        </>
-      );
-    }
-    if (serverIconUrl) {
-      return (
-        <img
-          src={serverIconUrl}
-          alt={serverName}
-          className={`${size} mb-4 rounded-xl object-cover`}
-        />
-      );
-    }
-    return (
-      <>
-        <img
-          src={logoLight}
-          alt={serverName}
-          className={`${size} mb-4 dark:hidden`}
-        />
-        <img
-          src={logoDark}
-          alt={serverName}
-          className={`${size} mb-4 hidden dark:block`}
-        />
-      </>
-    );
-  };
+  const renderServerIcon = (size = 'w-48 h-48') => (
+    <>
+      <img
+        src={serverIconUrl || logoLight}
+        alt={serverName}
+        className={`${size} mb-4 rounded-xl object-cover dark:hidden`}
+      />
+      <img
+        src={serverIconDarkUrl || logoDark}
+        alt={serverName}
+        className={`${size} mb-4 rounded-xl object-cover hidden dark:block`}
+      />
+    </>
+  );
 
   // Forced TOTP setup screen
   if (setupToken) {
