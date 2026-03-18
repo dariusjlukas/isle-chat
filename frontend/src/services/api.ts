@@ -26,6 +26,8 @@ import type {
   WikiPagePermission,
   WikiPermission,
   WikiSearchResult,
+  AiConversation,
+  AiMessage,
 } from '../types';
 import type {
   PublicKeyCredentialCreationOptionsJSON,
@@ -741,6 +743,12 @@ export interface AdminSettings {
   personal_spaces_minigames_enabled: boolean;
   personal_spaces_storage_limit: number;
   personal_spaces_total_storage_limit: number;
+  llm_enabled: boolean;
+  llm_api_url: string;
+  llm_model: string;
+  llm_api_key: string;
+  llm_max_tokens: number;
+  llm_system_prompt: string;
 }
 
 export function getAdminSettings() {
@@ -850,6 +858,7 @@ export interface PublicConfig {
   mfa_required_password?: boolean;
   mfa_required_pki?: boolean;
   mfa_required_passkey?: boolean;
+  llm_enabled?: boolean;
 }
 
 export function getPublicConfig() {
@@ -2454,4 +2463,74 @@ export function getWikiMediaUrl(url: string, inline?: boolean): string {
 // Shared with me
 export function getSharedWithMe() {
   return request<import('../types').SharedWithMe>('/shared-with-me');
+}
+
+// AI conversations
+export async function listAiConversations(limit = 50, offset = 0) {
+  return request<AiConversation[]>(
+    `/ai/conversations?limit=${limit}&offset=${offset}`,
+  );
+}
+
+export async function createAiConversation(title?: string) {
+  return request<AiConversation>('/ai/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title: title || 'New conversation' }),
+  });
+}
+
+export async function getAiConversation(id: string) {
+  return request<AiConversation & { messages: AiMessage[] }>(
+    `/ai/conversations/${id}`,
+  );
+}
+
+export async function deleteAiConversation(id: string) {
+  return request<{ ok: boolean }>(`/ai/conversations/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function updateAiConversationTitle(id: string, title: string) {
+  return request<{ ok: boolean }>(`/ai/conversations/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function sendAiMessage(
+  conversationId: string,
+  content: string,
+  currentSpaceId?: string,
+  currentChannelId?: string,
+) {
+  return request<{ status: string }>(
+    `/ai/conversations/${conversationId}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        content,
+        current_space_id: currentSpaceId || '',
+        current_channel_id: currentChannelId || '',
+      }),
+    },
+  );
+}
+
+export async function stopAiGeneration(conversationId: string) {
+  return request<{ ok: boolean }>(`/ai/conversations/${conversationId}/stop`, {
+    method: 'POST',
+  });
+}
+
+// User settings
+export async function getUserSettings() {
+  return request<Record<string, string>>('/users/me/settings');
+}
+
+export async function updateUserSettings(settings: Record<string, string>) {
+  return request<{ ok: boolean }>('/users/me/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
 }

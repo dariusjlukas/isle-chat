@@ -125,7 +125,8 @@ The test runner supports targeted test execution:
 ./run-tests.sh --static-analysis   # C++ static analysis (clang-tidy)
 ./run-tests.sh --api-tests         # Black-box API tests
 ./run-tests.sh --e2e               # Playwright E2E tests
-./run-tests.sh --load-tests        # Performance/load tests (Locust)
+./run-tests.sh --load-tests        # Load tests against debug build
+./run-tests.sh --load-tests-release # Load tests against optimized Release build
 ./run-tests.sh --docker            # Docker image builds
 ./run-tests.sh --e2e --parallel 4  # E2E tests with 4 parallel workers
 ./run-tests.sh --help              # Full list of options

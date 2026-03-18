@@ -3,7 +3,11 @@ import { Canvas, useFrame } from '@react-three/fiber';
 import type { ThreeEvent } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowsRotate, faTrophy } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowsRotate,
+  faTrophy,
+  faWandMagicSparkles,
+} from '@fortawesome/free-solid-svg-icons';
 import * as THREE from 'three';
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -154,6 +158,10 @@ function applyMove(state: CubeState, move: Move): CubeState {
     }
   }
   return s;
+}
+
+function invertMove(move: Move): Move {
+  return move.length > 1 ? (move[0] as Move) : (`${move}'` as Move);
 }
 
 function isSolved(state: CubeState): boolean {
@@ -492,10 +500,12 @@ function CubeScene({
 
 function AnimationDriver({
   targetAngle,
+  speed,
   onAngleUpdate,
   onComplete,
 }: {
   targetAngle: number;
+  speed: number;
   onAngleUpdate: (angle: number) => void;
   onComplete: () => void;
 }) {
@@ -510,7 +520,7 @@ function AnimationDriver({
   useFrame((state, delta) => {
     if (doneRef.current) return;
     state.invalidate(); // Request next frame to keep animation running
-    angleRef.current += delta * ANIM_SPEED;
+    angleRef.current += delta * speed;
     if (angleRef.current >= Math.abs(targetAngle)) {
       angleRef.current = Math.abs(targetAngle);
       doneRef.current = true;
@@ -535,6 +545,9 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
   const [animatingMove, setAnimatingMove] = useState<Move | null>(null);
   const [animAngle, setAnimAngle] = useState(0);
   const [started, setStarted] = useState(false);
+  const [solving, setSolving] = useState(false);
+  const [autoSolved, setAutoSolved] = useState(false);
+  const moveHistoryRef = useRef<Move[]>([]);
 
   const animatingFace = animatingMove ? (animatingMove[0] as FaceName) : null;
   const targetAngle = animatingMove
@@ -554,25 +567,28 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
 
   const handleAnimComplete = useCallback(() => {
     if (!animatingMove) return;
+    if (!solving) {
+      moveHistoryRef.current.push(animatingMove);
+    }
     setCubeState((prev) => {
       const next = applyMove(prev, animatingMove);
-      // Check solved after animation (only if user has started playing)
       if (started && isSolved(next)) {
         setSolved(true);
+        if (solving) setSolving(false);
       }
       return next;
     });
     setAnimatingMove(null);
-  }, [animatingMove, started]);
+  }, [animatingMove, started, solving]);
 
   const handleMove = useCallback(
     (move: Move) => {
-      if (solved) return;
+      if (solved || solving) return;
       if (!started) return;
       setMoveQueue((q) => [...q, move]);
       setMoveCount((c) => c + 1);
     },
-    [solved, started],
+    [solved, solving, started],
   );
 
   const doScramble = useCallback((len: number) => {
@@ -589,6 +605,9 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
     setAnimatingMove(null);
     setAnimAngle(0);
     setStarted(true);
+    setSolving(false);
+    setAutoSolved(false);
+    moveHistoryRef.current = [...moves];
   }, []);
 
   // Initial scramble
@@ -604,6 +623,33 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
     },
     [doScramble],
   );
+
+  const handleSolve = useCallback(() => {
+    if (solved || solving || !started) return;
+
+    // Apply any in-progress animation and queued moves instantly
+    let state = cubeState;
+    const pending: Move[] = [];
+    if (animatingMove) pending.push(animatingMove);
+    pending.push(...moveQueue);
+
+    for (const m of pending) {
+      state = applyMove(state, m);
+      moveHistoryRef.current.push(m);
+    }
+
+    setCubeState(state);
+    setAnimatingMove(null);
+    setAnimAngle(0);
+
+    // Compute solution: reverse all history and invert each move
+    const solutionMoves = [...moveHistoryRef.current].reverse().map(invertMove);
+
+    setSolving(true);
+    setAutoSolved(true);
+    setMoveQueue(solutionMoves);
+    moveHistoryRef.current = [];
+  }, [solved, solving, started, cubeState, animatingMove, moveQueue]);
 
   return (
     <div className='flex flex-col items-center gap-2.5 select-none'>
@@ -636,14 +682,27 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
 
       {/* Status */}
       <div className='flex items-center justify-between w-full px-1 text-xs'>
-        <span className='text-default-400'>Moves: {moveCount}</span>
-        <button
-          onClick={() => doScramble(scrambleLength)}
-          className='cursor-pointer hover:scale-110 transition-transform text-default-400'
-          title='New scramble'
-        >
-          <FontAwesomeIcon icon={solved ? faTrophy : faArrowsRotate} />
-        </button>
+        <span className='text-default-400'>
+          {solving ? 'Solving...' : `Moves: ${moveCount}`}
+        </span>
+        <div className='flex items-center gap-2'>
+          {started && !solved && !solving && (
+            <button
+              onClick={handleSolve}
+              className='cursor-pointer hover:scale-110 transition-transform text-default-400'
+              title='Show solution'
+            >
+              <FontAwesomeIcon icon={faWandMagicSparkles} />
+            </button>
+          )}
+          <button
+            onClick={() => doScramble(scrambleLength)}
+            className='cursor-pointer hover:scale-110 transition-transform text-default-400'
+            title='New scramble'
+          >
+            <FontAwesomeIcon icon={solved ? faTrophy : faArrowsRotate} />
+          </button>
+        </div>
       </div>
 
       {/* 3D Canvas */}
@@ -668,6 +727,7 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
           {animatingMove && (
             <AnimationDriver
               targetAngle={targetAngle}
+              speed={solving ? 12 : ANIM_SPEED}
               onAngleUpdate={setAnimAngle}
               onComplete={handleAnimComplete}
             />
@@ -676,12 +736,18 @@ export function RubiksCube({ large }: { large?: boolean } = {}) {
       </div>
 
       {/* Status text */}
-      {solved && (
+      {solved && !autoSolved && (
         <p className='text-sm font-medium text-success'>
           Solved in {moveCount} moves!
         </p>
       )}
-      {!solved && (
+      {solved && autoSolved && (
+        <p className='text-sm font-medium text-success'>Cube solved!</p>
+      )}
+      {!solved && solving && (
+        <p className='text-xs text-default-400'>Solving...</p>
+      )}
+      {!solved && !solving && (
         <p className='text-xs text-default-400'>
           Click a face to rotate CW. Shift+click or right-click for CCW.
         </p>

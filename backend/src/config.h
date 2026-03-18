@@ -19,6 +19,7 @@ struct Config {
   std::string webauthn_rp_id;
   std::string webauthn_rp_name;
   std::string webauthn_origin;
+  int db_pool_size;
 
   bool has_ssl() const {
     return !ssl_cert_path.empty() && !ssl_key_path.empty();
@@ -38,6 +39,7 @@ struct Config {
     c.max_file_size = std::stoll(env("MAX_FILE_SIZE", "0"));
     c.ssl_cert_path = env("SSL_CERT_PATH", "");
     c.ssl_key_path = env("SSL_KEY_PATH", "");
+    c.db_pool_size = std::stoi(env("DB_POOL_SIZE", "10"));
     c.webauthn_rp_name = env("WEBAUTHN_RP_NAME", "EnclaveStation");
 
     // Derive WebAuthn RP ID and origin from PUBLIC_URL if not explicitly set

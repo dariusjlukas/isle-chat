@@ -144,7 +144,8 @@ export interface WikiSearchResult {
 
 export type SidebarView =
   | { type: 'space'; spaceId: string }
-  | { type: 'messages' };
+  | { type: 'messages' }
+  | { type: 'ai' };
 
 export interface Reaction {
   emoji: string;
@@ -429,4 +430,33 @@ export interface JoinRequest {
   display_name: string;
   status: 'pending' | 'approved' | 'denied';
   created_at: string;
+}
+
+export interface AiConversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiMessage {
+  id: string;
+  conversation_id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  tool_calls?: {
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }[];
+  tool_call_id?: string;
+  tool_name?: string;
+  created_at: string;
+}
+
+export interface AiToolUse {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+  status: 'success' | 'error';
 }

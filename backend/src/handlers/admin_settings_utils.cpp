@@ -45,7 +45,13 @@ json build_settings_response(const Snapshot& snapshot) {
     {"personal_spaces_storage_limit",
      parse_i64_setting_or(snapshot.personal_spaces_storage_limit, 0)},
     {"personal_spaces_total_storage_limit",
-     parse_i64_setting_or(snapshot.personal_spaces_total_storage_limit, 0)}};
+     parse_i64_setting_or(snapshot.personal_spaces_total_storage_limit, 0)},
+    {"llm_enabled", parse_bool_setting_or(snapshot.llm_enabled, false)},
+    {"llm_api_url", snapshot.llm_api_url.value_or("")},
+    {"llm_model", snapshot.llm_model.value_or("gpt-oss:120b")},
+    {"llm_api_key", snapshot.llm_api_key.value_or("")},
+    {"llm_max_tokens", parse_int_setting_or(snapshot.llm_max_tokens, 4096)},
+    {"llm_system_prompt", snapshot.llm_system_prompt.value_or("")}};
 }
 
 std::map<std::string, std::string> collect_settings_updates(const json& settings, bool mark_setup) {
@@ -171,6 +177,28 @@ std::map<std::string, std::string> collect_settings_updates(const json& settings
     if (value < 0)
       throw std::runtime_error("Personal spaces total storage limit must be non-negative");
     updates["personal_spaces_total_storage_limit"] = std::to_string(value);
+  }
+
+  // LLM / AI assistant
+  if (settings.contains("llm_enabled")) {
+    updates["llm_enabled"] = settings.at("llm_enabled").get<bool>() ? "true" : "false";
+  }
+  if (settings.contains("llm_api_url")) {
+    updates["llm_api_url"] = settings.at("llm_api_url").get<std::string>();
+  }
+  if (settings.contains("llm_model")) {
+    updates["llm_model"] = settings.at("llm_model").get<std::string>();
+  }
+  if (settings.contains("llm_api_key")) {
+    updates["llm_api_key"] = settings.at("llm_api_key").get<std::string>();
+  }
+  if (settings.contains("llm_max_tokens")) {
+    int value = settings.at("llm_max_tokens").get<int>();
+    if (value < 1) throw std::runtime_error("LLM max tokens must be positive");
+    updates["llm_max_tokens"] = std::to_string(value);
+  }
+  if (settings.contains("llm_system_prompt")) {
+    updates["llm_system_prompt"] = settings.at("llm_system_prompt").get<std::string>();
   }
 
   if (mark_setup) {

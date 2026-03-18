@@ -61,6 +61,10 @@ interface ChatState {
   notifications: Notification[];
   unreadNotificationCount: number;
 
+  // AI
+  llmEnabled: boolean;
+  showAiPanel: boolean;
+
   // Actions
   setAuth: (user: User, token: string) => void;
   clearAuth: (reason?: string) => void;
@@ -137,6 +141,9 @@ interface ChatState {
   setUnreadNotificationCount: (count: number) => void;
   markNotificationRead: (notificationId: string) => void;
   markAllNotificationsRead: () => void;
+  setLlmEnabled: (enabled: boolean) => void;
+  setShowAiPanel: (show: boolean) => void;
+  toggleAiPanel: () => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -164,6 +171,8 @@ export const useChatStore = create<ChatState>((set) => ({
   spaceInvites: [],
   notifications: [],
   unreadNotificationCount: 0,
+  llmEnabled: false,
+  showAiPanel: false,
   jumpToMessageId: null,
   jumpToChannelId: null,
   unreadCounts: {},
@@ -581,4 +590,8 @@ export const useChatStore = create<ChatState>((set) => ({
         mentionCounts: newMentionCounts,
       };
     }),
+
+  setLlmEnabled: (enabled) => set({ llmEnabled: enabled }),
+  setShowAiPanel: (show) => set({ showAiPanel: show }),
+  toggleAiPanel: () => set((s) => ({ showAiPanel: !s.showAiPanel })),
 }));

@@ -6,6 +6,7 @@ import {
   faPlus,
   faHouseUser,
   faShareNodes,
+  faHexagonNodes,
 } from '@fortawesome/free-solid-svg-icons';
 import { useChatStore } from '../../stores/chatStore';
 import type { SidebarView } from '../../types';
@@ -31,6 +32,9 @@ export function IconRail({ onBrowseSpaces, onSharedWithMe }: Props) {
   const setActiveView = useChatStore((s) => s.setActiveView);
   const sidePanelCollapsed = useChatStore((s) => s.sidePanelCollapsed);
   const setSidePanelCollapsed = useChatStore((s) => s.setSidePanelCollapsed);
+  const llmEnabled = useChatStore((s) => s.llmEnabled);
+  const showAiPanel = useChatStore((s) => s.showAiPanel);
+  const setShowAiPanel = useChatStore((s) => s.setShowAiPanel);
   const channels = useChatStore((s) => s.channels);
   const unreadCounts = useChatStore((s) => s.unreadCounts);
   const mentionCounts = useChatStore((s) => s.mentionCounts);
@@ -63,6 +67,7 @@ export function IconRail({ onBrowseSpaces, onSharedWithMe }: Props) {
   const isActive = (view: SidebarView) => {
     if (!activeView) return false;
     if (view.type === 'messages' && activeView.type === 'messages') return true;
+    if (view.type === 'ai' && activeView.type === 'ai') return true;
     if (
       view.type === 'space' &&
       activeView.type === 'space' &&
@@ -96,9 +101,10 @@ export function IconRail({ onBrowseSpaces, onSharedWithMe }: Props) {
         </button>
       </Tooltip>
 
+      {(llmEnabled || personalSpace) && <div className='w-8 border-t border-default-200 my-1' />}
+
       {personalSpace && (
         <>
-          <div className='w-8 border-t border-default-200 my-1' />
           <Tooltip content='My Space' placement='right'>
             <button
               onClick={() =>
@@ -122,6 +128,28 @@ export function IconRail({ onBrowseSpaces, onSharedWithMe }: Props) {
             </button>
           </Tooltip>
         </>
+      )}
+
+      {llmEnabled && (
+        <Tooltip content='AI Assistant' placement='right'>
+          <button
+            onClick={() => {
+              if (isActive({ type: 'ai' })) {
+                setSidePanelCollapsed(!sidePanelCollapsed);
+              } else {
+                setActiveView({ type: 'ai' });
+                if (!showAiPanel) setShowAiPanel(true);
+              }
+            }}
+            className={`relative w-11 h-11 rounded-xl flex items-center justify-center transition-all bg-content2 text-default-500 cursor-pointer ${
+              isActive({ type: 'ai' })
+                ? 'ring-2 ring-primary text-primary'
+                : 'hover:ring-2 hover:ring-default-300 hover:text-foreground'
+            }`}
+          >
+            <FontAwesomeIcon icon={faHexagonNodes} className='text-lg' />
+          </button>
+        </Tooltip>
       )}
 
       <div className='w-8 border-t border-default-200 my-1' />

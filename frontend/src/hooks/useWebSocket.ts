@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { wsService } from '../services/websocket';
 import { useChatStore } from '../stores/chatStore';
+import { useAiStore } from '../stores/aiStore';
 import * as api from '../services/api';
 import type {
   Message,
@@ -12,6 +13,7 @@ import type {
   SpaceInvite,
   ChannelMemberInfo,
   Notification,
+  AiToolUse,
 } from '../types';
 
 /**
@@ -378,6 +380,57 @@ export function useWebSocketConnection() {
             3000,
           ),
         );
+      }),
+
+      wsService.on('ai_stream_delta', (data: unknown) => {
+        const d = data as {
+          conversation_id: string;
+          content: string;
+        };
+        useAiStore.getState().appendStreamDelta(d.conversation_id, d.content);
+      }),
+      wsService.on('ai_tool_use', (data: unknown) => {
+        const d = data as AiToolUse & { conversation_id: string };
+        const store = useAiStore.getState();
+        store.addToolUse({
+          tool_name: d.tool_name,
+          arguments: d.arguments,
+          result: d.result,
+          status: d.status,
+        });
+        // Also persist as a message so it survives stream finalization
+        store.addMessage({
+          id: `tool-${Date.now()}-${Math.random()}`,
+          conversation_id: d.conversation_id,
+          role: 'tool',
+          tool_name: d.tool_name,
+          content: JSON.stringify({
+            arguments: d.arguments,
+            result: d.result,
+            status: d.status,
+          }),
+          created_at: new Date().toISOString(),
+        });
+      }),
+      wsService.on('ai_stream_end', (data: unknown) => {
+        const d = data as {
+          conversation_id: string;
+          message_id: string;
+        };
+        useAiStore.getState().finalizeStream(d.conversation_id, d.message_id);
+      }),
+      wsService.on('ai_stream_error', (data: unknown) => {
+        const d = data as { error?: string };
+        useAiStore.getState().setStreamError(d.error || 'An error occurred');
+      }),
+      wsService.on('ai_conversation_titled', (data: unknown) => {
+        const d = data as {
+          conversation_id: string;
+          title: string;
+        };
+        useAiStore
+          .getState()
+          .updateConversationTitle(d.conversation_id, d.title);
       }),
     ];
 

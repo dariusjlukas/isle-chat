@@ -1,11 +1,11 @@
 #pragma once
 #include <map>
 #include <memory>
-#include <mutex>
 #include <pqxx/pqxx>
 #include <queue>
 #include <string>
 #include <vector>
+#include "db/connection_pool.h"
 #include "models/calendar_event.h"
 #include "models/channel.h"
 #include "models/message.h"
@@ -13,11 +13,12 @@
 #include "models/space_file.h"
 #include "models/task_board.h"
 #include "models/user.h"
+#include "models/ai_conversation.h"
 #include "models/wiki_page.h"
 
 class Database {
 public:
-  explicit Database(const std::string& connection_string);
+  explicit Database(const std::string& connection_string, int pool_size = 10);
 
   void run_migrations();
 
@@ -152,6 +153,12 @@ public:
     const std::string& user_id,
     const std::string& content,
     const std::string& reply_to_message_id = "");
+  Message create_message(
+    const std::string& channel_id,
+    const std::string& user_id,
+    const std::string& content,
+    const std::string& reply_to_message_id,
+    bool is_ai_assisted);
   Message create_file_message(
     const std::string& channel_id,
     const std::string& user_id,
@@ -838,9 +845,31 @@ public:
   std::vector<WikiSearchResult> browse_wiki_pages(
     const std::string& user_id, bool is_admin, int limit, int offset);
 
+  // AI conversations
+  AiConversation create_ai_conversation(const std::string& user_id, const std::string& title);
+  std::vector<AiConversation> list_ai_conversations(
+    const std::string& user_id, int limit = 50, int offset = 0);
+  std::optional<AiConversation> find_ai_conversation(const std::string& id);
+  void delete_ai_conversation(const std::string& id);
+  void update_ai_conversation_title(const std::string& id, const std::string& title);
+  void touch_ai_conversation(const std::string& id);
+
+  // AI messages
+  AiMessage create_ai_message(
+    const std::string& conversation_id,
+    const std::string& role,
+    const std::string& content,
+    const std::string& tool_calls = "",
+    const std::string& tool_call_id = "",
+    const std::string& tool_name = "");
+  std::vector<AiMessage> get_ai_messages(const std::string& conversation_id);
+
+  // User settings
+  std::optional<std::string> get_user_setting(const std::string& user_id, const std::string& key);
+  void set_user_setting(
+    const std::string& user_id, const std::string& key, const std::string& value);
+  std::map<std::string, std::string> get_all_user_settings(const std::string& user_id);
+
 private:
-  pqxx::connection& get_conn();
-  std::string conn_string_;
-  std::unique_ptr<pqxx::connection> conn_;
-  std::mutex mutex_;
+  ConnectionPool pool_;
 };

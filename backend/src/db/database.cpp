@@ -5,16 +5,9 @@
 #include <random>
 #include <sstream>
 
-Database::Database(const std::string& connection_string) : conn_string_(connection_string) {
-  conn_ = std::make_unique<pqxx::connection>(conn_string_);
+Database::Database(const std::string& connection_string, int pool_size)
+  : pool_(connection_string, pool_size) {
   std::cout << "[DB] Connected to PostgreSQL" << std::endl;
-}
-
-pqxx::connection& Database::get_conn() {
-  if (!conn_ || !conn_->is_open()) {
-    conn_ = std::make_unique<pqxx::connection>(conn_string_);
-  }
-  return *conn_;
 }
 
 static std::string random_hex(int bytes) {
@@ -27,8 +20,8 @@ static std::string random_hex(int bytes) {
 }
 
 void Database::run_migrations() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   txn.exec(R"SQL(
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -865,6 +858,54 @@ void Database::run_migrations() {
             ON spaces(personal_owner_id) WHERE is_personal = TRUE;
     )SQL");
 
+  // AI assistant: is_ai_assisted flag on messages
+  txn.exec(R"SQL(
+        ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_ai_assisted BOOLEAN DEFAULT FALSE;
+    )SQL");
+
+  // Per-user settings (key-value)
+  txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            key VARCHAR(100) NOT NULL,
+            value TEXT NOT NULL,
+            PRIMARY KEY (user_id, key)
+        );
+    )SQL");
+
+  // AI conversations
+  txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS ai_conversations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+            title VARCHAR(200) DEFAULT '',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    )SQL");
+  txn.exec(R"SQL(
+        CREATE INDEX IF NOT EXISTS idx_ai_conversations_user
+            ON ai_conversations(user_id, updated_at DESC);
+    )SQL");
+
+  // AI conversation messages
+  txn.exec(R"SQL(
+        CREATE TABLE IF NOT EXISTS ai_messages (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            conversation_id UUID REFERENCES ai_conversations(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            tool_calls JSONB,
+            tool_call_id VARCHAR(100),
+            tool_name VARCHAR(100),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    )SQL");
+  txn.exec(R"SQL(
+        CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation
+            ON ai_messages(conversation_id, created_at);
+    )SQL");
+
   txn.commit();
   std::cout << "[DB] Migrations complete" << std::endl;
 }
@@ -872,8 +913,8 @@ void Database::run_migrations() {
 // --- Users ---
 
 std::optional<User> Database::find_user_by_public_key(const std::string& public_key) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, u.public_key, u.role, u.is_online, "
     "u.last_seen::text, u.created_at::text, u.bio, u.status, u.avatar_file_id, u.profile_color, "
@@ -900,8 +941,8 @@ std::optional<User> Database::find_user_by_public_key(const std::string& public_
 }
 
 std::optional<User> Database::find_user_by_id(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, username, display_name, public_key, role, is_online, "
     "last_seen::text, created_at::text, bio, status, avatar_file_id, profile_color, is_banned FROM "
@@ -930,8 +971,8 @@ User Database::create_user(
   const std::string& display_name,
   const std::string& public_key,
   const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO users (username, display_name, public_key, role) "
     "VALUES ($1, $2, $3, $4) "
@@ -968,8 +1009,8 @@ User Database::create_user(
 }
 
 std::vector<User> Database::list_users() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT id, username, display_name, public_key, role, is_online, "
     "last_seen::text, created_at::text, bio, status, avatar_file_id, profile_color, is_banned FROM "
@@ -996,15 +1037,15 @@ std::vector<User> Database::list_users() {
 }
 
 void Database::set_all_users_offline() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec("UPDATE users SET is_online = false WHERE is_online = true");
   txn.commit();
 }
 
 void Database::set_user_online(const std::string& user_id, bool online) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   if (online) {
     txn.exec_params("UPDATE users SET is_online = true WHERE id = $1", user_id);
   } else {
@@ -1014,8 +1055,8 @@ void Database::set_user_online(const std::string& user_id, bool online) {
 }
 
 int Database::count_users() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec("SELECT COUNT(*) FROM users");
   txn.commit();
   return r[0][0].as<int>();
@@ -1027,8 +1068,8 @@ User Database::update_user_profile(
   const std::string& bio,
   const std::string& status,
   const std::string& profile_color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE users SET display_name = $2, bio = $3, status = $4, profile_color = $5 WHERE id = $1 "
     "RETURNING id, username, display_name, public_key, role, is_online, "
@@ -1057,15 +1098,15 @@ User Database::update_user_profile(
 }
 
 void Database::set_user_avatar(const std::string& user_id, const std::string& avatar_file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE users SET avatar_file_id = $2 WHERE id = $1", user_id, avatar_file_id);
   txn.commit();
 }
 
 void Database::clear_user_avatar(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT avatar_file_id FROM users WHERE id = $1", user_id);
   std::string old_file_id;
   if (!r.empty() && !r[0][0].is_null()) old_file_id = r[0][0].as<std::string>();
@@ -1074,15 +1115,15 @@ void Database::clear_user_avatar(const std::string& user_id) {
 }
 
 void Database::update_user_role(const std::string& user_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE users SET role = $2 WHERE id = $1", user_id, role);
   txn.commit();
 }
 
 void Database::ban_user(const std::string& user_id, const std::string& banned_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE users SET is_banned = true, banned_at = NOW(), banned_by = $2 WHERE id = $1",
     user_id,
@@ -1093,8 +1134,8 @@ void Database::ban_user(const std::string& user_id, const std::string& banned_by
 }
 
 void Database::unban_user(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE users SET is_banned = false, banned_at = NULL, banned_by = NULL WHERE id = $1",
     user_id);
@@ -1102,8 +1143,8 @@ void Database::unban_user(const std::string& user_id) {
 }
 
 void Database::delete_user(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Messages don't cascade on user delete, so delete explicitly
   txn.exec_params("DELETE FROM messages WHERE user_id = $1", user_id);
   // The rest (sessions, user_keys, device_tokens, channel_members) cascade
@@ -1114,9 +1155,9 @@ void Database::delete_user(const std::string& user_id) {
 // --- Sessions ---
 
 std::string Database::create_session(const std::string& user_id, int expiry_hours) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  auto conn = pool_.acquire();
   std::string token = random_hex(64);
-  pqxx::work txn(get_conn());
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO sessions (user_id, token, expires_at) "
     "VALUES ($1, $2, NOW() + ($3 || ' hours')::interval)",
@@ -1128,8 +1169,8 @@ std::string Database::create_session(const std::string& user_id, int expiry_hour
 }
 
 std::optional<std::string> Database::validate_session(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT s.user_id FROM sessions s "
     "JOIN users u ON s.user_id = u.id "
@@ -1141,8 +1182,8 @@ std::optional<std::string> Database::validate_session(const std::string& token) 
 }
 
 void Database::delete_session(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM sessions WHERE token = $1", token);
   txn.commit();
 }
@@ -1150,8 +1191,8 @@ void Database::delete_session(const std::string& token) {
 // --- Challenges ---
 
 void Database::store_challenge(const std::string& public_key, const std::string& challenge) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO auth_challenges (public_key, challenge) VALUES ($1, $2) "
     "ON CONFLICT (public_key) DO UPDATE SET challenge = $2, created_at = NOW()",
@@ -1161,8 +1202,8 @@ void Database::store_challenge(const std::string& public_key, const std::string&
 }
 
 std::optional<std::string> Database::get_challenge(const std::string& public_key) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT challenge FROM auth_challenges WHERE public_key = $1 "
     "AND created_at > NOW() - INTERVAL '5 minutes'",
@@ -1173,8 +1214,8 @@ std::optional<std::string> Database::get_challenge(const std::string& public_key
 }
 
 void Database::delete_challenge(const std::string& public_key) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM auth_challenges WHERE public_key = $1", public_key);
   txn.commit();
 }
@@ -1191,8 +1232,8 @@ Channel Database::create_channel(
   const std::string& default_role,
   const std::string& space_id,
   bool default_join) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   pqxx::result r;
   if (space_id.empty()) {
@@ -1282,8 +1323,8 @@ static const char* CH_COLS =
   "c.default_join";
 
 std::vector<Channel> Database::list_user_channels(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
       " FROM channels c "
@@ -1300,8 +1341,8 @@ std::vector<Channel> Database::list_user_channels(const std::string& user_id) {
 }
 
 std::vector<Channel> Database::list_space_channels(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
       " FROM channels c "
@@ -1318,8 +1359,8 @@ std::vector<Channel> Database::list_space_channels(const std::string& space_id) 
 
 std::optional<Channel> Database::find_dm_channel(
   const std::string& user1_id, const std::string& user2_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
       " FROM channels c "
@@ -1336,8 +1377,8 @@ std::optional<Channel> Database::find_dm_channel(
 }
 
 std::optional<Channel> Database::find_channel_by_id(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r =
     txn.exec_params(std::string("SELECT ") + CH_COLS + " FROM channels c WHERE c.id = $1", id);
   txn.commit();
@@ -1346,8 +1387,8 @@ std::optional<Channel> Database::find_channel_by_id(const std::string& id) {
 }
 
 bool Database::is_channel_member(const std::string& channel_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM channel_members WHERE channel_id = $1 AND user_id = $2", channel_id, user_id);
   txn.commit();
@@ -1356,8 +1397,8 @@ bool Database::is_channel_member(const std::string& channel_id, const std::strin
 
 void Database::add_channel_member(
   const std::string& channel_id, const std::string& user_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO channel_members (channel_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO "
     "NOTHING",
@@ -1368,8 +1409,8 @@ void Database::add_channel_member(
 }
 
 std::string Database::get_member_role(const std::string& channel_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT role FROM channel_members WHERE channel_id = $1 AND user_id = $2", channel_id, user_id);
   txn.commit();
@@ -1395,8 +1436,8 @@ std::string Database::get_effective_role(
 }
 
 void Database::remove_channel_member(const std::string& channel_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2", channel_id, user_id);
   txn.commit();
@@ -1404,8 +1445,8 @@ void Database::remove_channel_member(const std::string& channel_id, const std::s
 
 void Database::update_member_role(
   const std::string& channel_id, const std::string& user_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE channel_members SET role = $3 WHERE channel_id = $1 AND user_id = $2",
     channel_id,
@@ -1421,8 +1462,8 @@ Channel Database::update_channel(
   bool is_public,
   const std::string& default_role,
   bool default_join) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE channels SET name = $2, description = $3, is_public = $4, default_role = $5, "
     "default_join = $6 "
@@ -1441,8 +1482,8 @@ Channel Database::update_channel(
 }
 
 std::vector<Channel> Database::get_default_join_channels(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
       " FROM channels c WHERE c.space_id = $1 AND c.default_join = true AND c.is_archived = false",
@@ -1458,8 +1499,8 @@ std::vector<Channel> Database::get_default_join_channels(const std::string& spac
 
 std::vector<Channel> Database::list_public_channels(
   const std::string& user_id, const std::string& search) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (search.empty()) {
     r = txn.exec_params(
@@ -1492,8 +1533,8 @@ std::vector<Channel> Database::list_public_channels(
 
 std::vector<Channel> Database::list_browsable_space_channels(
   const std::string& space_id, const std::string& user_id, const std::string& search) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (search.empty()) {
     r = txn.exec_params(
@@ -1527,8 +1568,8 @@ std::vector<Channel> Database::list_browsable_space_channels(
 }
 
 std::vector<Channel> Database::list_all_channels() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     std::string("SELECT ") + CH_COLS +
     " FROM channels c WHERE c.is_direct = false ORDER BY c.name");
@@ -1541,8 +1582,8 @@ std::vector<Channel> Database::list_all_channels() {
 }
 
 std::vector<ChannelMember> Database::get_channel_members_with_roles(const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, cm.role, u.is_online, u.last_seen::text "
     "FROM channel_members cm JOIN users u ON cm.user_id = u.id "
@@ -1563,8 +1604,8 @@ std::vector<ChannelMember> Database::get_channel_members_with_roles(const std::s
 }
 
 std::vector<std::string> Database::get_channel_member_ids(const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT user_id FROM channel_members WHERE channel_id = $1", channel_id);
   txn.commit();
   std::vector<std::string> ids;
@@ -1602,8 +1643,8 @@ Space Database::create_space(
   bool is_public,
   const std::string& created_by,
   const std::string& default_role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto ins = txn.exec_params(
     "INSERT INTO spaces (name, description, is_public, default_role, created_by) "
     "VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -1638,8 +1679,8 @@ Space Database::create_space(
 }
 
 std::vector<Space> Database::list_user_spaces(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + SP_COLS +
       " FROM spaces s "
@@ -1653,8 +1694,8 @@ std::vector<Space> Database::list_user_spaces(const std::string& user_id) {
 }
 
 std::optional<Space> Database::find_space_by_id(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(std::string("SELECT ") + SP_COLS + " FROM spaces s WHERE s.id = $1", id);
   txn.commit();
   if (r.empty()) return std::nullopt;
@@ -1668,8 +1709,8 @@ Space Database::update_space(
   bool is_public,
   const std::string& default_role,
   const std::string& profile_color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE spaces SET name = $2, description = $3, is_public = $4, default_role = $5, "
     "profile_color = $6 "
@@ -1689,8 +1730,8 @@ Space Database::update_space(
 
 std::vector<Space> Database::list_public_spaces(
   const std::string& user_id, const std::string& search) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (search.empty()) {
     r = txn.exec_params(
@@ -1720,8 +1761,8 @@ std::vector<Space> Database::list_public_spaces(
 }
 
 std::vector<Space> Database::list_all_spaces() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(std::string("SELECT ") + SP_COLS + " FROM spaces s ORDER BY s.name");
   txn.commit();
   std::vector<Space> spaces;
@@ -1730,15 +1771,15 @@ std::vector<Space> Database::list_all_spaces() {
 }
 
 void Database::set_space_avatar(const std::string& space_id, const std::string& avatar_file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE spaces SET avatar_file_id = $2 WHERE id = $1", space_id, avatar_file_id);
   txn.commit();
 }
 
 void Database::clear_space_avatar(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE spaces SET avatar_file_id = '' WHERE id = $1", space_id);
   txn.commit();
 }
@@ -1746,8 +1787,8 @@ void Database::clear_space_avatar(const std::string& space_id) {
 // --- Personal Spaces ---
 
 Space Database::create_personal_space(const std::string& user_id, const std::string& display_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string space_name = display_name + "'s Space";
   auto ins = txn.exec_params(
     "INSERT INTO spaces (name, description, is_public, default_role, created_by, is_personal, "
@@ -1796,8 +1837,8 @@ Space Database::create_personal_space(const std::string& user_id, const std::str
 }
 
 std::optional<Space> Database::find_personal_space(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + SP_COLS +
       " FROM spaces s WHERE s.is_personal = TRUE AND s.personal_owner_id = $1",
@@ -1815,8 +1856,8 @@ Space Database::get_or_create_personal_space(
 }
 
 void Database::sync_personal_space_tools(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   const std::string tools[] = {"files", "calendar", "tasks", "wiki", "minigames"};
   for (const auto& tool : tools) {
     auto setting = txn.exec_params(
@@ -1837,8 +1878,8 @@ void Database::sync_personal_space_tools(const std::string& space_id) {
 
 bool Database::has_resource_permission_in_space(
   const std::string& space_id, const std::string& user_id, const std::string& tool_type) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (tool_type == "files") {
     r = txn.exec_params(
@@ -1872,8 +1913,8 @@ bool Database::has_resource_permission_in_space(
 }
 
 std::vector<Database::SharedResource> Database::list_shared_with_user(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::vector<SharedResource> results;
 
   // Files shared from personal spaces
@@ -1959,8 +2000,8 @@ std::vector<Database::SharedResource> Database::list_shared_with_user(const std:
 }
 
 bool Database::is_space_member(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM space_members WHERE space_id = $1 AND user_id = $2", space_id, user_id);
   txn.commit();
@@ -1969,8 +2010,8 @@ bool Database::is_space_member(const std::string& space_id, const std::string& u
 
 void Database::add_space_member(
   const std::string& space_id, const std::string& user_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO space_members (space_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO "
     "NOTHING",
@@ -1981,8 +2022,8 @@ void Database::add_space_member(
 }
 
 void Database::remove_space_member(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Also remove from all channels in this space
   txn.exec_params(
     "DELETE FROM channel_members WHERE user_id = $2 "
@@ -1996,8 +2037,8 @@ void Database::remove_space_member(const std::string& space_id, const std::strin
 
 void Database::update_space_member_role(
   const std::string& space_id, const std::string& user_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE space_members SET role = $3 WHERE space_id = $1 AND user_id = $2",
     space_id,
@@ -2008,8 +2049,8 @@ void Database::update_space_member_role(
 
 std::string Database::get_space_member_role(
   const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT role FROM space_members WHERE space_id = $1 AND user_id = $2", space_id, user_id);
   txn.commit();
@@ -2018,8 +2059,8 @@ std::string Database::get_space_member_role(
 }
 
 std::vector<SpaceMember> Database::get_space_members_with_roles(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, sm.role, u.is_online, u.last_seen::text "
     "FROM space_members sm JOIN users u ON sm.user_id = u.id "
@@ -2045,8 +2086,8 @@ Channel Database::create_conversation(
   const std::string& created_by,
   const std::vector<std::string>& member_ids,
   const std::string& name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO channels (name, description, is_direct, is_public, default_role, created_by, "
     "conversation_name) "
@@ -2073,8 +2114,8 @@ Channel Database::create_conversation(
 }
 
 std::vector<Channel> Database::list_user_conversations(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
       " FROM channels c "
@@ -2093,8 +2134,8 @@ void Database::add_conversation_member(const std::string& channel_id, const std:
 }
 
 void Database::rename_conversation(const std::string& channel_id, const std::string& name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE channels SET conversation_name = NULLIF($2, '') WHERE id = $1 AND is_direct = true",
     channel_id,
@@ -2121,7 +2162,8 @@ static Message row_to_message(const pqxx::row& r) {
     r[12].is_null() ? "" : r[12].as<std::string>(),
     r[13].is_null() ? "" : r[13].as<std::string>(),
     r[14].is_null() ? "" : r[14].as<std::string>(),
-    !r[15].is_null() && r[15].as<bool>()};
+    !r[15].is_null() && r[15].as<bool>(),
+    !r[16].is_null() && r[16].as<bool>()};
 }
 
 static const char* MSG_COLS =
@@ -2132,7 +2174,8 @@ static const char* MSG_COLS =
   "(SELECT username FROM users WHERE id = (SELECT user_id FROM messages m2 WHERE m2.id = "
   "messages.reply_to_message_id)), "
   "(SELECT LEFT(m2.content, 200) FROM messages m2 WHERE m2.id = messages.reply_to_message_id), "
-  "(SELECT m2.is_deleted FROM messages m2 WHERE m2.id = messages.reply_to_message_id)";
+  "(SELECT m2.is_deleted FROM messages m2 WHERE m2.id = messages.reply_to_message_id), "
+  "is_ai_assisted";
 
 static const char* MSG_COLS_JOINED =
   "m.id, m.channel_id, m.user_id, u.username, m.content, "
@@ -2142,15 +2185,16 @@ static const char* MSG_COLS_JOINED =
   "(SELECT u2.username FROM users u2 WHERE u2.id = (SELECT user_id FROM messages WHERE id = "
   "m.reply_to_message_id)), "
   "(SELECT LEFT(content, 200) FROM messages WHERE id = m.reply_to_message_id), "
-  "(SELECT is_deleted FROM messages WHERE id = m.reply_to_message_id)";
+  "(SELECT is_deleted FROM messages WHERE id = m.reply_to_message_id), "
+  "m.is_ai_assisted";
 
 Message Database::create_message(
   const std::string& channel_id,
   const std::string& user_id,
   const std::string& content,
   const std::string& reply_to_message_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (reply_to_message_id.empty()) {
     r = txn.exec_params(
@@ -2175,6 +2219,40 @@ Message Database::create_message(
   return row_to_message(r[0]);
 }
 
+Message Database::create_message(
+  const std::string& channel_id,
+  const std::string& user_id,
+  const std::string& content,
+  const std::string& reply_to_message_id,
+  bool is_ai_assisted) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  pqxx::result r;
+  if (reply_to_message_id.empty()) {
+    r = txn.exec_params(
+      std::string(
+        "INSERT INTO messages (channel_id, user_id, content, is_ai_assisted) VALUES ($1, $2, $3, $4) RETURNING ") +
+        MSG_COLS,
+      channel_id,
+      user_id,
+      content,
+      is_ai_assisted);
+  } else {
+    r = txn.exec_params(
+      std::string(
+        "INSERT INTO messages (channel_id, user_id, content, reply_to_message_id, is_ai_assisted) VALUES ($1, $2, "
+        "$3, $4, $5) RETURNING ") +
+        MSG_COLS,
+      channel_id,
+      user_id,
+      content,
+      reply_to_message_id,
+      is_ai_assisted);
+  }
+  txn.commit();
+  return row_to_message(r[0]);
+}
+
 Message Database::create_file_message(
   const std::string& channel_id,
   const std::string& user_id,
@@ -2183,8 +2261,8 @@ Message Database::create_file_message(
   const std::string& file_name,
   int64_t file_size,
   const std::string& file_type) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string(
       "INSERT INTO messages (channel_id, user_id, content, file_id, file_name, file_size, "
@@ -2204,8 +2282,8 @@ Message Database::create_file_message(
 
 std::vector<Message> Database::get_messages(
   const std::string& channel_id, int limit, const std::string& before) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   pqxx::result r;
   if (before.empty()) {
     r = txn.exec_params(
@@ -2237,8 +2315,8 @@ std::vector<Message> Database::get_messages(
 
 Message Database::edit_message(
   const std::string& message_id, const std::string& user_id, const std::string& new_content) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string(
       "UPDATE messages SET content = $3, edited_at = NOW() "
@@ -2253,8 +2331,8 @@ Message Database::edit_message(
 }
 
 Message Database::delete_message(const std::string& message_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string(
       "UPDATE messages SET is_deleted = true, content = '' "
@@ -2268,8 +2346,8 @@ Message Database::delete_message(const std::string& message_id, const std::strin
 }
 
 Message Database::admin_delete_message(const std::string& message_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     std::string(
       "UPDATE messages SET is_deleted = true, content = '' "
@@ -2283,8 +2361,8 @@ Message Database::admin_delete_message(const std::string& message_id) {
 
 std::optional<Database::MessageOwnership> Database::get_message_ownership(
   const std::string& message_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT channel_id, user_id FROM messages WHERE id = $1", message_id);
   txn.commit();
   if (r.empty()) return std::nullopt;
@@ -2292,8 +2370,8 @@ std::optional<Database::MessageOwnership> Database::get_message_ownership(
 }
 
 std::optional<Database::FileInfo> Database::get_file_info(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Check messages table (chat file attachments)
   auto r = txn.exec_params(
     "SELECT file_name, file_type FROM messages WHERE file_id = $1 LIMIT 1", file_id);
@@ -2317,8 +2395,8 @@ std::optional<Database::FileInfo> Database::get_file_info(const std::string& fil
 
 void Database::add_reaction(
   const std::string& message_id, const std::string& user_id, const std::string& emoji) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO reactions (message_id, user_id, emoji) VALUES ($1, $2, $3) "
     "ON CONFLICT (message_id, user_id, emoji) DO NOTHING",
@@ -2330,8 +2408,8 @@ void Database::add_reaction(
 
 void Database::remove_reaction(
   const std::string& message_id, const std::string& user_id, const std::string& emoji) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3",
     message_id,
@@ -2341,8 +2419,8 @@ void Database::remove_reaction(
 }
 
 std::vector<Database::Reaction> Database::get_reactions(const std::string& message_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT r.emoji, r.user_id, u.username FROM reactions r "
     "JOIN users u ON r.user_id = u.id WHERE r.message_id = $1 ORDER BY r.created_at",
@@ -2358,8 +2436,8 @@ std::vector<Database::Reaction> Database::get_reactions(const std::string& messa
 
 std::map<std::string, std::vector<Database::Reaction>> Database::get_reactions_for_messages(
   const std::vector<std::string>& message_ids) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::map<std::string, std::vector<Reaction>> result;
   if (message_ids.empty()) return result;
@@ -2386,8 +2464,8 @@ std::map<std::string, std::vector<Database::Reaction>> Database::get_reactions_f
 }
 
 std::string Database::get_message_channel_id(const std::string& message_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT channel_id FROM messages WHERE id = $1", message_id);
   txn.commit();
   if (r.empty()) throw std::runtime_error("Message not found");
@@ -2397,9 +2475,9 @@ std::string Database::get_message_channel_id(const std::string& message_id) {
 // --- Invites ---
 
 std::string Database::create_invite(const std::string& created_by, int expiry_hours, int max_uses) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  auto conn = pool_.acquire();
   std::string token = random_hex(32);
-  pqxx::work txn(get_conn());
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO invite_tokens (token, created_by, expires_at, max_uses) "
     "VALUES ($1, $2, NOW() + ($3 || ' hours')::interval, $4)",
@@ -2412,8 +2490,8 @@ std::string Database::create_invite(const std::string& created_by, int expiry_ho
 }
 
 bool Database::validate_invite(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM invite_tokens WHERE token = $1 AND expires_at > NOW() "
     "AND (max_uses = 0 OR use_count < max_uses)",
@@ -2423,8 +2501,8 @@ bool Database::validate_invite(const std::string& token) {
 }
 
 void Database::use_invite(const std::string& token, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Increment use count and set used_by/used_at for the most recent use
   txn.exec_params(
     "UPDATE invite_tokens SET use_count = use_count + 1, used_by = $2, used_at = NOW() "
@@ -2443,8 +2521,8 @@ void Database::use_invite(const std::string& token, const std::string& user_id) 
 }
 
 std::vector<Database::InviteInfo> Database::list_invites() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT i.id, i.token, COALESCE(u.username, 'system'), "
     "i.expires_at::text, i.created_at::text, "
@@ -2481,8 +2559,8 @@ std::vector<Database::InviteInfo> Database::list_invites() {
 }
 
 bool Database::revoke_invite(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // For single-use (max_uses=1): only revoke if unused
   // For multi-use (max_uses!=1): always allow revoke (stops further uses)
   auto r = txn.exec_params(
@@ -2501,8 +2579,8 @@ std::string Database::create_join_request(
   const std::string& public_key,
   const std::string& auth_method,
   const std::string& credential_data) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO join_requests (username, display_name, public_key, auth_method, credential_data) "
     "VALUES ($1, $2, $3, $4, $5) RETURNING id",
@@ -2516,8 +2594,8 @@ std::string Database::create_join_request(
 }
 
 std::vector<Database::JoinRequest> Database::list_pending_requests() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT id, username, display_name, public_key, status, "
     "COALESCE(auth_method, ''), created_at::text "
@@ -2540,8 +2618,8 @@ std::vector<Database::JoinRequest> Database::list_pending_requests() {
 }
 
 std::optional<Database::JoinRequest> Database::get_join_request(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, username, display_name, public_key, status, "
     "COALESCE(auth_method, ''), COALESCE(credential_data, ''), "
@@ -2563,16 +2641,16 @@ std::optional<Database::JoinRequest> Database::get_join_request(const std::strin
 }
 
 void Database::set_join_request_session(const std::string& id, const std::string& session_token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE join_requests SET session_token = $2 WHERE id = $1", id, session_token);
   txn.commit();
 }
 
 void Database::update_join_request(
   const std::string& id, const std::string& status, const std::string& reviewed_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE join_requests SET status = $2, reviewed_by = $3 WHERE id = $1",
     id,
@@ -2588,8 +2666,8 @@ std::string Database::create_space_invite(
   const std::string& invited_user_id,
   const std::string& invited_by,
   const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO space_invites (space_id, invited_user_id, invited_by, role) "
     "VALUES ($1, $2, $3, $4) RETURNING id::text",
@@ -2603,8 +2681,8 @@ std::string Database::create_space_invite(
 
 std::vector<Database::SpaceInvite> Database::list_pending_space_invites(
   const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT si.id::text, si.space_id::text, s.name, "
     "si.invited_user_id::text, si.invited_by::text, u.username, "
@@ -2633,8 +2711,8 @@ std::vector<Database::SpaceInvite> Database::list_pending_space_invites(
 }
 
 std::optional<Database::SpaceInvite> Database::get_space_invite(const std::string& invite_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT si.id::text, si.space_id::text, s.name, "
     "si.invited_user_id::text, si.invited_by::text, u.username, "
@@ -2660,15 +2738,15 @@ std::optional<Database::SpaceInvite> Database::get_space_invite(const std::strin
 }
 
 void Database::update_space_invite_status(const std::string& invite_id, const std::string& status) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE space_invites SET status = $2 WHERE id = $1", invite_id, status);
   txn.commit();
 }
 
 bool Database::has_pending_space_invite(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM space_invites WHERE space_id = $1 AND invited_user_id = $2 AND status = "
     "'pending' LIMIT 1",
@@ -2681,9 +2759,9 @@ bool Database::has_pending_space_invite(const std::string& space_id, const std::
 // --- Device / Multi-key Management ---
 
 std::string Database::create_device_token(const std::string& user_id, int expiry_minutes) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  auto conn = pool_.acquire();
   std::string token = random_hex(32);
-  pqxx::work txn(get_conn());
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO device_tokens (user_id, token, expires_at) "
     "VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval)",
@@ -2695,8 +2773,8 @@ std::string Database::create_device_token(const std::string& user_id, int expiry
 }
 
 std::optional<std::string> Database::validate_device_token(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT user_id FROM device_tokens "
     "WHERE token = $1 AND expires_at > NOW() AND used = false",
@@ -2707,16 +2785,16 @@ std::optional<std::string> Database::validate_device_token(const std::string& to
 }
 
 void Database::mark_device_token_used(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE device_tokens SET used = true WHERE token = $1", token);
   txn.commit();
 }
 
 void Database::add_user_key(
   const std::string& user_id, const std::string& public_key, const std::string& device_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO user_keys (user_id, public_key, device_name) VALUES ($1, $2, $3)",
     user_id,
@@ -2726,8 +2804,8 @@ void Database::add_user_key(
 }
 
 std::vector<Database::UserKey> Database::list_user_keys(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id, public_key, device_name, created_at::text "
     "FROM user_keys WHERE user_id = $1 ORDER BY created_at",
@@ -2746,8 +2824,8 @@ std::vector<Database::UserKey> Database::list_user_keys(const std::string& user_
 }
 
 void Database::remove_user_key(const std::string& key_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto count_r = txn.exec_params("SELECT COUNT(*) FROM user_keys WHERE user_id = $1", user_id);
   if (count_r[0][0].as<int>() <= 1) {
     txn.abort();
@@ -2760,8 +2838,8 @@ void Database::remove_user_key(const std::string& key_id, const std::string& use
 // --- Server Settings ---
 
 std::optional<std::string> Database::get_setting(const std::string& key) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT value FROM server_settings WHERE key = $1", key);
   txn.commit();
   if (r.empty()) return std::nullopt;
@@ -2769,8 +2847,8 @@ std::optional<std::string> Database::get_setting(const std::string& key) {
 }
 
 void Database::set_setting(const std::string& key, const std::string& value) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO server_settings (key, value) VALUES ($1, $2) "
     "ON CONFLICT (key) DO UPDATE SET value = $2",
@@ -2780,8 +2858,8 @@ void Database::set_setting(const std::string& key, const std::string& value) {
 }
 
 int64_t Database::get_total_file_size() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT COALESCE((SELECT SUM(file_size) FROM messages WHERE file_id IS NOT NULL), 0) "
     "+ COALESCE((SELECT SUM(file_size) FROM space_file_versions), 0)");
@@ -2798,8 +2876,8 @@ void Database::store_webauthn_credential(
   int sign_count,
   const std::string& device_name,
   const std::string& transports) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO webauthn_credentials (user_id, credential_id, public_key, sign_count, "
     "device_name, transports) "
@@ -2815,8 +2893,8 @@ void Database::store_webauthn_credential(
 
 std::optional<Database::WebAuthnCredential> Database::find_webauthn_credential(
   const std::string& credential_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id, credential_id, public_key, sign_count, device_name, transports, "
     "created_at::text "
@@ -2839,8 +2917,8 @@ std::optional<Database::WebAuthnCredential> Database::find_webauthn_credential(
 
 std::vector<Database::WebAuthnCredential> Database::list_webauthn_credentials(
   const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id, credential_id, public_key, sign_count, device_name, transports, "
     "created_at::text "
@@ -2865,8 +2943,8 @@ std::vector<Database::WebAuthnCredential> Database::list_webauthn_credentials(
 }
 
 void Database::update_webauthn_sign_count(const std::string& credential_id, int new_count) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE webauthn_credentials SET sign_count = $2 WHERE credential_id = $1",
     credential_id,
@@ -2876,8 +2954,8 @@ void Database::update_webauthn_sign_count(const std::string& credential_id, int 
 
 void Database::remove_webauthn_credential(
   const std::string& credential_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto count_r =
     txn.exec_params("SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = $1", user_id);
   if (count_r[0][0].as<int>() <= 1) {
@@ -2892,8 +2970,8 @@ void Database::remove_webauthn_credential(
 }
 
 std::optional<User> Database::find_user_by_credential_id(const std::string& credential_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, u.public_key, u.role, u.is_online, "
     "u.last_seen::text, u.created_at::text, u.bio, u.status, u.avatar_file_id, u.profile_color, "
@@ -2923,8 +3001,8 @@ std::optional<User> Database::find_user_by_credential_id(const std::string& cred
 
 void Database::store_webauthn_challenge(
   const std::string& challenge, const std::string& extra_data_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO webauthn_challenges (challenge, extra_data) VALUES ($1, $2) "
     "ON CONFLICT (challenge) DO UPDATE SET extra_data = $2, created_at = NOW()",
@@ -2935,8 +3013,8 @@ void Database::store_webauthn_challenge(
 
 std::optional<Database::WebAuthnChallenge> Database::get_webauthn_challenge(
   const std::string& challenge) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT challenge, extra_data FROM webauthn_challenges "
     "WHERE challenge = $1 AND created_at > NOW() - INTERVAL '5 minutes'",
@@ -2948,15 +3026,15 @@ std::optional<Database::WebAuthnChallenge> Database::get_webauthn_challenge(
 }
 
 void Database::delete_webauthn_challenge(const std::string& challenge) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM webauthn_challenges WHERE challenge = $1", challenge);
   txn.commit();
 }
 
 bool Database::has_approved_join_request(const std::string& username) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM join_requests WHERE username = $1 AND status = 'approved' LIMIT 1", username);
   txn.commit();
@@ -2967,8 +3045,8 @@ bool Database::has_approved_join_request(const std::string& username) {
 
 void Database::store_pki_credential(
   const std::string& user_id, const std::string& public_key_spki, const std::string& device_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO pki_credentials (user_id, public_key, device_name) VALUES ($1, $2, $3)",
     user_id,
@@ -2978,8 +3056,8 @@ void Database::store_pki_credential(
 }
 
 std::vector<Database::PkiCredential> Database::list_pki_credentials(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id, public_key, device_name, created_at::text "
     "FROM pki_credentials WHERE user_id = $1 ORDER BY created_at",
@@ -2999,8 +3077,8 @@ std::vector<Database::PkiCredential> Database::list_pki_credentials(const std::s
 
 std::optional<Database::PkiCredential> Database::find_pki_credential_by_key(
   const std::string& public_key_spki) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id, public_key, device_name, created_at::text "
     "FROM pki_credentials WHERE public_key = $1",
@@ -3016,15 +3094,15 @@ std::optional<Database::PkiCredential> Database::find_pki_credential_by_key(
 }
 
 void Database::remove_pki_credential(const std::string& id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM pki_credentials WHERE id = $1 AND user_id = $2", id, user_id);
   txn.commit();
 }
 
 std::optional<User> Database::find_user_by_pki_key(const std::string& public_key_spki) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, u.public_key, u.role, u.is_online, "
     "u.last_seen::text, u.created_at::text, u.bio, u.status, u.avatar_file_id, u.profile_color, "
@@ -3054,8 +3132,8 @@ std::optional<User> Database::find_user_by_pki_key(const std::string& public_key
 
 void Database::store_recovery_keys(
   const std::string& user_id, const std::vector<std::string>& key_hashes) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   for (const auto& hash : key_hashes) {
     txn.exec_params("INSERT INTO recovery_keys (user_id, key_hash) VALUES ($1, $2)", user_id, hash);
   }
@@ -3063,8 +3141,8 @@ void Database::store_recovery_keys(
 }
 
 std::optional<std::string> Database::verify_and_consume_recovery_key(const std::string& key_hash) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, user_id FROM recovery_keys WHERE key_hash = $1 AND used = false LIMIT 1", key_hash);
   if (r.empty()) {
@@ -3079,8 +3157,8 @@ std::optional<std::string> Database::verify_and_consume_recovery_key(const std::
 }
 
 int Database::count_remaining_recovery_keys(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM recovery_keys WHERE user_id = $1 AND used = false", user_id);
   txn.commit();
@@ -3088,15 +3166,15 @@ int Database::count_remaining_recovery_keys(const std::string& user_id) {
 }
 
 void Database::delete_recovery_keys(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM recovery_keys WHERE user_id = $1", user_id);
   txn.commit();
 }
 
 int Database::count_user_credentials(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT (SELECT COUNT(*) FROM webauthn_credentials WHERE user_id = $1) + "
     "(SELECT COUNT(*) FROM pki_credentials WHERE user_id = $1)",
@@ -3109,9 +3187,9 @@ int Database::count_user_credentials(const std::string& user_id) {
 
 std::string Database::create_recovery_token(
   const std::string& created_by, const std::string& for_user_id, int expiry_hours) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  auto conn = pool_.acquire();
   std::string token = random_hex(32);
-  pqxx::work txn(get_conn());
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO recovery_tokens (token, created_by, for_user_id, expires_at) "
     "VALUES ($1, $2, $3, NOW() + ($4 || ' hours')::interval)",
@@ -3124,8 +3202,8 @@ std::string Database::create_recovery_token(
 }
 
 std::optional<std::string> Database::get_recovery_token_user_id(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT for_user_id FROM recovery_tokens "
     "WHERE token = $1 AND used = FALSE AND expires_at > NOW()",
@@ -3136,16 +3214,16 @@ std::optional<std::string> Database::get_recovery_token_user_id(const std::strin
 }
 
 void Database::use_recovery_token(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE recovery_tokens SET used = TRUE, used_at = NOW() WHERE token = $1", token);
   txn.commit();
 }
 
 bool Database::delete_recovery_token(const std::string& id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r =
     txn.exec_params("DELETE FROM recovery_tokens WHERE id = $1 AND used = FALSE RETURNING id", id);
   txn.commit();
@@ -3153,8 +3231,8 @@ bool Database::delete_recovery_token(const std::string& id) {
 }
 
 std::vector<Database::RecoveryTokenInfo> Database::list_recovery_tokens() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT rt.id, rt.token, COALESCE(c.username, 'system'), "
     "COALESCE(u.username, 'unknown'), rt.for_user_id, rt.used, "
@@ -3188,8 +3266,8 @@ void Database::update_read_state(
   const std::string& user_id,
   const std::string& message_id,
   const std::string& timestamp) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO channel_read_state (channel_id, user_id, last_read_at, last_read_message_id) "
     "VALUES ($1, $2, $3::timestamptz, $4::uuid) "
@@ -3214,8 +3292,8 @@ void Database::update_read_state(
 }
 
 std::vector<Database::UnreadCount> Database::get_unread_counts(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT cm.channel_id, COUNT(m.id)::int AS unread "
     "FROM channel_members cm "
@@ -3238,8 +3316,8 @@ std::vector<Database::UnreadCount> Database::get_unread_counts(const std::string
 }
 
 std::vector<Database::UnreadCount> Database::get_mention_unread_counts(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT mn.channel_id, COUNT(DISTINCT mn.message_id)::int AS unread "
     "FROM mentions mn "
@@ -3262,8 +3340,8 @@ std::vector<Database::UnreadCount> Database::get_mention_unread_counts(const std
 
 std::vector<Database::ReadReceipt> Database::get_channel_read_receipts(
   const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT crs.user_id, u.username, "
     "COALESCE(crs.last_read_message_id::text, ''), crs.last_read_at::text "
@@ -3285,8 +3363,8 @@ std::vector<Database::ReadReceipt> Database::get_channel_read_receipts(
 
 std::vector<Database::ChannelMemberUsername> Database::get_channel_member_usernames(
   const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT cm.user_id, u.username FROM channel_members cm "
     "JOIN users u ON u.id = cm.user_id WHERE cm.channel_id = $1",
@@ -3325,8 +3403,8 @@ void Database::store_mentions(
 
   if (mentioned_tokens.empty()) return;
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   bool is_channel_mention = false;
   for (const auto& token : mentioned_tokens) {
@@ -3367,8 +3445,8 @@ void Database::store_mentions(
 // --- Search ---
 
 std::vector<User> Database::search_users(const std::string& query, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, username, display_name, public_key, role, is_online, "
     "last_seen::text, created_at::text, bio, status, avatar_file_id, profile_color "
@@ -3407,8 +3485,8 @@ std::vector<Database::MessageSearchResult> Database::search_messages(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT m.id, m.channel_id, c.name, COALESCE(s.name,''), "
@@ -3450,8 +3528,8 @@ std::vector<Database::MessageSearchResult> Database::search_messages(
 
 std::vector<Database::MessageSearchResult> Database::browse_messages(
   const std::string& user_id, bool is_admin, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT m.id, m.channel_id, c.name, COALESCE(s.name,''), "
@@ -3490,8 +3568,8 @@ std::vector<Database::MessageSearchResult> Database::browse_messages(
 
 std::vector<Database::FileSearchResult> Database::search_files(
   const std::string& query, const std::string& user_id, bool is_admin, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   // Search message-attached files
   std::string msg_sql =
@@ -3562,8 +3640,8 @@ std::vector<Database::FileSearchResult> Database::search_files(
 
 std::vector<Database::SpaceSearchResult> Database::search_spaces(
   const std::string& query, const std::string& user_id, bool is_admin, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT s.id, s.name, s.description, s.is_public, "
@@ -3595,8 +3673,8 @@ std::vector<Database::SpaceSearchResult> Database::search_spaces(
 
 std::vector<Database::ChannelSearchResult> Database::search_channels(
   const std::string& query, const std::string& user_id, bool is_admin, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT c.id, c.name, c.description, COALESCE(s.name,''), "
@@ -3670,8 +3748,8 @@ std::vector<Database::MessageSearchResult> Database::search_composite_messages(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT m.id, m.channel_id, c.name, COALESCE(s.name,''), "
@@ -3720,8 +3798,8 @@ std::vector<Database::FileSearchResult> Database::search_composite_files(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT m.id::text, m.channel_id::text, c.name, "
@@ -3780,8 +3858,8 @@ std::vector<User> Database::search_composite_users(
   int limit,
   int offset) {
   (void)is_admin;
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT DISTINCT u.id, u.username, u.display_name, u.public_key, u.role, "
@@ -3865,8 +3943,8 @@ std::vector<Database::ChannelSearchResult> Database::search_composite_channels(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT DISTINCT c.id, c.name, c.description, COALESCE(s.name,''), "
@@ -3946,8 +4024,8 @@ std::vector<Database::SpaceSearchResult> Database::search_composite_spaces(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT DISTINCT s.id, s.name, s.description, s.is_public, "
@@ -4026,8 +4104,8 @@ std::vector<Database::SpaceSearchResult> Database::search_composite_spaces(
 
 std::vector<Message> Database::get_messages_around(
   const std::string& channel_id, const std::string& message_id, int limit) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   int half = limit / 2 + 1;
   std::string sql =
     std::string("SELECT * FROM (") + "(SELECT " + MSG_COLS_JOINED +
@@ -4060,8 +4138,8 @@ std::string Database::create_notification(
   const std::string& channel_id,
   const std::string& message_id,
   const std::string& content) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO notifications (user_id, type, source_user_id, channel_id, message_id, content) "
     "VALUES ($1, $2, NULLIF($3,'')::uuid, NULLIF($4,'')::uuid, NULLIF($5,'')::uuid, $6) "
@@ -4078,8 +4156,8 @@ std::string Database::create_notification(
 
 std::vector<Database::Notification> Database::get_notifications(
   const std::string& user_id, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT n.id, n.user_id, n.type, COALESCE(n.source_user_id::text,''), "
     "COALESCE(u.username,''), COALESCE(n.channel_id::text,''), "
@@ -4117,8 +4195,8 @@ std::vector<Database::Notification> Database::get_notifications(
 }
 
 int Database::get_unread_notification_count(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = false", user_id);
   txn.commit();
@@ -4127,8 +4205,8 @@ int Database::get_unread_notification_count(const std::string& user_id) {
 
 void Database::mark_notification_read(
   const std::string& notification_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE notifications SET is_read = true WHERE id = $1 AND user_id = $2",
     notification_id,
@@ -4137,8 +4215,8 @@ void Database::mark_notification_read(
 }
 
 void Database::mark_all_notifications_read(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE notifications SET is_read = true WHERE user_id = $1 AND is_read = false", user_id);
   txn.commit();
@@ -4146,8 +4224,8 @@ void Database::mark_all_notifications_read(const std::string& user_id) {
 
 int Database::mark_channel_notifications_read(
   const std::string& channel_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE notifications SET is_read = true WHERE user_id = $1 AND channel_id = $2 AND is_read = "
     "false RETURNING id",
@@ -4160,15 +4238,15 @@ int Database::mark_channel_notifications_read(
 // --- Archive management ---
 
 void Database::archive_channel(const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE channels SET is_archived = TRUE WHERE id = $1", channel_id);
   txn.commit();
 }
 
 void Database::unarchive_channel(const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE channels SET is_archived = FALSE WHERE id = $1", channel_id);
   txn.commit();
 }
@@ -4177,8 +4255,8 @@ void Database::unarchive_channel(const std::string& channel_id) {
 
 void Database::enable_space_tool(
   const std::string& space_id, const std::string& tool_name, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO space_tools (space_id, tool_name, enabled_by) "
     "VALUES ($1, $2, $3) ON CONFLICT (space_id, tool_name) DO NOTHING",
@@ -4189,16 +4267,16 @@ void Database::enable_space_tool(
 }
 
 void Database::disable_space_tool(const std::string& space_id, const std::string& tool_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM space_tools WHERE space_id = $1 AND tool_name = $2", space_id, tool_name);
   txn.commit();
 }
 
 bool Database::is_space_tool_enabled(const std::string& space_id, const std::string& tool_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT 1 FROM space_tools WHERE space_id = $1 AND tool_name = $2", space_id, tool_name);
   txn.commit();
@@ -4206,8 +4284,8 @@ bool Database::is_space_tool_enabled(const std::string& space_id, const std::str
 }
 
 std::vector<std::string> Database::get_space_tools(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT tool_name FROM space_tools WHERE space_id = $1 ORDER BY tool_name", space_id);
   txn.commit();
@@ -4223,8 +4301,8 @@ SpaceFile Database::create_space_folder(
   const std::string& parent_id,
   const std::string& name,
   const std::string& created_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   auto r = txn.exec_params(
     "INSERT INTO space_files (space_id, parent_id, name, is_folder, created_by) "
@@ -4262,8 +4340,8 @@ SpaceFile Database::create_space_file(
   int64_t file_size,
   const std::string& mime_type,
   const std::string& created_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   auto r = txn.exec_params(
     "INSERT INTO space_files (space_id, parent_id, name, is_folder, disk_file_id, file_size, "
@@ -4314,8 +4392,8 @@ SpaceFile Database::create_space_file(
 
 std::vector<SpaceFile> Database::list_space_files(
   const std::string& space_id, const std::string& parent_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   auto r = txn.exec_params(
     "SELECT sf.id::text, sf.space_id::text, sf.parent_id::text, sf.name, sf.is_folder, "
@@ -4364,8 +4442,8 @@ std::vector<SpaceFile> Database::list_space_files(
 
 std::vector<Database::SpaceFileEntry> Database::list_space_files_recursive(
   const std::string& space_id, const std::string& folder_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Recursive CTE that builds the relative path for every non-folder descendant.
   auto r = txn.exec_params(
     "WITH RECURSIVE tree AS ("
@@ -4400,8 +4478,8 @@ std::vector<Database::SpaceFileEntry> Database::list_space_files_recursive(
 }
 
 std::optional<SpaceFile> Database::find_space_file(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT sf.id::text, sf.space_id::text, sf.parent_id::text, sf.name, sf.is_folder, "
     "sf.disk_file_id, sf.file_size, sf.mime_type, sf.created_by::text, "
@@ -4430,16 +4508,16 @@ std::optional<SpaceFile> Database::find_space_file(const std::string& file_id) {
 }
 
 void Database::rename_space_file(const std::string& file_id, const std::string& new_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "UPDATE space_files SET name = $2, updated_at = NOW() WHERE id = $1", file_id, new_name);
   txn.commit();
 }
 
 void Database::move_space_file(const std::string& file_id, const std::string& new_parent_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = new_parent_id.empty() ? "" : new_parent_id;
   txn.exec_params(
     "UPDATE space_files SET parent_id = NULLIF($2, '')::uuid, updated_at = NOW() WHERE id = $1",
@@ -4449,8 +4527,8 @@ void Database::move_space_file(const std::string& file_id, const std::string& ne
 }
 
 void Database::soft_delete_space_file(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Soft-delete the file and all children recursively
   txn.exec_params(
     "WITH RECURSIVE descendants AS ("
@@ -4467,8 +4545,8 @@ void Database::soft_delete_space_file(const std::string& file_id) {
 }
 
 std::vector<std::string> Database::hard_delete_space_file(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   // Find all descendant file IDs (recursive for folders)
   auto descendants = txn.exec_params(
@@ -4523,16 +4601,16 @@ std::vector<std::string> Database::hard_delete_space_file(const std::string& fil
 
 void Database::set_space_file_tool_source(
   const std::string& file_id, const std::string& tool_source) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE space_files SET tool_source = $2 WHERE id = $1", file_id, tool_source);
   txn.commit();
 }
 
 std::vector<Database::StorageBreakdownEntry> Database::get_space_storage_breakdown(
   const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::vector<StorageBreakdownEntry> result;
 
   // Space files grouped by tool_source
@@ -4574,8 +4652,8 @@ std::vector<Database::StorageBreakdownEntry> Database::get_space_storage_breakdo
 }
 
 int64_t Database::get_total_personal_spaces_storage_used() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT COALESCE(SUM(v.file_size), 0) "
     "FROM space_file_versions v "
@@ -4587,8 +4665,8 @@ int64_t Database::get_total_personal_spaces_storage_used() {
 }
 
 int64_t Database::get_space_storage_used(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Include all versions of non-deleted files
   auto r = txn.exec_params(
     "SELECT COALESCE(SUM(v.file_size), 0) "
@@ -4601,8 +4679,8 @@ int64_t Database::get_space_storage_used(const std::string& space_id) {
 }
 
 std::vector<SpaceFile> Database::get_space_file_path(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "WITH RECURSIVE ancestors AS ("
     "  SELECT id, parent_id, name, 0 AS depth FROM space_files WHERE id = $1 "
@@ -4628,8 +4706,8 @@ bool Database::space_file_name_exists(
   const std::string& parent_id,
   const std::string& name,
   const std::string& exclude_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   std::string exclude_val = exclude_id.empty() ? "" : exclude_id;
   auto r = txn.exec_params(
@@ -4654,8 +4732,8 @@ void Database::set_file_permission(
   const std::string& user_id,
   const std::string& permission,
   const std::string& granted_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO space_file_permissions (file_id, user_id, permission, granted_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -4668,16 +4746,16 @@ void Database::set_file_permission(
 }
 
 void Database::remove_file_permission(const std::string& file_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM space_file_permissions WHERE file_id = $1 AND user_id = $2", file_id, user_id);
   txn.commit();
 }
 
 std::vector<SpaceFilePermission> Database::get_file_permissions(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT p.id::text, p.file_id::text, p.user_id::text, u.username, u.display_name, "
     "p.permission, p.granted_by::text, g.username, p.created_at::text "
@@ -4707,8 +4785,8 @@ std::vector<SpaceFilePermission> Database::get_file_permissions(const std::strin
 
 std::string Database::get_effective_file_permission(
   const std::string& file_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "WITH RECURSIVE ancestors AS ("
     "  SELECT id, parent_id FROM space_files WHERE id = $1 "
@@ -4735,8 +4813,8 @@ std::string Database::get_effective_file_permission(
 // --- Space File Versions ---
 
 std::vector<SpaceFileVersion> Database::list_file_versions(const std::string& file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT v.id::text, v.file_id::text, v.version_number, v.disk_file_id, v.file_size, "
     "v.mime_type, v.uploaded_by::text, u.username, v.created_at::text "
@@ -4769,8 +4847,8 @@ SpaceFileVersion Database::create_file_version(
   int64_t file_size,
   const std::string& mime_type,
   const std::string& uploaded_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto vr = txn.exec_params(
     "SELECT COALESCE(MAX(version_number), 0) + 1 FROM space_file_versions WHERE file_id = $1",
     file_id);
@@ -4807,8 +4885,8 @@ SpaceFileVersion Database::create_file_version(
 }
 
 std::optional<SpaceFileVersion> Database::get_file_version(const std::string& version_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT v.id::text, v.file_id::text, v.version_number, v.disk_file_id, v.file_size, "
     "v.mime_type, v.uploaded_by::text, u.username, v.created_at::text "
@@ -4834,8 +4912,8 @@ std::optional<SpaceFileVersion> Database::get_file_version(const std::string& ve
 // --- Storage admin ---
 
 std::vector<Database::SpaceStorageInfo> Database::get_all_space_storage() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec(
     "SELECT s.id::text, s.name, "
     "COALESCE((SELECT SUM(v.file_size) FROM space_file_versions v "
@@ -4865,8 +4943,8 @@ std::vector<Database::SpaceStorageInfo> Database::get_all_space_storage() {
 }
 
 void Database::delete_oldest_file_versions(const std::string& space_id, int64_t bytes_to_free) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Delete oldest non-current versions one at a time until enough space freed
   auto r = txn.exec_params(
     "SELECT v.id, v.file_size FROM space_file_versions v "
@@ -4886,16 +4964,16 @@ void Database::delete_oldest_file_versions(const std::string& space_id, int64_t 
 }
 
 void Database::archive_space(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE spaces SET is_archived = TRUE WHERE id = $1", space_id);
   txn.exec_params("UPDATE channels SET is_archived = TRUE WHERE space_id = $1", space_id);
   txn.commit();
 }
 
 void Database::unarchive_space(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE spaces SET is_archived = FALSE WHERE id = $1", space_id);
   txn.exec_params("UPDATE channels SET is_archived = FALSE WHERE space_id = $1", space_id);
   txn.commit();
@@ -4921,8 +4999,8 @@ void Database::set_server_locked_down(bool locked_down) {
 
 int Database::count_channel_members_with_role(
   const std::string& channel_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM channel_members WHERE channel_id = $1 AND role = $2", channel_id, role);
   txn.commit();
@@ -4930,8 +5008,8 @@ int Database::count_channel_members_with_role(
 }
 
 int Database::count_space_members_with_role(const std::string& space_id, const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM space_members WHERE space_id = $1 AND role = $2", space_id, role);
   txn.commit();
@@ -4939,16 +5017,16 @@ int Database::count_space_members_with_role(const std::string& space_id, const s
 }
 
 int Database::count_users_with_role(const std::string& role) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT COUNT(*) FROM users WHERE role = $1", role);
   txn.commit();
   return r[0][0].as<int>();
 }
 
 int Database::count_channel_members(const std::string& channel_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r =
     txn.exec_params("SELECT COUNT(*) FROM channel_members WHERE channel_id = $1", channel_id);
   txn.commit();
@@ -4958,8 +5036,8 @@ int Database::count_channel_members(const std::string& channel_id) {
 // --- Password credentials ---
 
 std::optional<User> Database::find_user_by_username(const std::string& username) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT u.id, u.username, u.display_name, u.public_key, u.role, u.is_online, "
     "u.last_seen::text, u.created_at::text, u.bio, u.status, u.avatar_file_id, u.profile_color, "
@@ -4985,8 +5063,8 @@ std::optional<User> Database::find_user_by_username(const std::string& username)
 }
 
 void Database::store_password(const std::string& user_id, const std::string& password_hash) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Remove any existing password for this user (one password per user)
   txn.exec_params("DELETE FROM password_credentials WHERE user_id = $1", user_id);
   txn.exec_params(
@@ -4997,8 +5075,8 @@ void Database::store_password(const std::string& user_id, const std::string& pas
 }
 
 std::optional<std::string> Database::get_password_hash(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r =
     txn.exec_params("SELECT password_hash FROM password_credentials WHERE user_id = $1", user_id);
   txn.commit();
@@ -5007,8 +5085,8 @@ std::optional<std::string> Database::get_password_hash(const std::string& user_i
 }
 
 std::string Database::get_password_created_at(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT created_at::text FROM password_credentials WHERE user_id = $1", user_id);
   txn.commit();
@@ -5017,8 +5095,8 @@ std::string Database::get_password_created_at(const std::string& user_id) {
 }
 
 void Database::add_password_history(const std::string& user_id, const std::string& password_hash) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO password_history (user_id, password_hash) VALUES ($1, $2)",
     user_id,
@@ -5027,8 +5105,8 @@ void Database::add_password_history(const std::string& user_id, const std::strin
 }
 
 std::vector<std::string> Database::get_password_history(const std::string& user_id, int count) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT password_hash FROM password_history WHERE user_id = $1 "
     "ORDER BY created_at DESC LIMIT $2",
@@ -5043,16 +5121,16 @@ std::vector<std::string> Database::get_password_history(const std::string& user_
 }
 
 bool Database::has_password(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT COUNT(*) FROM password_credentials WHERE user_id = $1", user_id);
   txn.commit();
   return r[0][0].as<int>() > 0;
 }
 
 void Database::delete_password(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM password_credentials WHERE user_id = $1", user_id);
   txn.exec_params("DELETE FROM password_history WHERE user_id = $1", user_id);
   txn.commit();
@@ -5060,8 +5138,8 @@ void Database::delete_password(const std::string& user_id) {
 
 bool Database::is_password_expired(const std::string& user_id, int max_age_days) {
   if (max_age_days <= 0) return false;
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM password_credentials "
     "WHERE user_id = $1 AND created_at < NOW() - INTERVAL '1 day' * $2",
@@ -5074,8 +5152,8 @@ bool Database::is_password_expired(const std::string& user_id, int max_age_days)
 // --- TOTP credentials ---
 
 void Database::store_totp_secret(const std::string& user_id, const std::string& secret) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM totp_credentials WHERE user_id = $1", user_id);
   txn.exec_params(
     "INSERT INTO totp_credentials (user_id, secret, verified) VALUES ($1, $2, FALSE)",
@@ -5085,8 +5163,8 @@ void Database::store_totp_secret(const std::string& user_id, const std::string& 
 }
 
 std::optional<std::string> Database::get_totp_secret(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT secret FROM totp_credentials WHERE user_id = $1 AND verified = TRUE", user_id);
   txn.commit();
@@ -5095,8 +5173,8 @@ std::optional<std::string> Database::get_totp_secret(const std::string& user_id)
 }
 
 std::optional<std::string> Database::get_unverified_totp_secret(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT secret FROM totp_credentials WHERE user_id = $1", user_id);
   txn.commit();
   if (r.empty()) return std::nullopt;
@@ -5104,22 +5182,22 @@ std::optional<std::string> Database::get_unverified_totp_secret(const std::strin
 }
 
 void Database::verify_totp(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("UPDATE totp_credentials SET verified = TRUE WHERE user_id = $1", user_id);
   txn.commit();
 }
 
 void Database::delete_totp(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM totp_credentials WHERE user_id = $1", user_id);
   txn.commit();
 }
 
 bool Database::has_totp(const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT COUNT(*) FROM totp_credentials WHERE user_id = $1 AND verified = TRUE", user_id);
   txn.commit();
@@ -5130,8 +5208,8 @@ bool Database::has_totp(const std::string& user_id) {
 
 std::string Database::create_mfa_pending_token(
   const std::string& user_id, const std::string& auth_method, int expiry_seconds) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Clean up any existing pending tokens for this user
   txn.exec_params("DELETE FROM mfa_pending_tokens WHERE user_id = $1", user_id);
   auto r = txn.exec_params(
@@ -5146,8 +5224,8 @@ std::string Database::create_mfa_pending_token(
 
 std::optional<std::pair<std::string, std::string>> Database::validate_mfa_pending_token(
   const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT user_id::text, auth_method FROM mfa_pending_tokens "
     "WHERE id = $1 AND expires_at > NOW()",
@@ -5158,15 +5236,15 @@ std::optional<std::pair<std::string, std::string>> Database::validate_mfa_pendin
 }
 
 void Database::delete_mfa_pending_token(const std::string& token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM mfa_pending_tokens WHERE id = $1", token);
   txn.commit();
 }
 
 void Database::cleanup_expired_mfa_tokens() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec("DELETE FROM mfa_pending_tokens WHERE expires_at < NOW()");
   txn.commit();
 }
@@ -5184,8 +5262,8 @@ CalendarEvent Database::create_calendar_event(
   bool all_day,
   const std::string& rrule,
   const std::string& created_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO calendar_events (space_id, title, description, location, color, "
     "start_time, end_time, all_day, rrule, created_by) "
@@ -5229,8 +5307,8 @@ CalendarEvent Database::update_calendar_event(
   const std::string& end_time,
   bool all_day,
   const std::string& rrule) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE calendar_events SET title = $2, description = $3, location = $4, color = $5, "
     "start_time = $6, end_time = $7, all_day = $8, rrule = $9, updated_at = NOW() "
@@ -5264,15 +5342,15 @@ CalendarEvent Database::update_calendar_event(
 }
 
 void Database::delete_calendar_event(const std::string& event_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM calendar_events WHERE id = $1", event_id);
   txn.commit();
 }
 
 std::optional<CalendarEvent> Database::find_calendar_event(const std::string& event_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT e.id::text, e.space_id::text, e.title, e.description, e.location, e.color, "
     "e.start_time::text, e.end_time::text, e.all_day, e.rrule, "
@@ -5303,8 +5381,8 @@ std::optional<CalendarEvent> Database::find_calendar_event(const std::string& ev
 
 std::vector<CalendarEvent> Database::list_calendar_events(
   const std::string& space_id, const std::string& range_start, const std::string& range_end) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Return events that either:
   // 1. Non-recurring and overlap the range, OR
   // 2. Recurring (rrule != '') and started before range_end (expansion happens in handler)
@@ -5357,8 +5435,8 @@ CalendarEventException Database::create_event_exception(
   const std::string& start_time,
   const std::string& end_time,
   bool all_day) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO calendar_event_exceptions "
     "(event_id, original_date, is_deleted, title, description, location, color, "
@@ -5399,15 +5477,15 @@ CalendarEventException Database::create_event_exception(
 }
 
 void Database::delete_event_exception(const std::string& exception_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM calendar_event_exceptions WHERE id = $1", exception_id);
   txn.commit();
 }
 
 std::vector<CalendarEventException> Database::get_event_exceptions(const std::string& event_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id::text, event_id::text, original_date::text, is_deleted, "
     "title, description, location, color, start_time::text, end_time::text, all_day, "
@@ -5443,8 +5521,8 @@ void Database::set_event_rsvp(
   const std::string& user_id,
   const std::string& occurrence_date,
   const std::string& status) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO calendar_event_rsvps (event_id, user_id, occurrence_date, status) "
     "VALUES ($1, $2, $3, $4) "
@@ -5459,8 +5537,8 @@ void Database::set_event_rsvp(
 
 std::vector<CalendarEventRsvp> Database::get_event_rsvps(
   const std::string& event_id, const std::string& occurrence_date) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT r.event_id::text, r.user_id::text, u.username, u.display_name, "
     "r.occurrence_date::text, r.status, r.responded_at::text "
@@ -5488,8 +5566,8 @@ std::vector<CalendarEventRsvp> Database::get_event_rsvps(
 
 std::optional<std::string> Database::get_user_rsvp(
   const std::string& event_id, const std::string& user_id, const std::string& occurrence_date) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT status FROM calendar_event_rsvps "
     "WHERE event_id = $1 AND user_id = $2 AND occurrence_date = $3",
@@ -5508,8 +5586,8 @@ void Database::set_calendar_permission(
   const std::string& user_id,
   const std::string& permission,
   const std::string& granted_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO calendar_permissions (space_id, user_id, permission, granted_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -5522,16 +5600,16 @@ void Database::set_calendar_permission(
 }
 
 void Database::remove_calendar_permission(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM calendar_permissions WHERE space_id = $1 AND user_id = $2", space_id, user_id);
   txn.commit();
 }
 
 std::vector<CalendarPermission> Database::get_calendar_permissions(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT p.id::text, p.space_id::text, p.user_id::text, u.username, u.display_name, "
     "p.permission, p.granted_by::text, g.username, p.created_at::text "
@@ -5561,8 +5639,8 @@ std::vector<CalendarPermission> Database::get_calendar_permissions(const std::st
 
 std::string Database::get_calendar_permission(
   const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT permission FROM calendar_permissions "
     "WHERE space_id = $1 AND user_id = $2",
@@ -5580,8 +5658,8 @@ TaskBoard Database::create_task_board(
   const std::string& name,
   const std::string& description,
   const std::string& created_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_boards (space_id, name, description, created_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -5603,8 +5681,8 @@ TaskBoard Database::create_task_board(
 }
 
 std::vector<TaskBoard> Database::list_task_boards(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT b.id, b.space_id, b.name, b.description, b.created_by, "
     "u.username, b.created_at::text, b.updated_at::text "
@@ -5629,8 +5707,8 @@ std::vector<TaskBoard> Database::list_task_boards(const std::string& space_id) {
 }
 
 std::optional<TaskBoard> Database::find_task_board(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT b.id, b.space_id, b.name, b.description, b.created_by, "
     "u.username, b.created_at::text, b.updated_at::text "
@@ -5653,8 +5731,8 @@ std::optional<TaskBoard> Database::find_task_board(const std::string& board_id) 
 
 TaskBoard Database::update_task_board(
   const std::string& board_id, const std::string& name, const std::string& description) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE task_boards SET name = $2, description = $3, updated_at = NOW() "
     "WHERE id = $1 "
@@ -5675,8 +5753,8 @@ TaskBoard Database::update_task_board(
 }
 
 void Database::delete_task_board(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_boards WHERE id = $1", board_id);
   txn.commit();
 }
@@ -5689,8 +5767,8 @@ TaskColumn Database::create_task_column(
   int position,
   int wip_limit,
   const std::string& color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_columns (board_id, name, position, wip_limit, color) "
     "VALUES ($1, $2, $3, $4, $5) "
@@ -5713,8 +5791,8 @@ TaskColumn Database::create_task_column(
 }
 
 std::vector<TaskColumn> Database::list_task_columns(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, board_id, name, position, wip_limit, color, created_at::text "
     "FROM task_columns WHERE board_id = $1 ORDER BY position ASC",
@@ -5737,8 +5815,8 @@ std::vector<TaskColumn> Database::list_task_columns(const std::string& board_id)
 
 TaskColumn Database::update_task_column(
   const std::string& column_id, const std::string& name, int wip_limit, const std::string& color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE task_columns SET name = $2, wip_limit = $3, color = $4 WHERE id = $1 "
     "RETURNING board_id, position, created_at::text",
@@ -5760,8 +5838,8 @@ TaskColumn Database::update_task_column(
 
 void Database::reorder_task_columns(
   const std::string& board_id, const std::vector<std::string>& column_ids) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   for (int i = 0; i < (int)column_ids.size(); i++) {
     txn.exec_params(
       "UPDATE task_columns SET position = $1 WHERE id = $2 AND board_id = $3",
@@ -5773,15 +5851,15 @@ void Database::reorder_task_columns(
 }
 
 void Database::delete_task_column(const std::string& column_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_columns WHERE id = $1", column_id);
   txn.commit();
 }
 
 std::optional<TaskColumn> Database::find_task_column(const std::string& column_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, board_id, name, position, wip_limit, color, created_at::text "
     "FROM task_columns WHERE id = $1",
@@ -5813,8 +5891,8 @@ Task Database::create_task(
   const std::string& created_by,
   const std::string& start_date,
   int duration_days) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO tasks (board_id, column_id, title, description, priority, "
     "due_date, start_date, duration_days, color, position, created_by) "
@@ -5852,8 +5930,8 @@ Task Database::create_task(
 }
 
 std::vector<Task> Database::list_tasks(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT t.id, t.board_id, t.column_id, t.title, t.description, t.priority, "
     "COALESCE(t.due_date::text, ''), COALESCE(t.start_date::text, ''), "
@@ -5887,8 +5965,8 @@ std::vector<Task> Database::list_tasks(const std::string& board_id) {
 }
 
 std::vector<Task> Database::list_column_tasks(const std::string& column_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT t.id, t.board_id, t.column_id, t.title, t.description, t.priority, "
     "COALESCE(t.due_date::text, ''), COALESCE(t.start_date::text, ''), "
@@ -5922,8 +6000,8 @@ std::vector<Task> Database::list_column_tasks(const std::string& column_id) {
 }
 
 std::optional<Task> Database::find_task(const std::string& task_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT t.id, t.board_id, t.column_id, t.title, t.description, t.priority, "
     "COALESCE(t.due_date::text, ''), COALESCE(t.start_date::text, ''), "
@@ -5964,8 +6042,8 @@ Task Database::update_task(
   int position,
   const std::string& start_date,
   int duration_days) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE tasks SET column_id = $2, title = $3, description = $4, "
     "priority = $5, due_date = NULLIF($6, '')::timestamptz, color = $7, position = $8, "
@@ -6002,15 +6080,15 @@ Task Database::update_task(
 }
 
 void Database::delete_task(const std::string& task_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM tasks WHERE id = $1", task_id);
   txn.commit();
 }
 
 void Database::reorder_tasks(const std::vector<std::pair<std::string, int>>& task_positions) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   for (const auto& [task_id, pos] : task_positions) {
     txn.exec_params("UPDATE tasks SET position = $2 WHERE id = $1", task_id, pos);
   }
@@ -6018,8 +6096,8 @@ void Database::reorder_tasks(const std::vector<std::pair<std::string, int>>& tas
 }
 
 int Database::get_column_task_count(const std::string& column_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params("SELECT COUNT(*) FROM tasks WHERE column_id = $1", column_id);
   txn.commit();
   return r[0][0].as<int>();
@@ -6028,8 +6106,8 @@ int Database::get_column_task_count(const std::string& column_id) {
 // --- Task Assignees ---
 
 void Database::add_task_assignee(const std::string& task_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO task_assignees (task_id, user_id) VALUES ($1, $2) "
     "ON CONFLICT DO NOTHING",
@@ -6039,16 +6117,16 @@ void Database::add_task_assignee(const std::string& task_id, const std::string& 
 }
 
 void Database::remove_task_assignee(const std::string& task_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM task_assignees WHERE task_id = $1 AND user_id = $2", task_id, user_id);
   txn.commit();
 }
 
 std::vector<TaskAssignee> Database::get_task_assignees(const std::string& task_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT a.task_id, a.user_id, u.username, u.display_name "
     "FROM task_assignees a JOIN users u ON a.user_id = u.id "
@@ -6071,8 +6149,8 @@ std::vector<TaskAssignee> Database::get_task_assignees(const std::string& task_i
 
 TaskLabel Database::create_task_label(
   const std::string& board_id, const std::string& name, const std::string& color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_labels (board_id, name, color) VALUES ($1, $2, $3) RETURNING id",
     board_id,
@@ -6088,8 +6166,8 @@ TaskLabel Database::create_task_label(
 }
 
 std::vector<TaskLabel> Database::list_task_labels(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, board_id, name, color FROM task_labels WHERE board_id = $1 ORDER BY name",
     board_id);
@@ -6108,8 +6186,8 @@ std::vector<TaskLabel> Database::list_task_labels(const std::string& board_id) {
 
 TaskLabel Database::update_task_label(
   const std::string& label_id, const std::string& name, const std::string& color) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE task_labels SET name = $2, color = $3 WHERE id = $1 RETURNING board_id",
     label_id,
@@ -6125,15 +6203,15 @@ TaskLabel Database::update_task_label(
 }
 
 void Database::delete_task_label(const std::string& label_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_labels WHERE id = $1", label_id);
   txn.commit();
 }
 
 void Database::assign_task_label(const std::string& task_id, const std::string& label_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO task_label_assignments (task_id, label_id) VALUES ($1, $2) "
     "ON CONFLICT DO NOTHING",
@@ -6143,16 +6221,16 @@ void Database::assign_task_label(const std::string& task_id, const std::string& 
 }
 
 void Database::unassign_task_label(const std::string& task_id, const std::string& label_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM task_label_assignments WHERE task_id = $1 AND label_id = $2", task_id, label_id);
   txn.commit();
 }
 
 std::vector<TaskLabel> Database::get_task_labels(const std::string& task_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT l.id, l.board_id, l.name, l.color "
     "FROM task_labels l JOIN task_label_assignments a ON l.id = a.label_id "
@@ -6175,8 +6253,8 @@ std::vector<TaskLabel> Database::get_task_labels(const std::string& task_id) {
 
 TaskChecklist Database::create_task_checklist(
   const std::string& task_id, const std::string& title, int position) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_checklists (task_id, title, position) VALUES ($1, $2, $3) RETURNING id",
     task_id,
@@ -6192,8 +6270,8 @@ TaskChecklist Database::create_task_checklist(
 }
 
 std::vector<TaskChecklist> Database::get_task_checklists(const std::string& task_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, task_id, title, position FROM task_checklists WHERE task_id = $1 ORDER BY position",
     task_id);
@@ -6212,8 +6290,8 @@ std::vector<TaskChecklist> Database::get_task_checklists(const std::string& task
 
 TaskChecklist Database::update_task_checklist(
   const std::string& checklist_id, const std::string& title) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE task_checklists SET title = $2 WHERE id = $1 RETURNING task_id, position",
     checklist_id,
@@ -6228,16 +6306,16 @@ TaskChecklist Database::update_task_checklist(
 }
 
 void Database::delete_task_checklist(const std::string& checklist_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_checklists WHERE id = $1", checklist_id);
   txn.commit();
 }
 
 TaskChecklistItem Database::create_checklist_item(
   const std::string& checklist_id, const std::string& content, int position) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_checklist_items (checklist_id, content, position) VALUES ($1, $2, $3) "
     "RETURNING id",
@@ -6255,8 +6333,8 @@ TaskChecklistItem Database::create_checklist_item(
 }
 
 std::vector<TaskChecklistItem> Database::get_checklist_items(const std::string& checklist_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT id, checklist_id, content, is_checked, position "
     "FROM task_checklist_items WHERE checklist_id = $1 ORDER BY position",
@@ -6277,8 +6355,8 @@ std::vector<TaskChecklistItem> Database::get_checklist_items(const std::string& 
 
 TaskChecklistItem Database::update_checklist_item(
   const std::string& item_id, const std::string& content, bool is_checked) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "UPDATE task_checklist_items SET content = $2, is_checked = $3 WHERE id = $1 "
     "RETURNING checklist_id, position",
@@ -6296,8 +6374,8 @@ TaskChecklistItem Database::update_checklist_item(
 }
 
 void Database::delete_checklist_item(const std::string& item_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_checklist_items WHERE id = $1", item_id);
   txn.commit();
 }
@@ -6308,8 +6386,8 @@ TaskDependency Database::add_task_dependency(
   const std::string& task_id,
   const std::string& depends_on_id,
   const std::string& dependency_type) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO task_dependencies (task_id, depends_on_id, dependency_type) "
     "VALUES ($1, $2, $3) ON CONFLICT (task_id, depends_on_id) DO UPDATE SET dependency_type = $3 "
@@ -6328,15 +6406,15 @@ TaskDependency Database::add_task_dependency(
 }
 
 void Database::remove_task_dependency(const std::string& dependency_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params("DELETE FROM task_dependencies WHERE id = $1", dependency_id);
   txn.commit();
 }
 
 std::vector<TaskDependency> Database::get_task_dependencies(const std::string& board_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT d.id, d.task_id, d.depends_on_id, d.dependency_type, d.created_at::text "
     "FROM task_dependencies d "
@@ -6364,8 +6442,8 @@ void Database::log_task_activity(
   const std::string& user_id,
   const std::string& action,
   const std::string& details) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO task_activity (task_id, user_id, action, details) VALUES ($1, $2, $3, $4)",
     task_id,
@@ -6376,8 +6454,8 @@ void Database::log_task_activity(
 }
 
 std::vector<TaskActivity> Database::get_task_activity(const std::string& task_id, int limit) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT a.id, a.task_id, a.user_id, u.username, u.display_name, "
     "a.action, a.details, a.created_at::text "
@@ -6409,8 +6487,8 @@ void Database::set_task_permission(
   const std::string& user_id,
   const std::string& permission,
   const std::string& granted_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO task_board_permissions (space_id, user_id, permission, granted_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -6423,16 +6501,16 @@ void Database::set_task_permission(
 }
 
 void Database::remove_task_permission(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM task_board_permissions WHERE space_id = $1 AND user_id = $2", space_id, user_id);
   txn.commit();
 }
 
 std::vector<TaskBoardPermission> Database::get_task_permissions(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT p.id, p.space_id, p.user_id, u.username, u.display_name, "
     "p.permission, p.granted_by, g.username, p.created_at::text "
@@ -6460,8 +6538,8 @@ std::vector<TaskBoardPermission> Database::get_task_permissions(const std::strin
 }
 
 std::string Database::get_task_permission(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT permission FROM task_board_permissions "
     "WHERE space_id = $1 AND user_id = $2",
@@ -6485,8 +6563,8 @@ WikiPage Database::create_wiki_page(
   const std::string& icon,
   int position,
   const std::string& created_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   auto r = txn.exec_params(
     "INSERT INTO wiki_pages (space_id, parent_id, title, slug, is_folder, content, "
@@ -6535,8 +6613,8 @@ WikiPage Database::create_wiki_page(
 
 std::vector<WikiPage> Database::list_wiki_pages(
   const std::string& space_id, const std::string& parent_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   auto r = txn.exec_params(
     "SELECT wp.id::text, wp.space_id::text, wp.parent_id::text, wp.title, wp.slug, "
@@ -6578,8 +6656,8 @@ std::vector<WikiPage> Database::list_wiki_pages(
 }
 
 std::optional<WikiPage> Database::find_wiki_page(const std::string& page_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT wp.id::text, wp.space_id::text, wp.parent_id::text, wp.title, wp.slug, "
     "wp.is_folder, wp.content, wp.content_text, wp.icon, wp.cover_image_file_id::text, "
@@ -6623,8 +6701,8 @@ WikiPage Database::update_wiki_page(
   const std::string& icon,
   const std::string& cover_image_file_id,
   const std::string& edited_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string cover_val = cover_image_file_id.empty() ? "" : cover_image_file_id;
   auto r = txn.exec_params(
     "UPDATE wiki_pages SET title = $2, slug = $3, content = $4, content_text = $5, "
@@ -6667,8 +6745,8 @@ WikiPage Database::update_wiki_page(
 }
 
 void Database::move_wiki_page(const std::string& page_id, const std::string& new_parent_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = new_parent_id.empty() ? "" : new_parent_id;
   txn.exec_params(
     "UPDATE wiki_pages SET parent_id = NULLIF($2, '')::uuid, updated_at = NOW() WHERE id = $1",
@@ -6678,8 +6756,8 @@ void Database::move_wiki_page(const std::string& page_id, const std::string& new
 }
 
 void Database::reorder_wiki_pages(const std::vector<std::pair<std::string, int>>& page_positions) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   for (const auto& [page_id, position] : page_positions) {
     txn.exec_params("UPDATE wiki_pages SET position = $2 WHERE id = $1", page_id, position);
   }
@@ -6687,8 +6765,8 @@ void Database::reorder_wiki_pages(const std::vector<std::pair<std::string, int>>
 }
 
 void Database::soft_delete_wiki_page(const std::string& page_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   // Soft-delete the page and all children recursively
   txn.exec_params(
     "WITH RECURSIVE descendants AS ("
@@ -6705,8 +6783,8 @@ void Database::soft_delete_wiki_page(const std::string& page_id) {
 }
 
 std::vector<WikiPage> Database::get_wiki_page_path(const std::string& page_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "WITH RECURSIVE ancestors AS ("
     "  SELECT id, parent_id, title, 0 AS depth FROM wiki_pages WHERE id = $1 "
@@ -6732,8 +6810,8 @@ bool Database::wiki_page_slug_exists(
   const std::string& parent_id,
   const std::string& slug,
   const std::string& exclude_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string parent_val = parent_id.empty() ? "" : parent_id;
   std::string exclude_val = exclude_id.empty() ? "" : exclude_id;
   auto r = txn.exec_params(
@@ -6752,8 +6830,8 @@ bool Database::wiki_page_slug_exists(
 }
 
 std::vector<WikiPage> Database::get_wiki_tree(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT wp.id::text, wp.parent_id::text, wp.title, wp.slug, wp.is_folder, "
     "wp.icon, wp.position, u.username "
@@ -6788,8 +6866,8 @@ WikiPageVersion Database::create_wiki_page_version(
   const std::string& content_text,
   const std::string& edited_by,
   bool is_major) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto vr = txn.exec_params(
     "SELECT COALESCE(MAX(version_number), 0) + 1 FROM wiki_page_versions WHERE page_id = $1",
     page_id);
@@ -6821,8 +6899,8 @@ WikiPageVersion Database::create_wiki_page_version(
 
 std::vector<WikiPageVersion> Database::list_wiki_page_versions(
   const std::string& page_id, bool major_only) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   std::string query =
     "SELECT v.id::text, v.page_id::text, v.version_number, v.title, v.content, "
     "v.content_text, v.edited_by::text, u.username, v.created_at::text, v.is_major "
@@ -6852,8 +6930,8 @@ std::vector<WikiPageVersion> Database::list_wiki_page_versions(
 }
 
 std::optional<WikiPageVersion> Database::get_wiki_page_version(const std::string& version_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT v.id::text, v.page_id::text, v.version_number, v.title, v.content, "
     "v.content_text, v.edited_by::text, u.username, v.created_at::text "
@@ -6883,8 +6961,8 @@ void Database::set_wiki_page_permission(
   const std::string& user_id,
   const std::string& permission,
   const std::string& granted_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO wiki_page_permissions (page_id, user_id, permission, granted_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -6897,16 +6975,16 @@ void Database::set_wiki_page_permission(
 }
 
 void Database::remove_wiki_page_permission(const std::string& page_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM wiki_page_permissions WHERE page_id = $1 AND user_id = $2", page_id, user_id);
   txn.commit();
 }
 
 std::vector<WikiPagePermission> Database::get_wiki_page_permissions(const std::string& page_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT p.id::text, p.page_id::text, p.user_id::text, u.username, u.display_name, "
     "p.permission, p.granted_by::text, g.username, p.created_at::text "
@@ -6936,8 +7014,8 @@ std::vector<WikiPagePermission> Database::get_wiki_page_permissions(const std::s
 
 std::string Database::get_effective_wiki_page_permission(
   const std::string& page_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "WITH RECURSIVE ancestors AS ("
     "  SELECT id, parent_id FROM wiki_pages WHERE id = $1 "
@@ -6968,8 +7046,8 @@ void Database::set_wiki_permission(
   const std::string& user_id,
   const std::string& permission,
   const std::string& granted_by) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "INSERT INTO wiki_permissions (space_id, user_id, permission, granted_by) "
     "VALUES ($1, $2, $3, $4) "
@@ -6982,16 +7060,16 @@ void Database::set_wiki_permission(
 }
 
 void Database::remove_wiki_permission(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   txn.exec_params(
     "DELETE FROM wiki_permissions WHERE space_id = $1 AND user_id = $2", space_id, user_id);
   txn.commit();
 }
 
 std::vector<WikiPermission> Database::get_wiki_permissions(const std::string& space_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT p.id, p.space_id, p.user_id, u.username, u.display_name, "
     "p.permission, p.granted_by, g.username, p.created_at::text "
@@ -7019,8 +7097,8 @@ std::vector<WikiPermission> Database::get_wiki_permissions(const std::string& sp
 }
 
 std::string Database::get_wiki_permission(const std::string& space_id, const std::string& user_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "SELECT permission FROM wiki_permissions "
     "WHERE space_id = $1 AND user_id = $2",
@@ -7040,8 +7118,8 @@ std::vector<Database::WikiSearchResult> Database::search_wiki_pages(
   bool is_admin,
   int limit,
   int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   // Match by full-text content/title search OR partial title ILIKE
   std::string sql =
@@ -7087,8 +7165,8 @@ std::vector<Database::WikiSearchResult> Database::search_wiki_pages(
 
 std::vector<Database::WikiSearchResult> Database::browse_wiki_pages(
   const std::string& user_id, bool is_admin, int limit, int offset) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  pqxx::work txn(get_conn());
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
 
   std::string sql =
     "SELECT wp.id::text, wp.space_id::text, s.name, wp.title, "
@@ -7121,4 +7199,185 @@ std::vector<Database::WikiSearchResult> Database::browse_wiki_pages(
     results.push_back(res);
   }
   return results;
+}
+
+// --- AI Conversations ---
+
+AiConversation Database::create_ai_conversation(const std::string& user_id, const std::string& title) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "INSERT INTO ai_conversations (user_id, title) VALUES ($1, $2) "
+    "RETURNING id::text, user_id::text, title, created_at::text, updated_at::text",
+    user_id, title);
+  txn.commit();
+  return AiConversation{
+    r[0][0].as<std::string>(),
+    r[0][1].as<std::string>(),
+    r[0][2].as<std::string>(),
+    r[0][3].as<std::string>(),
+    r[0][4].as<std::string>()};
+}
+
+std::vector<AiConversation> Database::list_ai_conversations(
+  const std::string& user_id, int limit, int offset) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "SELECT id::text, user_id::text, title, created_at::text, updated_at::text "
+    "FROM ai_conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3",
+    user_id, limit, offset);
+  txn.commit();
+  std::vector<AiConversation> result;
+  for (const auto& row : r) {
+    result.push_back(AiConversation{
+      row[0].as<std::string>(),
+      row[1].as<std::string>(),
+      row[2].as<std::string>(),
+      row[3].as<std::string>(),
+      row[4].as<std::string>()});
+  }
+  return result;
+}
+
+std::optional<AiConversation> Database::find_ai_conversation(const std::string& id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "SELECT id::text, user_id::text, title, created_at::text, updated_at::text "
+    "FROM ai_conversations WHERE id = $1",
+    id);
+  txn.commit();
+  if (r.empty()) return std::nullopt;
+  return AiConversation{
+    r[0][0].as<std::string>(),
+    r[0][1].as<std::string>(),
+    r[0][2].as<std::string>(),
+    r[0][3].as<std::string>(),
+    r[0][4].as<std::string>()};
+}
+
+void Database::delete_ai_conversation(const std::string& id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  txn.exec_params("DELETE FROM ai_conversations WHERE id = $1", id);
+  txn.commit();
+}
+
+void Database::update_ai_conversation_title(const std::string& id, const std::string& title) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  txn.exec_params("UPDATE ai_conversations SET title = $2, updated_at = NOW() WHERE id = $1", id, title);
+  txn.commit();
+}
+
+void Database::touch_ai_conversation(const std::string& id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  txn.exec_params("UPDATE ai_conversations SET updated_at = NOW() WHERE id = $1", id);
+  txn.commit();
+}
+
+// --- AI Messages ---
+
+AiMessage Database::create_ai_message(
+  const std::string& conversation_id,
+  const std::string& role,
+  const std::string& content,
+  const std::string& tool_calls,
+  const std::string& tool_call_id,
+  const std::string& tool_name) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  pqxx::result r;
+  if (tool_calls.empty()) {
+    r = txn.exec_params(
+      "INSERT INTO ai_messages (conversation_id, role, content, tool_call_id, tool_name) "
+      "VALUES ($1, $2, $3, $4, $5) "
+      "RETURNING id::text, conversation_id::text, role, content, "
+      "tool_calls::text, tool_call_id, tool_name, created_at::text",
+      conversation_id, role, content,
+      tool_call_id.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_call_id),
+      tool_name.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_name));
+  } else {
+    r = txn.exec_params(
+      "INSERT INTO ai_messages (conversation_id, role, content, tool_calls, tool_call_id, tool_name) "
+      "VALUES ($1, $2, $3, $4::jsonb, $5, $6) "
+      "RETURNING id::text, conversation_id::text, role, content, "
+      "tool_calls::text, tool_call_id, tool_name, created_at::text",
+      conversation_id, role, content, tool_calls,
+      tool_call_id.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_call_id),
+      tool_name.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_name));
+  }
+  txn.commit();
+  return AiMessage{
+    r[0][0].as<std::string>(),
+    r[0][1].as<std::string>(),
+    r[0][2].as<std::string>(),
+    r[0][3].as<std::string>(),
+    r[0][4].is_null() ? "" : r[0][4].as<std::string>(),
+    r[0][5].is_null() ? "" : r[0][5].as<std::string>(),
+    r[0][6].is_null() ? "" : r[0][6].as<std::string>(),
+    r[0][7].as<std::string>()};
+}
+
+std::vector<AiMessage> Database::get_ai_messages(const std::string& conversation_id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "SELECT id::text, conversation_id::text, role, content, "
+    "tool_calls::text, tool_call_id, tool_name, created_at::text "
+    "FROM ai_messages WHERE conversation_id = $1 ORDER BY created_at ASC",
+    conversation_id);
+  txn.commit();
+  std::vector<AiMessage> result;
+  for (const auto& row : r) {
+    result.push_back(AiMessage{
+      row[0].as<std::string>(),
+      row[1].as<std::string>(),
+      row[2].as<std::string>(),
+      row[3].as<std::string>(),
+      row[4].is_null() ? "" : row[4].as<std::string>(),
+      row[5].is_null() ? "" : row[5].as<std::string>(),
+      row[6].is_null() ? "" : row[6].as<std::string>(),
+      row[7].as<std::string>()});
+  }
+  return result;
+}
+
+// --- User Settings ---
+
+std::optional<std::string> Database::get_user_setting(
+  const std::string& user_id, const std::string& key) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "SELECT value FROM user_settings WHERE user_id = $1 AND key = $2", user_id, key);
+  txn.commit();
+  if (r.empty()) return std::nullopt;
+  return r[0][0].as<std::string>();
+}
+
+void Database::set_user_setting(
+  const std::string& user_id, const std::string& key, const std::string& value) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  txn.exec_params(
+    "INSERT INTO user_settings (user_id, key, value) VALUES ($1, $2, $3) "
+    "ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value",
+    user_id, key, value);
+  txn.commit();
+}
+
+std::map<std::string, std::string> Database::get_all_user_settings(const std::string& user_id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "SELECT key, value FROM user_settings WHERE user_id = $1", user_id);
+  txn.commit();
+  std::map<std::string, std::string> result;
+  for (const auto& row : r) {
+    result[row[0].as<std::string>()] = row[1].as<std::string>();
+  }
+  return result;
 }

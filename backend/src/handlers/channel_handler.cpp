@@ -169,6 +169,9 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         m["reply_to_content"] = msg.reply_to_content;
         m["reply_to_is_deleted"] = msg.reply_to_is_deleted;
       }
+      if (msg.is_ai_assisted) {
+        m["is_ai_assisted"] = true;
+      }
       auto it = reactions_map.find(msg.id);
       if (it != reactions_map.end() && !it->second.empty()) {
         json rarr = json::array();

@@ -1,6 +1,7 @@
 import { useChatStore } from '../../stores/chatStore';
 import { ConversationList } from '../conversations/ConversationList';
 import { SpacePanel } from '../spaces/SpacePanel';
+import { AiConversationList } from '../ai/AiConversationList';
 
 interface Props {
   onCreateConversation: () => void;
@@ -34,6 +35,10 @@ export function SidePanel({
         onSelect={onSelect}
       />
     );
+  }
+
+  if (activeView.type === 'ai') {
+    return <AiConversationList />;
   }
 
   return (

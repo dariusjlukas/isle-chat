@@ -48,7 +48,10 @@ import { StorageManager } from './components/admin/StorageManager';
 import { DangerZone } from './components/admin/DangerZone';
 import { SystemMonitor } from './components/admin/SystemMonitor';
 import { UserSettings } from './components/settings/UserSettings';
+import { AiChatPanel } from './components/ai/AiChatPanel';
+import { ResizeHandle } from './components/common/ResizeHandle';
 import { ConnectionLostModal } from './components/common/ConnectionLostModal';
+import { useResizablePanel } from './hooks/useResizablePanel';
 import { useConnectionState } from './hooks/useConnectionState';
 import { useWebSocketConnection } from './hooks/useWebSocket';
 import { wsService } from './services/websocket';
@@ -104,6 +107,34 @@ function App() {
   const activeToolView = useChatStore((s) => s.activeToolView);
   const serverName = useChatStore((s) => s.serverName);
   const serverIconFileId = useChatStore((s) => s.serverIconFileId);
+  const setLlmEnabled = useChatStore((s) => s.setLlmEnabled);
+  const showAiPanel = useChatStore((s) => s.showAiPanel);
+  const setShowAiPanel = useChatStore((s) => s.setShowAiPanel);
+  const sidePanelCollapsed = useChatStore((s) => s.sidePanelCollapsed);
+
+  const {
+    width: sidebarWidth,
+    isResizing: isSidebarResizing,
+    handleMouseDown: handleSidebarResize,
+  } = useResizablePanel({
+    defaultWidth: 288,
+    minWidth: 200,
+    maxWidth: 500,
+    side: 'left',
+    storageKey: 'sidebar-width',
+  });
+
+  const {
+    width: aiPanelWidth,
+    isResizing: isAiPanelResizing,
+    handleMouseDown: handleAiPanelResize,
+  } = useResizablePanel({
+    defaultWidth: 380,
+    minWidth: 300,
+    maxWidth: 700,
+    side: 'right',
+    storageKey: 'ai-panel-width',
+  });
 
   const isOwner = user?.role === 'owner';
   const adminCategories: SettingsCategory[] = [
@@ -203,6 +234,9 @@ function App() {
       store.setServerName(config.server_name);
       store.setServerIconFileId(config.server_icon_file_id || null);
       store.setServerIconDarkFileId(config.server_icon_dark_file_id || null);
+      if (config.llm_enabled !== undefined) {
+        setLlmEnabled(config.llm_enabled);
+      }
       if (
         !config.setup_completed &&
         (user?.role === 'admin' || user?.role === 'owner')
@@ -217,6 +251,7 @@ function App() {
     setSpaces,
     setActiveView,
     setSpaceInvites,
+    setLlmEnabled,
     user?.role,
   ]);
 
@@ -341,7 +376,15 @@ function App() {
           onSharedWithMe={() => setShowSharedWithMe(true)}
           open={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
+          width={sidebarWidth}
+          isResizing={isSidebarResizing}
         />
+        {!sidePanelCollapsed && (
+          <ResizeHandle
+            onMouseDown={handleSidebarResize}
+            isResizing={isSidebarResizing}
+          />
+        )}
         {activeToolView?.type === 'files' ? (
           <FileBrowser spaceId={activeToolView.spaceId} />
         ) : activeToolView?.type === 'calendar' ? (
@@ -354,6 +397,18 @@ function App() {
           <MinigamesView spaceId={activeToolView.spaceId} />
         ) : (
           <ChatArea />
+        )}
+        {showAiPanel && (
+          <>
+            <ResizeHandle
+              onMouseDown={handleAiPanelResize}
+              isResizing={isAiPanelResizing}
+            />
+            <AiChatPanel
+              onClose={() => setShowAiPanel(false)}
+              width={aiPanelWidth}
+            />
+          </>
         )}
       </div>
 

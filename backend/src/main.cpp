@@ -17,6 +17,8 @@
 #include "handlers/task_board_handler.h"
 #include "handlers/user_handler.h"
 #include "handlers/wiki_handler.h"
+#include "ai/tool_registry.h"
+#include "handlers/ai_handler.h"
 #include "upload_manager.h"
 #include "ws/ws_handler.h"
 
@@ -56,6 +58,10 @@ void run_server(
   TaskBoardHandler<SSL> task_board_handler{db, config};
   WikiHandler<SSL> wiki_handler{db, config, upload_manager};
 
+  ToolRegistry tool_registry;
+  register_all_tools(tool_registry);
+  AiHandler<SSL> ai_handler{db, config, ws_handler, tool_registry};
+
   // CORS preflight
   app.options("/*", [](auto* res, auto* req) {
     res->writeHeader("Access-Control-Allow-Origin", "*")
@@ -76,6 +82,7 @@ void run_server(
   space_handler.register_routes(app);
   channel_handler.register_routes(app);
   user_handler.register_routes(app);
+  ai_handler.register_routes(app);
   admin_handler.register_routes(app);
   file_handler.register_routes(app);
   ws_handler.register_routes(app);
@@ -141,6 +148,10 @@ void run_server(
       };
     }
 
+    // LLM / AI assistant
+    auto llm_enabled = db.get_setting("llm_enabled");
+    resp["llm_enabled"] = (llm_enabled && *llm_enabled == "true");
+
     res->writeHeader("Content-Type", "application/json")
       ->writeHeader("Access-Control-Allow-Origin", "*")
       ->end(resp.dump());
@@ -185,7 +196,7 @@ int main() {
   std::cout << "[Config] Upload dir: " << config.upload_dir << std::endl;
 
   // Connect to database
-  Database db(config.pg_connection_string());
+  Database db(config.pg_connection_string(), config.db_pool_size);
   db.run_migrations();
   db.set_all_users_offline();
 

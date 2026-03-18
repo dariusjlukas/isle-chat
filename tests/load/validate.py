@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post-run validation for load tests.
 
-Parses Locust CSV output, checks against thresholds, and verifies
+Parses CSV stats output, checks against thresholds, and verifies
 database integrity. Exits 0 on pass, 1 on failure.
 
 Usage:
@@ -12,17 +12,10 @@ import argparse
 import csv
 import json
 import os
+import subprocess
 import sys
-
-import requests
-
-from helpers.db import (
-    count_messages,
-    count_users,
-    get_pg_dsn,
-    verify_no_duplicate_messages,
-    verify_no_orphaned_messages,
-)
+import urllib.request
+import urllib.error
 
 
 def load_thresholds():
@@ -32,8 +25,8 @@ def load_thresholds():
         return json.load(f)
 
 
-def parse_locust_stats(reports_dir):
-    """Parse Locust's CSV stats output."""
+def parse_stats_csv(reports_dir):
+    """Parse the CSV stats output."""
     stats_file = None
     for name in os.listdir(reports_dir):
         if name.endswith("_stats.csv"):
@@ -101,29 +94,98 @@ def check_thresholds(stats, thresholds):
     return violations
 
 
+def _pg_dsn():
+    """Build PostgreSQL connection string from environment variables."""
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    user = os.environ.get("POSTGRES_USER", "chatapp")
+    password = os.environ.get("POSTGRES_PASSWORD", "changeme")
+    db = os.environ.get("POSTGRES_DB", "chatapp")
+    return f"host={host} port={port} dbname={db} user={user} password={password}"
+
+
+def _run_sql(query):
+    """Run a SQL query via psql and return rows. Returns None on failure."""
+    host = os.environ.get("POSTGRES_HOST", "localhost")
+    port = os.environ.get("POSTGRES_PORT", "5432")
+    user = os.environ.get("POSTGRES_USER", "chatapp")
+    db = os.environ.get("POSTGRES_DB", "chatapp")
+    env = {**os.environ, "PGPASSWORD": os.environ.get("POSTGRES_PASSWORD", "changeme")}
+
+    try:
+        result = subprocess.run(
+            ["psql", "-h", host, "-p", port, "-U", user, "-d", db,
+             "-t", "-A", "-c", query],
+            capture_output=True, text=True, timeout=10, env=env)
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def check_db_integrity():
     """Run database integrity checks. Returns list of issues."""
     issues = []
 
     try:
-        dsn = get_pg_dsn()
+        # Try psycopg2 first (more reliable), fall back to psql CLI
+        try:
+            import psycopg2
+            dsn = _pg_dsn()
+            conn = psycopg2.connect(dsn)
+            cur = conn.cursor()
 
-        dupes = verify_no_duplicate_messages(dsn)
-        if dupes:
-            issues.append(f"Found {len(dupes)} duplicate message IDs")
+            cur.execute("SELECT id, COUNT(*) FROM messages GROUP BY id HAVING COUNT(*) > 1")
+            dupes = cur.fetchall()
+            if dupes:
+                issues.append(f"Found {len(dupes)} duplicate message IDs")
 
-        orphans = verify_no_orphaned_messages(dsn)
-        if orphans > 0:
-            issues.append(f"Found {orphans} orphaned messages "
-                          "(referencing non-existent channels)")
+            cur.execute("""
+                SELECT COUNT(*) FROM messages m
+                LEFT JOIN channels c ON m.channel_id = c.id
+                WHERE c.id IS NULL
+            """)
+            orphans = cur.fetchone()[0]
+            if orphans > 0:
+                issues.append(f"Found {orphans} orphaned messages")
 
-        msg_count = count_messages(dsn)
-        user_count = count_users(dsn)
-        print(f"  Database: {msg_count} messages, {user_count} users")
+            cur.execute("SELECT COUNT(*) FROM messages WHERE NOT is_deleted")
+            msg_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM users")
+            user_count = cur.fetchone()[0]
+            print(f"  Database: {msg_count} messages, {user_count} users")
+
+            cur.close()
+            conn.close()
+            return issues
+
+        except ImportError:
+            pass
+
+        # Fallback: use psql CLI
+        msg_count = _run_sql("SELECT COUNT(*) FROM messages WHERE NOT is_deleted")
+        user_count = _run_sql("SELECT COUNT(*) FROM users")
+        if msg_count is not None and user_count is not None:
+            print(f"  Database: {msg_count} messages, {user_count} users")
+
+            dupes = _run_sql(
+                "SELECT COUNT(*) FROM (SELECT id FROM messages GROUP BY id HAVING COUNT(*) > 1) d")
+            if dupes and int(dupes) > 0:
+                issues.append(f"Found {dupes} duplicate message IDs")
+
+            orphans = _run_sql("""
+                SELECT COUNT(*) FROM messages m
+                LEFT JOIN channels c ON m.channel_id = c.id
+                WHERE c.id IS NULL
+            """)
+            if orphans and int(orphans) > 0:
+                issues.append(f"Found {orphans} orphaned messages")
+        else:
+            print("  WARNING: Could not check database (psycopg2 not installed, psql not available)")
 
     except Exception as e:
         print(f"  WARNING: Could not check database: {e}")
-        # DB checks are best-effort — don't fail the run
 
     return issues
 
@@ -131,12 +193,13 @@ def check_db_integrity():
 def check_server_health(host):
     """Check that the server is still responsive."""
     try:
-        r = requests.get(f"{host}/api/health", timeout=5)
-        if r.status_code == 200:
-            print("  Server health: OK")
-            return []
-        else:
-            return [f"Server health check returned {r.status_code}"]
+        req = urllib.request.Request(f"{host}/api/health", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                print("  Server health: OK")
+                return []
+            else:
+                return [f"Server health check returned {resp.status}"]
     except Exception as e:
         return [f"Server health check failed: {e}"]
 
@@ -144,7 +207,7 @@ def check_server_health(host):
 def main():
     parser = argparse.ArgumentParser(description="Validate load test results")
     parser.add_argument("--reports-dir", default="reports",
-                        help="Directory containing Locust CSV reports")
+                        help="Directory containing CSV reports")
     parser.add_argument("--host", default="http://127.0.0.1:9099",
                         help="Server URL for health check")
     args = parser.parse_args()
@@ -156,7 +219,7 @@ def main():
 
     # 1. Parse and check stats
     print("Checking performance thresholds...")
-    stats = parse_locust_stats(args.reports_dir)
+    stats = parse_stats_csv(args.reports_dir)
     if stats:
         print(f"  Total requests: {stats['total_requests']}")
         print(f"  Failures: {stats['total_failures']}")

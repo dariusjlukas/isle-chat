@@ -818,6 +818,9 @@ json WsHandler<SSL>::message_to_json(const Message& msg) {
     j["reply_to_content"] = msg.reply_to_content;
     j["reply_to_is_deleted"] = msg.reply_to_is_deleted;
   }
+  if (msg.is_ai_assisted) {
+    j["is_ai_assisted"] = true;
+  }
   return j;
 }
 

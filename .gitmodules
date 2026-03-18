@@ -7,3 +7,6 @@
 [submodule "backend/libs/argon2"]
 	path = backend/libs/argon2
 	url = https://github.com/P-H-C/phc-winner-argon2.git
+[submodule "backend/libs/cpp-httplib"]
+	path = backend/libs/cpp-httplib
+	url = https://github.com/yhirose/cpp-httplib.git

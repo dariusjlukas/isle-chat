@@ -17,6 +17,7 @@ import {
   ModalBody,
   ModalFooter,
   Slider,
+  Textarea,
 } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCamera, faTrashCan } from '@fortawesome/free-solid-svg-icons';
@@ -189,6 +190,14 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
     );
   }, [personalSpacesStorageValue, personalSpacesStorageUnit]);
 
+  // LLM / AI
+  const [llmEnabled, setLlmEnabled] = useState(false);
+  const [llmApiUrl, setLlmApiUrl] = useState('');
+  const [llmModel, setLlmModel] = useState('gpt-oss:120b');
+  const [llmApiKey, setLlmApiKey] = useState('');
+  const [llmMaxTokens, setLlmMaxTokens] = useState(4096);
+  const [llmSystemPrompt, setLlmSystemPrompt] = useState('');
+
   // Password policy
   const [pwMinLength, setPwMinLength] = useState('8');
   const [pwRequireUpper, setPwRequireUpper] = useState(true);
@@ -249,6 +258,12 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
         personalSpacesStorageUnit,
         personalSpacesTotalStorageValue,
         personalSpacesTotalStorageUnit,
+        llmEnabled,
+        llmApiUrl,
+        llmModel,
+        llmApiKey,
+        llmMaxTokens,
+        llmSystemPrompt,
       }),
     [
       serverName,
@@ -282,6 +297,12 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
       personalSpacesStorageUnit,
       personalSpacesTotalStorageValue,
       personalSpacesTotalStorageUnit,
+      llmEnabled,
+      llmApiUrl,
+      llmModel,
+      llmApiKey,
+      llmMaxTokens,
+      llmSystemPrompt,
     ],
   );
 
@@ -326,6 +347,12 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
       personalSpacesStorageUnit,
       personalSpacesTotalStorageValue,
       personalSpacesTotalStorageUnit,
+      llmEnabled,
+      llmApiUrl,
+      llmModel,
+      llmApiKey,
+      llmMaxTokens,
+      llmSystemPrompt,
     });
   };
 
@@ -404,6 +431,13 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
       setPersonalSpacesTotalStorageValue('0');
       setPersonalSpacesTotalStorageUnit('GB');
     }
+
+    setLlmEnabled(data.llm_enabled ?? false);
+    setLlmApiUrl(data.llm_api_url ?? '');
+    setLlmModel(data.llm_model ?? 'gpt-oss:120b');
+    setLlmApiKey(data.llm_api_key ?? '');
+    setLlmMaxTokens(data.llm_max_tokens ?? 4096);
+    setLlmSystemPrompt(data.llm_system_prompt ?? '');
   };
 
   useEffect(() => {
@@ -453,6 +487,12 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
       personal_spaces_total_storage_limit: Math.round(
         personalSpacesTotalStorageBytes,
       ),
+      llm_enabled: llmEnabled,
+      llm_api_url: llmApiUrl,
+      llm_model: llmModel,
+      llm_api_key: llmApiKey,
+      llm_max_tokens: llmMaxTokens,
+      llm_system_prompt: llmSystemPrompt,
     };
   };
 
@@ -1185,6 +1225,87 @@ export function ServerSettings({ isSetup, onComplete, onDirtyChange }: Props) {
             )}
           </div>
         </>
+
+        <Divider />
+
+        {/* AI / LLM */}
+        <div>
+          <div className='flex items-center justify-between mb-2'>
+            <p className='text-sm font-medium text-foreground'>AI Assistant</p>
+            <Switch
+              isSelected={llmEnabled}
+              onValueChange={setLlmEnabled}
+              size='sm'
+            />
+          </div>
+
+          {llmEnabled && (
+            <div className='space-y-3 pl-1'>
+              <div>
+                <p className='text-xs text-default-500 mb-1'>LLM API URL</p>
+                <Input
+                  placeholder='http://localhost:8080/v1'
+                  value={llmApiUrl}
+                  onValueChange={setLlmApiUrl}
+                  variant='bordered'
+                  size='sm'
+                />
+              </div>
+              <div>
+                <p className='text-xs text-default-500 mb-1'>Model</p>
+                <Input
+                  placeholder='gpt-oss:120b'
+                  value={llmModel}
+                  onValueChange={setLlmModel}
+                  variant='bordered'
+                  size='sm'
+                  className='w-64'
+                />
+              </div>
+              <div>
+                <p className='text-xs text-default-500 mb-1'>
+                  API Key (optional)
+                </p>
+                <Input
+                  type='password'
+                  placeholder='Optional'
+                  value={llmApiKey}
+                  onValueChange={setLlmApiKey}
+                  variant='bordered'
+                  size='sm'
+                  className='w-64'
+                />
+              </div>
+              <div>
+                <p className='text-xs text-default-500 mb-1'>Max Tokens</p>
+                <Input
+                  type='number'
+                  value={String(llmMaxTokens)}
+                  onValueChange={(v) => {
+                    setLlmMaxTokens(Number(v) || 4096);
+                  }}
+                  variant='bordered'
+                  size='sm'
+                  className='w-32'
+                  min='1'
+                />
+              </div>
+              <div>
+                <p className='text-xs text-default-500 mb-1'>
+                  System Prompt (optional)
+                </p>
+                <Textarea
+                  placeholder='Override the default AI system prompt...'
+                  value={llmSystemPrompt}
+                  onValueChange={setLlmSystemPrompt}
+                  variant='bordered'
+                  size='sm'
+                  minRows={3}
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         <Button
           color={isDirty ? 'warning' : 'primary'}

@@ -30,6 +30,9 @@ target_compile_definitions(uSockets PUBLIC LIBUS_USE_OPENSSL)
 # nlohmann/json (header-only)
 set(JSON_DIR ${CMAKE_SOURCE_DIR}/libs/json/single_include)
 
+# cpp-httplib (header-only HTTP client, uses OpenSSL for HTTPS)
+set(HTTPLIB_DIR ${CMAKE_SOURCE_DIR}/libs/cpp-httplib)
+
 # Argon2 (built from source)
 set(ARGON2_DIR ${CMAKE_SOURCE_DIR}/libs/argon2)
 add_library(argon2 STATIC
@@ -49,6 +52,7 @@ set(LIB_SOURCES
     src/auth/webauthn.cpp
     src/auth/password.cpp
     src/auth/totp.cpp
+    src/db/connection_pool.cpp
     src/db/database.cpp
     src/handlers/auth_handler.cpp
     src/handlers/auth_payload_utils.cpp
@@ -72,6 +76,9 @@ set(LIB_SOURCES
     src/recurrence.cpp
     src/upload_manager.cpp
     src/ws/ws_handler.cpp
+    src/ai/llm_client.cpp
+    src/ai/tool_registry.cpp
+    src/handlers/ai_handler.cpp
 )
 
 add_library(chat-lib STATIC ${LIB_SOURCES})
@@ -80,6 +87,7 @@ target_include_directories(chat-lib PUBLIC
     ${UWS_DIR}
     ${USOCKETS_DIR}/src
     ${JSON_DIR}
+    ${HTTPLIB_DIR}
     src
 )
 
@@ -93,7 +101,7 @@ target_link_libraries(chat-lib PUBLIC
     pthread
 )
 
-target_compile_definitions(chat-lib PUBLIC LIBUS_USE_OPENSSL)
+target_compile_definitions(chat-lib PUBLIC LIBUS_USE_OPENSSL CPPHTTPLIB_OPENSSL_SUPPORT)
 
 # Compiler warnings for project code
 target_compile_options(chat-lib PRIVATE -Wall -Wextra -Wno-unused-parameter)

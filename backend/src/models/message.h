@@ -19,4 +19,5 @@ struct Message {
   std::string reply_to_username;
   std::string reply_to_content;
   bool reply_to_is_deleted = false;
+  bool is_ai_assisted = false;
 };

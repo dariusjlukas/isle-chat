@@ -784,6 +784,44 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     });
     res->onAborted([]() {});
   });
+
+  // User settings (key-value preferences)
+  app.get("/api/users/me/settings", [this](auto* res, auto* req) {
+    auto user_id = get_user_id(res, req);
+    if (user_id.empty()) return;
+    auto settings = db.get_all_user_settings(user_id);
+    json j = json::object();
+    for (const auto& [key, value] : settings) {
+      j[key] = value;
+    }
+    res->writeHeader("Content-Type", "application/json")->end(j.dump());
+  });
+
+  app.put("/api/users/me/settings", [this](auto* res, auto* req) {
+    auto user_id_copy = get_user_id(res, req);
+    std::string body;
+    res->onData([this, res, user_id = std::move(user_id_copy), body = std::move(body)](
+      std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      if (user_id.empty()) return;
+      try {
+        auto j = json::parse(body);
+        for (auto& [key, value] : j.items()) {
+          if (!value.is_string()) continue;
+          // Only allow agent_* settings
+          if (key.substr(0, 6) != "agent_") continue;
+          db.set_user_setting(user_id, key, value.get<std::string>());
+        }
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+      } catch (const std::exception& e) {
+        res->writeStatus("400")
+          ->writeHeader("Content-Type", "application/json")
+          ->end(json({{"error", e.what()}}).dump());
+      }
+    });
+    res->onAborted([]() {});
+  });
 }
 
 template <bool SSL>

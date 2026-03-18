@@ -821,6 +821,13 @@ json AdminHandler<SSL>::build_settings_response() {
   snapshot.personal_spaces_total_storage_limit =
     db.get_setting("personal_spaces_total_storage_limit");
 
+  snapshot.llm_enabled = db.get_setting("llm_enabled");
+  snapshot.llm_api_url = db.get_setting("llm_api_url");
+  snapshot.llm_model = db.get_setting("llm_model");
+  snapshot.llm_api_key = db.get_setting("llm_api_key");
+  snapshot.llm_max_tokens = db.get_setting("llm_max_tokens");
+  snapshot.llm_system_prompt = db.get_setting("llm_system_prompt");
+
   return admin_settings::build_settings_response(snapshot);
 }
 

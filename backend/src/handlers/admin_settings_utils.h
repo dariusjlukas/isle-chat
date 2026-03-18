@@ -48,6 +48,14 @@ struct Snapshot {
   std::optional<std::string> personal_spaces_minigames_enabled;
   std::optional<std::string> personal_spaces_storage_limit;
   std::optional<std::string> personal_spaces_total_storage_limit;
+
+  // LLM / AI assistant
+  std::optional<std::string> llm_enabled;
+  std::optional<std::string> llm_api_url;
+  std::optional<std::string> llm_model;
+  std::optional<std::string> llm_api_key;
+  std::optional<std::string> llm_max_tokens;
+  std::optional<std::string> llm_system_prompt;
 };
 
 json build_settings_response(const Snapshot& snapshot);

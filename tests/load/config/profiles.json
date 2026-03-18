@@ -28,5 +28,11 @@
     "spawn_rate": 5,
     "run_time": "120s",
     "description": "Quick CI validation run"
+  },
+  "max_throughput": {
+    "users": 2000,
+    "spawn_rate": 200,
+    "run_time": "300s",
+    "description": "Maximum throughput test to find the server ceiling"
   }
 }

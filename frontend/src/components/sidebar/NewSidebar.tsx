@@ -11,6 +11,8 @@ interface Props {
   onSharedWithMe?: () => void;
   open: boolean;
   onClose: () => void;
+  width?: number;
+  isResizing?: boolean;
 }
 
 export function NewSidebar({
@@ -22,6 +24,8 @@ export function NewSidebar({
   onSharedWithMe,
   open,
   onClose,
+  width = 288,
+  isResizing = false,
 }: Props) {
   const sidePanelCollapsed = useChatStore((s) => s.sidePanelCollapsed);
 
@@ -34,16 +38,21 @@ export function NewSidebar({
         />
       )}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 bg-background/95 border-r border-default-100 flex transform transition-all duration-200 ease-in-out md:static md:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 bg-background/95 border-r border-default-100 flex transform ${
+          isResizing ? '' : 'transition-all duration-200 ease-in-out'
+        } md:static md:translate-x-0 ${
           open ? 'translate-x-0' : '-translate-x-full'
-        } ${sidePanelCollapsed ? 'w-16' : 'w-72'}`}
+        }`}
+        style={{ width: sidePanelCollapsed ? 64 : width }}
       >
         <IconRail
           onBrowseSpaces={onBrowseSpaces}
           onSharedWithMe={onSharedWithMe}
         />
         <div
-          className={`flex flex-col overflow-hidden transition-all duration-200 ${
+          className={`flex flex-col overflow-hidden ${
+            isResizing ? '' : 'transition-all duration-200'
+          } ${
             sidePanelCollapsed ? 'w-0 opacity-0' : 'flex-1 opacity-100'
           }`}
         >
