@@ -101,7 +101,9 @@ export function IconRail({ onBrowseSpaces, onSharedWithMe }: Props) {
         </button>
       </Tooltip>
 
-      {(llmEnabled || personalSpace) && <div className='w-8 border-t border-default-200 my-1' />}
+      {(llmEnabled || personalSpace) && (
+        <div className='w-8 border-t border-default-200 my-1' />
+      )}
 
       {personalSpace && (
         <>

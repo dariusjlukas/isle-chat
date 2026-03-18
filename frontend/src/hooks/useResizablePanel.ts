@@ -31,7 +31,9 @@ export function useResizablePanel({
   const startWidthRef = useRef(0);
   const widthRef = useRef(width);
 
-  widthRef.current = width;
+  useEffect(() => {
+    widthRef.current = width;
+  }, [width]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

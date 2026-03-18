@@ -52,9 +52,7 @@ export function NewSidebar({
         <div
           className={`flex flex-col overflow-hidden ${
             isResizing ? '' : 'transition-all duration-200'
-          } ${
-            sidePanelCollapsed ? 'w-0 opacity-0' : 'flex-1 opacity-100'
-          }`}
+          } ${sidePanelCollapsed ? 'w-0 opacity-0' : 'flex-1 opacity-100'}`}
         >
           <SidePanel
             onCreateConversation={onCreateConversation}

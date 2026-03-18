@@ -40,7 +40,10 @@ export function AiChatPanel({ onClose, width = 380 }: Props) {
   };
 
   return (
-    <div className='w-[380px] lg:w-[440px] flex-shrink-0 border-l border-divider bg-background flex flex-col h-full'>
+    <div
+      className='flex-shrink-0 border-l border-divider bg-background flex flex-col h-full'
+      style={{ width }}
+    >
       {/* Header */}
       <div className='flex items-center justify-between px-3 py-2 border-b border-divider bg-content1'>
         <div className='flex items-center gap-2'>
