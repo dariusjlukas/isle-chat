@@ -155,10 +155,7 @@ export function MessageList({
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('highlight-flash');
-          setTimeout(
-            () => el.classList.remove('highlight-flash'),
-            2000,
-          );
+          setTimeout(() => el.classList.remove('highlight-flash'), 2000);
         } else if (attempts < 20) {
           attempts++;
           requestAnimationFrame(poll);
