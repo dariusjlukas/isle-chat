@@ -78,7 +78,9 @@ export function NotificationDropdown() {
     }
 
     // Navigate to the relevant location
-    if (notification.channel_id && notification.message_id) {
+    if (notification.type === 'join_request') {
+      useChatStore.getState().requestAdminPanel('join-requests');
+    } else if (notification.channel_id && notification.message_id) {
       const channel = channels.find((c) => c.id === notification.channel_id);
       if (channel?.space_id) {
         useChatStore

@@ -145,14 +145,26 @@ export function MessageList({
       setIsViewingAround(true);
       clearJumpToMessage();
 
-      requestAnimationFrame(() => {
-        const el = document.getElementById(`msg-${jumpToMessageId}`);
+      // Poll for the element — React may not have committed the DOM
+      // update from setMessages by the next frame, especially when
+      // replacing the full message list.
+      const targetId = `msg-${jumpToMessageId}`;
+      let attempts = 0;
+      const poll = () => {
+        const el = document.getElementById(targetId);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('highlight-flash');
-          setTimeout(() => el.classList.remove('highlight-flash'), 2000);
+          setTimeout(
+            () => el.classList.remove('highlight-flash'),
+            2000,
+          );
+        } else if (attempts < 20) {
+          attempts++;
+          requestAnimationFrame(poll);
         }
-      });
+      };
+      requestAnimationFrame(poll);
     });
   }, [
     jumpToMessageId,

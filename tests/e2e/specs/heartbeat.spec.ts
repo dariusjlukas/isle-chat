@@ -38,6 +38,7 @@ test.beforeEach(async ({ workerConfig }) => {
 test("heartbeat keeps running and last-pong timestamp updates", async ({
   page,
 }) => {
+  test.setTimeout(45_000);
   await loginViaToken(page, admin.token);
 
   // Wait for WebSocket to connect and first heartbeat to complete

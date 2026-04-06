@@ -287,6 +287,7 @@ def server_process(worker_db, worker_port):
             "POSTGRES_PASSWORD": PG_PASS,
             "POSTGRES_DB": worker_db,
             "UPLOAD_DIR": upload_dir,
+            "DB_POOL_SIZE": "2",
             "SESSION_EXPIRY_HOURS": "168",
         }
         proc = subprocess.Popen(

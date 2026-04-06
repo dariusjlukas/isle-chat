@@ -516,6 +516,7 @@ const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const MAX_RETRIES = 3;
 
 async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  if (!crypto.subtle) return '';
   const hash = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, '0'))

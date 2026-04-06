@@ -46,6 +46,7 @@ interface ChatState {
   serverIconFileId: string | null;
   serverIconDarkFileId: string | null;
   pendingRequestCount: number;
+  adminPanelRequest: string | null;
   spaceInvites: SpaceInvite[];
 
   // Search
@@ -120,6 +121,8 @@ interface ChatState {
   setServerIconFileId: (fileId: string | null) => void;
   setServerIconDarkFileId: (fileId: string | null) => void;
   setPendingRequestCount: (count: number) => void;
+  requestAdminPanel: (tab: string) => void;
+  clearAdminPanelRequest: () => void;
   setSpaceInvites: (invites: SpaceInvite[]) => void;
   addSpaceInvite: (invite: SpaceInvite) => void;
   removeSpaceInvite: (inviteId: string) => void;
@@ -168,6 +171,7 @@ export const useChatStore = create<ChatState>((set) => ({
   serverIconFileId: null,
   serverIconDarkFileId: null,
   pendingRequestCount: 0,
+  adminPanelRequest: null,
   spaceInvites: [],
   notifications: [],
   unreadNotificationCount: 0,
@@ -440,6 +444,8 @@ export const useChatStore = create<ChatState>((set) => ({
   setServerIconFileId: (fileId) => set({ serverIconFileId: fileId }),
   setServerIconDarkFileId: (fileId) => set({ serverIconDarkFileId: fileId }),
   setPendingRequestCount: (count) => set({ pendingRequestCount: count }),
+  requestAdminPanel: (tab) => set({ adminPanelRequest: tab }),
+  clearAdminPanelRequest: () => set({ adminPanelRequest: null }),
 
   setSpaceInvites: (invites) => set({ spaceInvites: invites }),
   addSpaceInvite: (invite) =>
@@ -536,6 +542,14 @@ export const useChatStore = create<ChatState>((set) => ({
         unreadNotificationCount: Math.max(0, state.unreadNotificationCount - 1),
       };
 
+      // Sync admin badge for join request notifications
+      if (notification.type === 'join_request') {
+        updates.pendingRequestCount = Math.max(
+          0,
+          state.pendingRequestCount - 1,
+        );
+      }
+
       // Sync channel badge counts for message-related notifications
       if (
         notification.channel_id &&
@@ -563,24 +577,28 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => {
       const newUnreadCounts = { ...state.unreadCounts };
       const newMentionCounts = { ...state.mentionCounts };
+      let joinRequestDismissals = 0;
 
       for (const n of state.notifications) {
-        if (
-          !n.is_read &&
-          n.channel_id &&
-          (n.type === 'mention' ||
-            n.type === 'reply' ||
-            n.type === 'direct_message')
-        ) {
-          newUnreadCounts[n.channel_id] = Math.max(
-            0,
-            (newUnreadCounts[n.channel_id] || 0) - 1,
-          );
-          if (n.type === 'mention') {
-            newMentionCounts[n.channel_id] = Math.max(
+        if (!n.is_read) {
+          if (n.type === 'join_request') {
+            joinRequestDismissals++;
+          } else if (
+            n.channel_id &&
+            (n.type === 'mention' ||
+              n.type === 'reply' ||
+              n.type === 'direct_message')
+          ) {
+            newUnreadCounts[n.channel_id] = Math.max(
               0,
-              (newMentionCounts[n.channel_id] || 0) - 1,
+              (newUnreadCounts[n.channel_id] || 0) - 1,
             );
+            if (n.type === 'mention') {
+              newMentionCounts[n.channel_id] = Math.max(
+                0,
+                (newMentionCounts[n.channel_id] || 0) - 1,
+              );
+            }
           }
         }
       }
@@ -593,6 +611,10 @@ export const useChatStore = create<ChatState>((set) => ({
         unreadNotificationCount: 0,
         unreadCounts: newUnreadCounts,
         mentionCounts: newMentionCounts,
+        pendingRequestCount: Math.max(
+          0,
+          state.pendingRequestCount - joinRequestDismissals,
+        ),
       };
     }),
 

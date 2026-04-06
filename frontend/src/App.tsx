@@ -86,6 +86,9 @@ function App() {
   const [showSetupWizard, setShowSetupWizard] = useState(false);
   const pendingRequestCount = useChatStore((s) => s.pendingRequestCount);
   const setPendingRequestCount = useChatStore((s) => s.setPendingRequestCount);
+  const [adminDefaultCategory, setAdminDefaultCategory] = useState<
+    string | undefined
+  >(undefined);
   const [serverSettingsDirty, setServerSettingsDirty] = useState(false);
   const [showBuildTime, setShowBuildTime] = useState(false);
   const [showConnectionCard, setShowConnectionCard] = useState(false);
@@ -255,6 +258,18 @@ function App() {
     setLlmEnabled,
     user?.role,
   ]);
+
+  // Open admin panel when requested from notification click
+  useEffect(() => {
+    const unsub = useChatStore.subscribe((state, prev) => {
+      if (state.adminPanelRequest && !prev.adminPanelRequest) {
+        setAdminDefaultCategory(state.adminPanelRequest);
+        setShowAdmin(true);
+        state.clearAdminPanelRequest();
+      }
+    });
+    return unsub;
+  }, []);
 
   // Poll pending join requests for admin badge
   useEffect(() => {
@@ -466,10 +481,15 @@ function App() {
       )}
 
       <SettingsLayout
+        key={adminDefaultCategory ?? 'admin'}
         isOpen={showAdmin}
-        onClose={() => setShowAdmin(false)}
+        onClose={() => {
+          setShowAdmin(false);
+          setAdminDefaultCategory(undefined);
+        }}
         title='Admin Panel'
         categories={adminCategories}
+        defaultCategory={adminDefaultCategory}
         warning={isOwner && serverSettingsDirty ? 'Unsaved changes' : undefined}
       />
 
