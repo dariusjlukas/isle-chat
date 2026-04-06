@@ -186,6 +186,21 @@ export async function setRegistrationOpen(
 }
 
 /**
+ * Set registration mode to "approval" so new users must request access.
+ */
+export async function setRegistrationApproval(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  await apiPut(
+    "/api/admin/settings",
+    { registration_mode: "approval" },
+    token,
+    config,
+  );
+}
+
+/**
  * Complete the server setup wizard so it doesn't appear on login.
  */
 export async function completeSetup(
@@ -890,5 +905,97 @@ export async function apiEnablePersonalSpaces(
     throw new Error(
       `apiEnablePersonalSpaces failed (${res.status}): ${text.slice(0, 200)}`,
     );
+  }
+}
+
+/**
+ * Submit a join request using password auth (requires "approval" registration mode
+ * and password auth enabled).
+ */
+export async function apiRequestAccessPassword(
+  username: string,
+  displayName: string,
+  password: string,
+  config: ApiConfig = defaultConfig,
+): Promise<{ request_id: string; status: string }> {
+  const res = await apiPost(
+    "/api/auth/request-access",
+    { username, display_name: displayName, auth_method: "password", password },
+    undefined,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiRequestAccessPassword failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as { request_id: string; status: string };
+}
+
+/**
+ * List join requests (admin only).
+ */
+export async function apiListJoinRequests(
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<
+  Array<{
+    id: string;
+    username: string;
+    display_name: string;
+    status: string;
+    created_at: string;
+  }>
+> {
+  const res = await apiGet("/api/admin/requests", token, config);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiListJoinRequests failed (${res.status}): ${text}`);
+  }
+  return (await res.json()) as Array<{
+    id: string;
+    username: string;
+    display_name: string;
+    status: string;
+    created_at: string;
+  }>;
+}
+
+/**
+ * Approve a join request (admin only).
+ */
+export async function apiApproveJoinRequest(
+  requestId: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const res = await apiPost(
+    `/api/admin/requests/${requestId}/approve`,
+    {},
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiApproveJoinRequest failed (${res.status}): ${text}`);
+  }
+}
+
+/**
+ * Deny a join request (admin only).
+ */
+export async function apiDenyJoinRequest(
+  requestId: string,
+  token: string,
+  config: ApiConfig = defaultConfig,
+): Promise<void> {
+  const res = await apiPost(
+    `/api/admin/requests/${requestId}/deny`,
+    {},
+    token,
+    config,
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`apiDenyJoinRequest failed (${res.status}): ${text}`);
   }
 }

@@ -3,9 +3,11 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include "ai/tool_registry.h"
 #include "config.h"
 #include "db/database.h"
 #include "handlers/admin_handler.h"
+#include "handlers/ai_handler.h"
 #include "handlers/auth_handler.h"
 #include "handlers/calendar_handler.h"
 #include "handlers/channel_handler.h"
@@ -17,8 +19,6 @@
 #include "handlers/task_board_handler.h"
 #include "handlers/user_handler.h"
 #include "handlers/wiki_handler.h"
-#include "ai/tool_registry.h"
-#include "handlers/ai_handler.h"
 #include "upload_manager.h"
 #include "ws/ws_handler.h"
 

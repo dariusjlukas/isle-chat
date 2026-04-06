@@ -337,6 +337,11 @@ if [ "$NEED_PG" = true ]; then
     TEST_PG_PASS=testpassword
     TEST_PG_DB=chatapp_test
 
+    # Clean up any stale test containers from previous runs on the same port
+    for cid in $(docker ps -aq --filter "publish=$TEST_PG_PORT"); do
+        docker rm -f "$cid" &>/dev/null
+    done
+
     printf "\n${BLUE}Starting test PostgreSQL container on port %s...${NC}\n" "$TEST_PG_PORT"
     docker run -d --rm \
         --name "$TEST_PG_CONTAINER" \

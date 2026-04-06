@@ -106,6 +106,8 @@ set_tests_properties(PkiTests ConfigTests TotpTests PasswordTests WebAuthnTests 
     AuthUtilsTests AuthPayloadUtilsTests AdminSettingsUtilsTests FileAccessUtilsTests
     AdminApprovalUtilsTests SearchHandlerTests FileHandlerTests RecurrenceTests ZipBuilderTests
     PROPERTIES LABELS "unit")
+# PasswordTests runs many argon2 hash operations; with sanitizers this needs extra time
+set_tests_properties(PasswordTests PROPERTIES TIMEOUT 120)
 set_tests_properties(DatabaseTests SpaceFileTests CalendarTests TaskBoardTests PersonalSpacesTests
     WikiTests NotificationTests AuthCredentialTests
     PROPERTIES LABELS "integration")

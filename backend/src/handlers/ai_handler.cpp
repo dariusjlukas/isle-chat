@@ -403,9 +403,8 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
                 // Auto-title: if this is the first exchange, generate a title
                 auto conv_check = db_ptr->find_ai_conversation(conv_id);
-                std::cout << "[AI] Checking auto-title for " << conv_id
-                          << " (current title: \"" << (conv_check ? conv_check->title : "N/A")
-                          << "\")" << std::endl;
+                std::cout << "[AI] Checking auto-title for " << conv_id << " (current title: \""
+                          << (conv_check ? conv_check->title : "N/A") << "\")" << std::endl;
                 if (conv_check && conv_check->title == "New conversation") {
                   // Find the first user message
                   std::string first_user_msg;
@@ -421,13 +420,15 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                        "Generate a very short title (max 6 words) for a conversation that starts "
                        "with the following message. Reply with ONLY the title, no quotes or "
                        "punctuation.",
-                       {}, "", ""},
+                       {},
+                       "",
+                       ""},
                       {"user", first_user_msg, {}, "", ""},
                     };
                     // Use generous max_tokens — reasoning models need room to think
                     auto title = client.streaming_completion(title_msgs, 256);
-                    std::cout << "[AI] Auto-title result for " << conv_id << ": \""
-                              << title << "\"" << std::endl;
+                    std::cout << "[AI] Auto-title result for " << conv_id << ": \"" << title << "\""
+                              << std::endl;
                     // Clean up the title
                     if (!title.empty()) {
                       // Remove surrounding quotes if present
@@ -524,9 +525,16 @@ template <bool SSL>
 std::set<std::string> AiHandler<SSL>::get_enabled_tool_categories(const std::string& user_id) {
   // All sub-categories enabled by default
   std::set<std::string> categories = {
-    "search",         "messaging_read", "messaging_write", "tasks_read",
-    "tasks_write",    "calendar_read",  "calendar_write",  "wiki_read",
-    "wiki_write",     "files_read",
+    "search",
+    "messaging_read",
+    "messaging_write",
+    "tasks_read",
+    "tasks_write",
+    "calendar_read",
+    "calendar_write",
+    "wiki_read",
+    "wiki_write",
+    "files_read",
   };
   auto settings = db.get_all_user_settings(user_id);
 
@@ -585,7 +593,8 @@ std::string AiHandler<SSL>::build_system_prompt(
       "\"my personal space\", they mean this.\n\n"
       "**Direct messages**: Users can have direct message (DM) conversations outside of spaces. "
       "To send a DM, use `find_or_create_dm` with the recipient's username to get the channel ID, "
-      "then use `send_message` with that channel ID. You can also look up users with `search_users` "
+      "then use `send_message` with that channel ID. You can also look up users with "
+      "`search_users` "
       "if you need to find someone by name.\n\n"
       "## How to Find Things\n\n"
       "Most tools require IDs (space_id, channel_id, etc.). To find IDs:\n"

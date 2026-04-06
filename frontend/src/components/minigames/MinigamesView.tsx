@@ -24,7 +24,7 @@ export function MinigamesView(props: { spaceId: string }) {
       <div className='flex-1 overflow-auto p-4'>
         {activeGame ? (
           <div className='flex flex-col items-center justify-center h-full w-full'>
-            <div className='w-full'>
+            <div className='w-full max-w-2xl mx-auto'>
               {activeGame === 'pcb' && <PCBRouter large />}
               {activeGame === 'rubiks' && <RubiksCube large />}
             </div>

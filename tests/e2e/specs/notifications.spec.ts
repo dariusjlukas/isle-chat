@@ -16,6 +16,9 @@ import {
   apiCreateSpaceChannel,
   apiJoinSpace,
   apiJoinChannel,
+  apiEnablePasswordAuth,
+  setRegistrationApproval,
+  apiRequestAccessPassword,
 } from "../helpers/api.js";
 
 let admin: TestUser;
@@ -594,5 +597,203 @@ test.describe("Real-time notifications", () => {
 
     await adminCtx.close();
     await aliceCtx.close();
+  });
+});
+
+test.describe("Join request notification sync", () => {
+  /** Open the user avatar dropdown menu in the header. */
+  async function openAvatarMenu(page: import("@playwright/test").Page) {
+    const avatarBtn = page.locator(
+      "header .flex.items-center.justify-end button.rounded-full",
+    );
+    await avatarBtn.click();
+  }
+
+  /**
+   * Set up approval mode with password auth and submit a join request.
+   * Returns the request ID.
+   */
+  async function setupJoinRequest(
+    adminToken: string,
+    config: import("../helpers/api.js").ApiConfig,
+  ): Promise<string> {
+    await apiEnablePasswordAuth(adminToken, config);
+    await setRegistrationApproval(adminToken, config);
+    const { request_id } = await apiRequestAccessPassword(
+      "requester",
+      "Join Requester",
+      "TestPassword123!",
+      config,
+    );
+    return request_id;
+  }
+
+  test("clicking a join request notification opens the admin panel to Join Requests", async ({
+    browser,
+    workerConfig,
+  }) => {
+    // Submit a join request via API
+    await setupJoinRequest(admin.token, workerConfig.apiConfig);
+
+    // Admin logs in and should see the notification
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
+    const adminPage = await adminCtx.newPage();
+    await loginViaToken(adminPage, admin.token);
+
+    const bellBadge = adminPage.locator(
+      'button:has([data-icon="bell"]) span.bg-danger',
+    );
+    await expect(bellBadge).toBeVisible({ timeout: 10_000 });
+
+    // Open notifications and click the join request notification
+    await openNotifications(adminPage);
+    const joinNotif = adminPage
+      .locator(".notif-row")
+      .filter({ hasText: "requested to join" })
+      .first();
+    await expect(joinNotif).toBeVisible({ timeout: 5_000 });
+    await joinNotif.click();
+
+    // Should open the admin panel with Join Requests tab active
+    await expect(adminPage.getByText("Admin Panel").first()).toBeVisible({
+      timeout: 5_000,
+    });
+    // The Join Requests content should be visible (showing the pending request)
+    await expect(adminPage.getByText("@requester")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(
+      adminPage.getByRole("button", { name: "Approve" }),
+    ).toBeVisible();
+
+    await adminCtx.close();
+  });
+
+  test("approving a join request marks the bell notification as read", async ({
+    browser,
+    workerConfig,
+  }) => {
+    await setupJoinRequest(admin.token, workerConfig.apiConfig);
+
+    // Admin logs in
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
+    const adminPage = await adminCtx.newPage();
+    await loginViaToken(adminPage, admin.token);
+
+    // Wait for notification badge
+    const bellBadge = adminPage.locator(
+      'button:has([data-icon="bell"]) span.bg-danger',
+    );
+    await expect(bellBadge).toBeVisible({ timeout: 10_000 });
+
+    // Open admin panel and go to Join Requests
+    await openAvatarMenu(adminPage);
+    await adminPage.getByRole("menuitem", { name: "Admin Panel" }).click();
+    await expect(adminPage.getByText("Admin Panel").first()).toBeVisible({
+      timeout: 5_000,
+    });
+    await adminPage.getByRole("button", { name: "Join Requests" }).click();
+
+    // Approve the request
+    await expect(
+      adminPage.getByRole("button", { name: "Approve" }),
+    ).toBeVisible({ timeout: 5_000 });
+    await adminPage.getByRole("button", { name: "Approve" }).click();
+
+    // Close the admin panel
+    await adminPage.locator('button[aria-label="Close"]').click();
+
+    // Bell notification badge should be gone
+    await expect(bellBadge).not.toBeVisible({ timeout: 5_000 });
+
+    // Open notifications to verify no unread join request notifications
+    await openNotifications(adminPage);
+    const unreadDots = adminPage.locator(".bg-danger.rounded-full.w-3.h-3");
+    await expect(unreadDots).toHaveCount(0, { timeout: 5_000 });
+
+    await adminCtx.close();
+  });
+
+  test("denying a join request marks the bell notification as read", async ({
+    browser,
+    workerConfig,
+  }) => {
+    await setupJoinRequest(admin.token, workerConfig.apiConfig);
+
+    // Admin logs in
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
+    const adminPage = await adminCtx.newPage();
+    await loginViaToken(adminPage, admin.token);
+
+    const bellBadge = adminPage.locator(
+      'button:has([data-icon="bell"]) span.bg-danger',
+    );
+    await expect(bellBadge).toBeVisible({ timeout: 10_000 });
+
+    // Open admin panel and deny the request
+    await openAvatarMenu(adminPage);
+    await adminPage.getByRole("menuitem", { name: "Admin Panel" }).click();
+    await adminPage.getByRole("button", { name: "Join Requests" }).click();
+    await expect(
+      adminPage.getByRole("button", { name: "Deny" }),
+    ).toBeVisible({ timeout: 5_000 });
+    await adminPage.getByRole("button", { name: "Deny" }).click();
+
+    // Close admin panel
+    await adminPage.locator('button[aria-label="Close"]').click();
+
+    // Bell badge should be gone
+    await expect(bellBadge).not.toBeVisible({ timeout: 5_000 });
+
+    await adminCtx.close();
+  });
+
+  test("dismissing a join request notification from the bell updates the admin badge", async ({
+    browser,
+    workerConfig,
+  }) => {
+    await setupJoinRequest(admin.token, workerConfig.apiConfig);
+
+    // Admin logs in
+    const adminCtx = await browser.newContext({
+      baseURL: workerConfig.frontendUrl,
+    });
+    const adminPage = await adminCtx.newPage();
+    await loginViaToken(adminPage, admin.token);
+
+    // Wait for both the bell badge and the admin badge on avatar
+    const bellBadge = adminPage.locator(
+      'button:has([data-icon="bell"]) span.bg-danger',
+    );
+    await expect(bellBadge).toBeVisible({ timeout: 10_000 });
+
+    const avatarBadge = adminPage.locator(
+      "header .flex.items-center.justify-end button.rounded-full span.bg-danger",
+    );
+    await expect(avatarBadge).toBeVisible({ timeout: 10_000 });
+
+    // Open notifications and dismiss the join request notification
+    await openNotifications(adminPage);
+    const notifRows = adminPage.locator(".notif-row");
+    await expect(notifRows.first()).toBeVisible({ timeout: 5_000 });
+
+    const dismissBtn = notifRows
+      .first()
+      .locator("button[title='Mark as read']");
+    await dismissBtn.click();
+
+    // Bell badge should be gone
+    await expect(bellBadge).not.toBeVisible({ timeout: 5_000 });
+
+    // Admin avatar badge should also be gone
+    await expect(avatarBadge).not.toBeVisible({ timeout: 5_000 });
+
+    await adminCtx.close();
   });
 });

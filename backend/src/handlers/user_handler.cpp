@@ -801,7 +801,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     auto user_id_copy = get_user_id(res, req);
     std::string body;
     res->onData([this, res, user_id = std::move(user_id_copy), body = std::move(body)](
-      std::string_view data, bool last) mutable {
+                  std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       if (user_id.empty()) return;

@@ -2231,7 +2231,8 @@ Message Database::create_message(
   if (reply_to_message_id.empty()) {
     r = txn.exec_params(
       std::string(
-        "INSERT INTO messages (channel_id, user_id, content, is_ai_assisted) VALUES ($1, $2, $3, $4) RETURNING ") +
+        "INSERT INTO messages (channel_id, user_id, content, is_ai_assisted) VALUES ($1, $2, $3, "
+        "$4) RETURNING ") +
         MSG_COLS,
       channel_id,
       user_id,
@@ -2240,7 +2241,8 @@ Message Database::create_message(
   } else {
     r = txn.exec_params(
       std::string(
-        "INSERT INTO messages (channel_id, user_id, content, reply_to_message_id, is_ai_assisted) VALUES ($1, $2, "
+        "INSERT INTO messages (channel_id, user_id, content, reply_to_message_id, is_ai_assisted) "
+        "VALUES ($1, $2, "
         "$3, $4, $5) RETURNING ") +
         MSG_COLS,
       channel_id,
@@ -7203,13 +7205,15 @@ std::vector<Database::WikiSearchResult> Database::browse_wiki_pages(
 
 // --- AI Conversations ---
 
-AiConversation Database::create_ai_conversation(const std::string& user_id, const std::string& title) {
+AiConversation Database::create_ai_conversation(
+  const std::string& user_id, const std::string& title) {
   auto conn = pool_.acquire();
   pqxx::work txn(conn.get());
   auto r = txn.exec_params(
     "INSERT INTO ai_conversations (user_id, title) VALUES ($1, $2) "
     "RETURNING id::text, user_id::text, title, created_at::text, updated_at::text",
-    user_id, title);
+    user_id,
+    title);
   txn.commit();
   return AiConversation{
     r[0][0].as<std::string>(),
@@ -7226,16 +7230,19 @@ std::vector<AiConversation> Database::list_ai_conversations(
   auto r = txn.exec_params(
     "SELECT id::text, user_id::text, title, created_at::text, updated_at::text "
     "FROM ai_conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT $2 OFFSET $3",
-    user_id, limit, offset);
+    user_id,
+    limit,
+    offset);
   txn.commit();
   std::vector<AiConversation> result;
   for (const auto& row : r) {
-    result.push_back(AiConversation{
-      row[0].as<std::string>(),
-      row[1].as<std::string>(),
-      row[2].as<std::string>(),
-      row[3].as<std::string>(),
-      row[4].as<std::string>()});
+    result.push_back(
+      AiConversation{
+        row[0].as<std::string>(),
+        row[1].as<std::string>(),
+        row[2].as<std::string>(),
+        row[3].as<std::string>(),
+        row[4].as<std::string>()});
   }
   return result;
 }
@@ -7267,7 +7274,8 @@ void Database::delete_ai_conversation(const std::string& id) {
 void Database::update_ai_conversation_title(const std::string& id, const std::string& title) {
   auto conn = pool_.acquire();
   pqxx::work txn(conn.get());
-  txn.exec_params("UPDATE ai_conversations SET title = $2, updated_at = NOW() WHERE id = $1", id, title);
+  txn.exec_params(
+    "UPDATE ai_conversations SET title = $2, updated_at = NOW() WHERE id = $1", id, title);
   txn.commit();
 }
 
@@ -7296,18 +7304,28 @@ AiMessage Database::create_ai_message(
       "VALUES ($1, $2, $3, $4, $5) "
       "RETURNING id::text, conversation_id::text, role, content, "
       "tool_calls::text, tool_call_id, tool_name, created_at::text",
-      conversation_id, role, content,
-      tool_call_id.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_call_id),
-      tool_name.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_name));
+      conversation_id,
+      role,
+      content,
+      tool_call_id.empty() ? std::optional<std::string>(std::nullopt)
+                           : std::optional<std::string>(tool_call_id),
+      tool_name.empty() ? std::optional<std::string>(std::nullopt)
+                        : std::optional<std::string>(tool_name));
   } else {
     r = txn.exec_params(
-      "INSERT INTO ai_messages (conversation_id, role, content, tool_calls, tool_call_id, tool_name) "
+      "INSERT INTO ai_messages (conversation_id, role, content, tool_calls, tool_call_id, "
+      "tool_name) "
       "VALUES ($1, $2, $3, $4::jsonb, $5, $6) "
       "RETURNING id::text, conversation_id::text, role, content, "
       "tool_calls::text, tool_call_id, tool_name, created_at::text",
-      conversation_id, role, content, tool_calls,
-      tool_call_id.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_call_id),
-      tool_name.empty() ? std::optional<std::string>(std::nullopt) : std::optional<std::string>(tool_name));
+      conversation_id,
+      role,
+      content,
+      tool_calls,
+      tool_call_id.empty() ? std::optional<std::string>(std::nullopt)
+                           : std::optional<std::string>(tool_call_id),
+      tool_name.empty() ? std::optional<std::string>(std::nullopt)
+                        : std::optional<std::string>(tool_name));
   }
   txn.commit();
   return AiMessage{
@@ -7332,15 +7350,16 @@ std::vector<AiMessage> Database::get_ai_messages(const std::string& conversation
   txn.commit();
   std::vector<AiMessage> result;
   for (const auto& row : r) {
-    result.push_back(AiMessage{
-      row[0].as<std::string>(),
-      row[1].as<std::string>(),
-      row[2].as<std::string>(),
-      row[3].as<std::string>(),
-      row[4].is_null() ? "" : row[4].as<std::string>(),
-      row[5].is_null() ? "" : row[5].as<std::string>(),
-      row[6].is_null() ? "" : row[6].as<std::string>(),
-      row[7].as<std::string>()});
+    result.push_back(
+      AiMessage{
+        row[0].as<std::string>(),
+        row[1].as<std::string>(),
+        row[2].as<std::string>(),
+        row[3].as<std::string>(),
+        row[4].is_null() ? "" : row[4].as<std::string>(),
+        row[5].is_null() ? "" : row[5].as<std::string>(),
+        row[6].is_null() ? "" : row[6].as<std::string>(),
+        row[7].as<std::string>()});
   }
   return result;
 }
@@ -7365,15 +7384,16 @@ void Database::set_user_setting(
   txn.exec_params(
     "INSERT INTO user_settings (user_id, key, value) VALUES ($1, $2, $3) "
     "ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value",
-    user_id, key, value);
+    user_id,
+    key,
+    value);
   txn.commit();
 }
 
 std::map<std::string, std::string> Database::get_all_user_settings(const std::string& user_id) {
   auto conn = pool_.acquire();
   pqxx::work txn(conn.get());
-  auto r = txn.exec_params(
-    "SELECT key, value FROM user_settings WHERE user_id = $1", user_id);
+  auto r = txn.exec_params("SELECT key, value FROM user_settings WHERE user_id = $1", user_id);
   txn.commit();
   std::map<std::string, std::string> result;
   for (const auto& row : r) {

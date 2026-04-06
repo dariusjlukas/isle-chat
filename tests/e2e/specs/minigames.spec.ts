@@ -28,23 +28,20 @@ async function openPersonalSpace(page: import("@playwright/test").Page) {
   await expect(personalSpaceBtn).toBeVisible({ timeout: 10_000 });
   await personalSpaceBtn.click();
 
-  // Wait for React to commit the re-render triggered by the click.
-  // This ensures the aside's class (w-72 expanded vs w-16 collapsed)
-  // reflects the new state before we inspect it.
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+  // The sidebar animates its width over 200ms. Wait for the CSS
+  // transition to fully complete before inspecting the width.
+  await page.waitForTimeout(350);
 
   // If the space was already auto-selected, clicking the icon toggled the
-  // side-panel collapse (aside gets class w-16). Click again to re-expand.
+  // side-panel collapse. Click again to re-expand.
   const isCollapsed = await page.evaluate(
-    () => document.querySelector("aside")?.classList.contains("w-16") ?? true,
+    () => (document.querySelector("aside")?.offsetWidth ?? 0) <= 64,
   );
   if (isCollapsed) {
     await personalSpaceBtn.click();
   }
 
   // Wait for the panel to finish its CSS transition and be interactable.
-  // Playwright's click() auto-waits for stability, but we need to ensure
-  // the panel content is clickable before returning.
   await page
     .locator("aside button", { hasText: "Files" })
     .click({ trial: true, timeout: 10_000 });

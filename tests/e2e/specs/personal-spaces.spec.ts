@@ -167,14 +167,15 @@ test.describe("Personal Spaces", () => {
     await expect(personalSpaceBtn).toBeVisible({ timeout: 10_000 });
     await personalSpaceBtn.click();
 
-    // Wait for React to commit the re-render from the click handler
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+    // The sidebar animates its width over 200ms. Wait for the CSS
+    // transition to fully complete before inspecting the width.
+    await page.waitForTimeout(350);
 
     // If the space was already auto-selected, clicking toggled collapse.
     // Click again to re-expand.
     const isCollapsed = await page.evaluate(
       () =>
-        document.querySelector("aside")?.classList.contains("w-16") ?? true,
+        (document.querySelector("aside")?.offsetWidth ?? 0) <= 64,
     );
     if (isCollapsed) {
       await personalSpaceBtn.click();
@@ -233,16 +234,17 @@ test.describe("Personal Spaces", () => {
     await expect(personalSpaceBtn).toBeVisible({ timeout: 10_000 });
     await personalSpaceBtn.click();
 
-    // Wait for React to commit the re-render from the click handler
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(r)));
+    // The sidebar animates its width over 200ms. Wait for the CSS
+    // transition to fully complete before inspecting the width.
+    await page.waitForTimeout(350);
 
     // If the space was already auto-selected, clicking toggled collapse.
     // Click again to re-expand.
-    const isCollapsed = await page.evaluate(
+    const isCollapsed2 = await page.evaluate(
       () =>
-        document.querySelector("aside")?.classList.contains("w-16") ?? true,
+        (document.querySelector("aside")?.offsetWidth ?? 0) <= 64,
     );
-    if (isCollapsed) {
+    if (isCollapsed2) {
       await personalSpaceBtn.click();
     }
 

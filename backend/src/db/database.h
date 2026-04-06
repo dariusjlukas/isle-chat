@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "db/connection_pool.h"
+#include "models/ai_conversation.h"
 #include "models/calendar_event.h"
 #include "models/channel.h"
 #include "models/message.h"
@@ -13,7 +14,6 @@
 #include "models/space_file.h"
 #include "models/task_board.h"
 #include "models/user.h"
-#include "models/ai_conversation.h"
 #include "models/wiki_page.h"
 
 class Database {

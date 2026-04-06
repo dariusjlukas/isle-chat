@@ -117,157 +117,166 @@ void register_all_tools(ToolRegistry& registry) {
   // Category: search (discovery tools)
   // ===========================================================================
 
-  registry.register_tool(ToolDefinition{
-    "list_spaces",
-    "search",
-    "List all spaces the user is a member of. Use this to find space IDs by name.",
-    {},
-    [](Database& db, const std::string& user_id, const json& /*args*/) -> ToolResult {
-      try {
-        auto spaces = db.list_user_spaces(user_id);
+  registry.register_tool(
+    ToolDefinition{
+      "list_spaces",
+      "search",
+      "List all spaces the user is a member of. Use this to find space IDs by name.",
+      {},
+      [](Database& db, const std::string& user_id, const json& /*args*/) -> ToolResult {
+        try {
+          auto spaces = db.list_user_spaces(user_id);
 
-        json result = json::array();
-        for (const auto& s : spaces) {
-          json obj;
-          obj["id"] = s.id;
-          obj["name"] = s.name;
-          obj["description"] = s.description;
-          obj["is_personal"] = s.is_personal;
-          result.push_back(obj);
+          json result = json::array();
+          for (const auto& s : spaces) {
+            json obj;
+            obj["id"] = s.id;
+            obj["name"] = s.name;
+            obj["description"] = s.description;
+            obj["is_personal"] = s.is_personal;
+            result.push_back(obj);
+          }
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("list_spaces failed: ") + e.what()};
         }
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("list_spaces failed: ") + e.what()};
-      }
-    },
-  });
+      },
+    });
 
-  registry.register_tool(ToolDefinition{
-    "list_space_channels",
-    "search",
-    "List all channels in a specific space. Use this to find channel IDs by name within a space.",
-    {
-      {"space_id", "string", "The ID of the space", true, {}},
-    },
-    [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
-      try {
-        auto space_id = args.at("space_id").get<std::string>();
+  registry.register_tool(
+    ToolDefinition{
+      "list_space_channels",
+      "search",
+      "List all channels in a specific space. Use this to find channel IDs by name within a space.",
+      {
+        {"space_id", "string", "The ID of the space", true, {}},
+      },
+      [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
+        try {
+          auto space_id = args.at("space_id").get<std::string>();
 
-        if (!db.is_space_member(space_id, user_id)) {
-          return ToolResult{false, {}, "You are not a member of this space"};
+          if (!db.is_space_member(space_id, user_id)) {
+            return ToolResult{false, {}, "You are not a member of this space"};
+          }
+
+          auto channels = db.list_space_channels(space_id);
+
+          json result = json::array();
+          for (const auto& ch : channels) {
+            json obj;
+            obj["id"] = ch.id;
+            obj["name"] = ch.name;
+            obj["description"] = ch.description;
+            obj["is_public"] = ch.is_public;
+            obj["is_direct"] = ch.is_direct;
+            result.push_back(obj);
+          }
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("list_space_channels failed: ") + e.what()};
         }
+      },
+    });
 
-        auto channels = db.list_space_channels(space_id);
+  registry.register_tool(
+    ToolDefinition{
+      "list_space_members",
+      "search",
+      "List all members of a space.",
+      {
+        {"space_id", "string", "The ID of the space", true, {}},
+      },
+      [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
+        try {
+          auto space_id = args.at("space_id").get<std::string>();
 
-        json result = json::array();
-        for (const auto& ch : channels) {
-          json obj;
-          obj["id"] = ch.id;
-          obj["name"] = ch.name;
-          obj["description"] = ch.description;
-          obj["is_public"] = ch.is_public;
-          obj["is_direct"] = ch.is_direct;
-          result.push_back(obj);
+          if (!db.is_space_member(space_id, user_id)) {
+            return ToolResult{false, {}, "You are not a member of this space"};
+          }
+
+          auto members = db.get_space_members_with_roles(space_id);
+
+          json result = json::array();
+          for (const auto& m : members) {
+            json obj;
+            obj["user_id"] = m.user_id;
+            obj["username"] = m.username;
+            obj["display_name"] = m.display_name;
+            obj["role"] = m.role;
+            result.push_back(obj);
+          }
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("list_space_members failed: ") + e.what()};
         }
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("list_space_channels failed: ") + e.what()};
-      }
-    },
-  });
-
-  registry.register_tool(ToolDefinition{
-    "list_space_members",
-    "search",
-    "List all members of a space.",
-    {
-      {"space_id", "string", "The ID of the space", true, {}},
-    },
-    [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
-      try {
-        auto space_id = args.at("space_id").get<std::string>();
-
-        if (!db.is_space_member(space_id, user_id)) {
-          return ToolResult{false, {}, "You are not a member of this space"};
-        }
-
-        auto members = db.get_space_members_with_roles(space_id);
-
-        json result = json::array();
-        for (const auto& m : members) {
-          json obj;
-          obj["user_id"] = m.user_id;
-          obj["username"] = m.username;
-          obj["display_name"] = m.display_name;
-          obj["role"] = m.role;
-          result.push_back(obj);
-        }
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("list_space_members failed: ") + e.what()};
-      }
-    },
-  });
+      },
+    });
 
   // ===========================================================================
   // Category: messaging
   // ===========================================================================
 
-  registry.register_tool(ToolDefinition{
-    "find_or_create_dm",
-    "messaging_write",
-    "Find or create a direct message channel with another user. Returns the DM channel ID. "
-    "Use this when the user wants to send a direct message to someone.",
-    {
-      {"username", "string", "The username of the person to DM", false, {}},
-      {"user_id", "string", "The user ID of the person to DM (alternative to username)", false, {}},
-    },
-    [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
-      try {
-        std::string target_user_id;
+  registry.register_tool(
+    ToolDefinition{
+      "find_or_create_dm",
+      "messaging_write",
+      "Find or create a direct message channel with another user. Returns the DM channel ID. "
+      "Use this when the user wants to send a direct message to someone.",
+      {
+        {"username", "string", "The username of the person to DM", false, {}},
+        {"user_id",
+         "string",
+         "The user ID of the person to DM (alternative to username)",
+         false,
+         {}},
+      },
+      [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
+        try {
+          std::string target_user_id;
 
-        if (args.contains("user_id") && !args["user_id"].is_null() &&
+          if (
+            args.contains("user_id") && !args["user_id"].is_null() &&
             !args["user_id"].get<std::string>().empty()) {
-          target_user_id = args["user_id"].get<std::string>();
-        } else if (
-          args.contains("username") && !args["username"].is_null() &&
-          !args["username"].get<std::string>().empty()) {
-          auto target = db.find_user_by_username(args["username"].get<std::string>());
-          if (!target) {
-            return ToolResult{false, {}, "User not found"};
+            target_user_id = args["user_id"].get<std::string>();
+          } else if (
+            args.contains("username") && !args["username"].is_null() &&
+            !args["username"].get<std::string>().empty()) {
+            auto target = db.find_user_by_username(args["username"].get<std::string>());
+            if (!target) {
+              return ToolResult{false, {}, "User not found"};
+            }
+            target_user_id = target->id;
+          } else {
+            return ToolResult{false, {}, "Either username or user_id is required"};
           }
-          target_user_id = target->id;
-        } else {
-          return ToolResult{false, {}, "Either username or user_id is required"};
-        }
 
-        if (target_user_id == user_id) {
-          return ToolResult{false, {}, "Cannot create a DM with yourself"};
-        }
+          if (target_user_id == user_id) {
+            return ToolResult{false, {}, "Cannot create a DM with yourself"};
+          }
 
-        // Check if a DM channel already exists
-        auto existing = db.find_dm_channel(user_id, target_user_id);
-        if (existing) {
+          // Check if a DM channel already exists
+          auto existing = db.find_dm_channel(user_id, target_user_id);
+          if (existing) {
+            json result;
+            result["channel_id"] = existing->id;
+            result["name"] = existing->name;
+            result["already_existed"] = true;
+            return ToolResult{true, result, ""};
+          }
+
+          // Create a new DM conversation
+          auto channel = db.create_conversation(user_id, {target_user_id});
+
           json result;
-          result["channel_id"] = existing->id;
-          result["name"] = existing->name;
-          result["already_existed"] = true;
+          result["channel_id"] = channel.id;
+          result["name"] = channel.name;
+          result["already_existed"] = false;
           return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("find_or_create_dm failed: ") + e.what()};
         }
-
-        // Create a new DM conversation
-        auto channel = db.create_conversation(user_id, {target_user_id});
-
-        json result;
-        result["channel_id"] = channel.id;
-        result["name"] = channel.name;
-        result["already_existed"] = false;
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("find_or_create_dm failed: ") + e.what()};
-      }
-    },
-  });
+      },
+    });
 
   registry.register_tool(
     ToolDefinition{
@@ -454,116 +463,119 @@ void register_all_tools(ToolRegistry& registry) {
   // Category: tasks
   // ===========================================================================
 
-  registry.register_tool(ToolDefinition{
-    "create_task_board",
-    "tasks_write",
-    "Create a new task board in a space.",
-    {
-      {"space_id", "string", "The ID of the space", true, {}},
-      {"name", "string", "The name of the task board", true, {}},
-      {"description", "string", "Description of the task board", false, {}},
-    },
-    [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
-      try {
-        auto space_id = args.at("space_id").get<std::string>();
-        auto name = args.at("name").get<std::string>();
-        std::string description;
-        if (args.contains("description") && !args["description"].is_null()) {
-          description = args["description"].get<std::string>();
+  registry.register_tool(
+    ToolDefinition{
+      "create_task_board",
+      "tasks_write",
+      "Create a new task board in a space.",
+      {
+        {"space_id", "string", "The ID of the space", true, {}},
+        {"name", "string", "The name of the task board", true, {}},
+        {"description", "string", "Description of the task board", false, {}},
+      },
+      [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
+        try {
+          auto space_id = args.at("space_id").get<std::string>();
+          auto name = args.at("name").get<std::string>();
+          std::string description;
+          if (args.contains("description") && !args["description"].is_null()) {
+            description = args["description"].get<std::string>();
+          }
+
+          if (!db.is_space_member(space_id, user_id)) {
+            return ToolResult{false, {}, "You are not a member of this space"};
+          }
+
+          auto board = db.create_task_board(space_id, name, description, user_id);
+
+          json result;
+          result["id"] = board.id;
+          result["name"] = board.name;
+          result["description"] = board.description;
+          result["space_id"] = board.space_id;
+          result["created_at"] = board.created_at;
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("create_task_board failed: ") + e.what()};
         }
+      },
+    });
 
-        if (!db.is_space_member(space_id, user_id)) {
-          return ToolResult{false, {}, "You are not a member of this space"};
+  registry.register_tool(
+    ToolDefinition{
+      "list_task_columns",
+      "tasks_read",
+      "List columns on a task board. Use this to find column IDs by name.",
+      {
+        {"board_id", "string", "The ID of the task board", true, {}},
+      },
+      [](Database& db, const std::string& /*user_id*/, const json& args) -> ToolResult {
+        try {
+          auto board_id = args.at("board_id").get<std::string>();
+
+          auto columns = db.list_task_columns(board_id);
+
+          json result = json::array();
+          for (const auto& col : columns) {
+            json obj;
+            obj["id"] = col.id;
+            obj["name"] = col.name;
+            obj["position"] = col.position;
+            obj["wip_limit"] = col.wip_limit;
+            result.push_back(obj);
+          }
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("list_task_columns failed: ") + e.what()};
         }
+      },
+    });
 
-        auto board = db.create_task_board(space_id, name, description, user_id);
+  registry.register_tool(
+    ToolDefinition{
+      "create_task_column",
+      "tasks_write",
+      "Create a new column on a task board.",
+      {
+        {"board_id", "string", "The ID of the task board", true, {}},
+        {"name", "string", "The name of the column", true, {}},
+        {"position", "integer", "Position of the column (0-based)", false, {}},
+        {"wip_limit", "integer", "Work-in-progress limit (0 = no limit)", false, {}},
+      },
+      [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
+        try {
+          auto board_id = args.at("board_id").get<std::string>();
+          auto name = args.at("name").get<std::string>();
+          int position = 0;
+          if (args.contains("position") && !args["position"].is_null()) {
+            position = args["position"].get<int>();
+          }
+          int wip_limit = 0;
+          if (args.contains("wip_limit") && !args["wip_limit"].is_null()) {
+            wip_limit = args["wip_limit"].get<int>();
+          }
 
-        json result;
-        result["id"] = board.id;
-        result["name"] = board.name;
-        result["description"] = board.description;
-        result["space_id"] = board.space_id;
-        result["created_at"] = board.created_at;
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("create_task_board failed: ") + e.what()};
-      }
-    },
-  });
+          auto board = db.find_task_board(board_id);
+          if (!board) {
+            return ToolResult{false, {}, "Task board not found"};
+          }
+          if (!db.is_space_member(board->space_id, user_id)) {
+            return ToolResult{false, {}, "You are not a member of this space"};
+          }
 
-  registry.register_tool(ToolDefinition{
-    "list_task_columns",
-    "tasks_read",
-    "List columns on a task board. Use this to find column IDs by name.",
-    {
-      {"board_id", "string", "The ID of the task board", true, {}},
-    },
-    [](Database& db, const std::string& /*user_id*/, const json& args) -> ToolResult {
-      try {
-        auto board_id = args.at("board_id").get<std::string>();
+          auto col = db.create_task_column(board_id, name, position, wip_limit, "");
 
-        auto columns = db.list_task_columns(board_id);
-
-        json result = json::array();
-        for (const auto& col : columns) {
-          json obj;
-          obj["id"] = col.id;
-          obj["name"] = col.name;
-          obj["position"] = col.position;
-          obj["wip_limit"] = col.wip_limit;
-          result.push_back(obj);
+          json result;
+          result["id"] = col.id;
+          result["name"] = col.name;
+          result["position"] = col.position;
+          result["board_id"] = col.board_id;
+          return ToolResult{true, result, ""};
+        } catch (const std::exception& e) {
+          return ToolResult{false, {}, std::string("create_task_column failed: ") + e.what()};
         }
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("list_task_columns failed: ") + e.what()};
-      }
-    },
-  });
-
-  registry.register_tool(ToolDefinition{
-    "create_task_column",
-    "tasks_write",
-    "Create a new column on a task board.",
-    {
-      {"board_id", "string", "The ID of the task board", true, {}},
-      {"name", "string", "The name of the column", true, {}},
-      {"position", "integer", "Position of the column (0-based)", false, {}},
-      {"wip_limit", "integer", "Work-in-progress limit (0 = no limit)", false, {}},
-    },
-    [](Database& db, const std::string& user_id, const json& args) -> ToolResult {
-      try {
-        auto board_id = args.at("board_id").get<std::string>();
-        auto name = args.at("name").get<std::string>();
-        int position = 0;
-        if (args.contains("position") && !args["position"].is_null()) {
-          position = args["position"].get<int>();
-        }
-        int wip_limit = 0;
-        if (args.contains("wip_limit") && !args["wip_limit"].is_null()) {
-          wip_limit = args["wip_limit"].get<int>();
-        }
-
-        auto board = db.find_task_board(board_id);
-        if (!board) {
-          return ToolResult{false, {}, "Task board not found"};
-        }
-        if (!db.is_space_member(board->space_id, user_id)) {
-          return ToolResult{false, {}, "You are not a member of this space"};
-        }
-
-        auto col = db.create_task_column(board_id, name, position, wip_limit, "");
-
-        json result;
-        result["id"] = col.id;
-        result["name"] = col.name;
-        result["position"] = col.position;
-        result["board_id"] = col.board_id;
-        return ToolResult{true, result, ""};
-      } catch (const std::exception& e) {
-        return ToolResult{false, {}, std::string("create_task_column failed: ") + e.what()};
-      }
-    },
-  });
+      },
+    });
 
   registry.register_tool(
     ToolDefinition{
@@ -651,8 +663,9 @@ void register_all_tools(ToolRegistry& registry) {
         try {
           auto board_id = args.at("board_id").get<std::string>();
           std::string column_id;
-          if (args.contains("column_id") && !args["column_id"].is_null() &&
-              !args["column_id"].get<std::string>().empty()) {
+          if (
+            args.contains("column_id") && !args["column_id"].is_null() &&
+            !args["column_id"].get<std::string>().empty()) {
             column_id = args["column_id"].get<std::string>();
           } else if (
             args.contains("column_name") && !args["column_name"].is_null() &&
@@ -765,8 +778,9 @@ void register_all_tools(ToolRegistry& registry) {
             due_date = args["due_date"].get<std::string>();
           }
           std::string column_id = existing->column_id;
-          if (args.contains("column_id") && !args["column_id"].is_null() &&
-              !args["column_id"].get<std::string>().empty()) {
+          if (
+            args.contains("column_id") && !args["column_id"].is_null() &&
+            !args["column_id"].get<std::string>().empty()) {
             column_id = args["column_id"].get<std::string>();
           } else if (
             args.contains("column_name") && !args["column_name"].is_null() &&
