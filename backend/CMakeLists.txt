@@ -46,6 +46,13 @@ add_library(argon2 STATIC
 target_include_directories(argon2 PUBLIC ${ARGON2_DIR}/include)
 target_include_directories(argon2 PRIVATE ${ARGON2_DIR}/src ${ARGON2_DIR}/src/blake2)
 
+# spdlog (built as a static library via add_subdirectory)
+set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(libs/spdlog)
+
 # Application library (shared between main executable and tests)
 set(LIB_SOURCES
     src/auth/pki.cpp
@@ -58,6 +65,7 @@ set(LIB_SOURCES
     src/handlers/auth_handler.cpp
     src/handlers/auth_payload_utils.cpp
     src/handlers/auth_utils.cpp
+    src/handlers/cors_utils.cpp
     src/handlers/admin_handler.cpp
     src/handlers/admin_approval_utils.cpp
     src/handlers/admin_settings_utils.cpp
@@ -74,6 +82,8 @@ set(LIB_SOURCES
     src/handlers/calendar_handler.cpp
     src/handlers/task_board_handler.cpp
     src/handlers/wiki_handler.cpp
+    src/logging/logger.cpp
+    src/metrics/metrics.cpp
     src/recurrence.cpp
     src/upload_manager.cpp
     src/ws/ws_handler.cpp
@@ -98,6 +108,7 @@ target_link_libraries(chat-lib PUBLIC
     OpenSSL::Crypto
     PkgConfig::LIBPQXX
     argon2
+    spdlog::spdlog
     z
     pthread
 )

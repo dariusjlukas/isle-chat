@@ -1,14 +1,31 @@
 #include "handlers/channel_handler.h"
 
+#include <algorithm>
+
 using json = nlohmann::json;
 
 template <bool SSL>
 void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.get("/api/channels", [this](auto* res, auto* req) {
     auto token = extract_bearer_token(req);
+    std::string limit_str(req->getQuery("limit"));
+    std::string offset_str(req->getQuery("offset"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+
+    // Reject negative offset early (400). safe_parse_int returns nullopt on parse
+    // failure, in which case we fall back to the default 0.
+    auto offset_parsed = handler_utils::safe_parse_int(offset_str);
+    if (offset_parsed && *offset_parsed < 0) {
+      res->writeStatus("400")
+        ->writeHeader("Content-Type", "application/json")
+        ->end(R"({"error":"offset must be non-negative"})");
+      return;
+    }
+    int limit = std::clamp(handler_utils::safe_parse_int(limit_str, 100), 1, 500);
+    int offset = offset_parsed.value_or(0);
+
+    pool_.submit([this, res, aborted, token = std::move(token), limit, offset]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
         loop_->defer([res, aborted]() {
@@ -24,19 +41,10 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       auto user = db.find_user_by_id(user_id);
       bool is_server_admin = user && (user->role == "admin" || user->role == "owner");
 
-      auto channels = db.list_user_channels(user_id);
-
-      // Server admins see all non-DM channels
-      if (is_server_admin) {
-        auto all_channels = db.list_all_channels();
-        std::unordered_set<std::string> existing_ids;
-        for (const auto& ch : channels) existing_ids.insert(ch.id);
-        for (const auto& ch : all_channels) {
-          if (existing_ids.find(ch.id) == existing_ids.end()) {
-            channels.push_back(ch);
-          }
-        }
-      }
+      // Single SQL query: returns the user's channels (incl DMs/conversations) and,
+      // for server admins, also every non-DM channel — replaces the prior pattern of
+      // fetching list_user_channels + list_all_channels and merging in C++.
+      auto channels = db.list_visible_channels_for_user(user_id, is_server_admin, limit, offset);
 
       json arr = json::array();
       for (const auto& ch : channels) {
@@ -200,7 +208,8 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       }
       auto user_id = *user_id_opt;
 
-      int limit = limit_str.empty() ? defaults::MESSAGE_DEFAULT_LIMIT : std::stoi(limit_str);
+      int limit = std::clamp(
+        handler_utils::safe_parse_int(limit_str, defaults::MESSAGE_DEFAULT_LIMIT), 1, 500);
 
       // Server admins can view any channel's messages
       std::string role = db.get_effective_role(channel_id, user_id);

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "auth/totp.h"
+#include <optional>
 #include <regex>
 #include <set>
 #include <ctime>
@@ -140,15 +141,17 @@ TEST(TotpVerify, CorrectCodeAccepted) {
     uint64_t current_step = static_cast<uint64_t>(std::time(nullptr)) / 30;
     std::string code = totp::compute_code(secret_b32, current_step);
 
-    EXPECT_TRUE(totp::verify_code(secret_b32, code, 1));
+    auto matched = totp::verify_code(secret_b32, code, std::nullopt, 1);
+    ASSERT_TRUE(matched.has_value());
+    EXPECT_EQ(*matched, current_step);
 }
 
 TEST(TotpVerify, WrongCodeRejected) {
     std::string secret_raw = "12345678901234567890";
     std::string secret_b32 = totp::base32_encode(secret_raw);
 
-    EXPECT_FALSE(totp::verify_code(secret_b32, "000000", 0));
-    EXPECT_FALSE(totp::verify_code(secret_b32, "999999", 0));
+    EXPECT_FALSE(totp::verify_code(secret_b32, "000000", std::nullopt, 0).has_value());
+    EXPECT_FALSE(totp::verify_code(secret_b32, "999999", std::nullopt, 0).has_value());
 }
 
 TEST(TotpVerify, WindowAllowsAdjacentSteps) {
@@ -159,11 +162,15 @@ TEST(TotpVerify, WindowAllowsAdjacentSteps) {
 
     // Code for previous step should work with window=1
     std::string prev_code = totp::compute_code(secret_b32, current_step - 1);
-    EXPECT_TRUE(totp::verify_code(secret_b32, prev_code, 1));
+    auto prev_matched = totp::verify_code(secret_b32, prev_code, std::nullopt, 1);
+    ASSERT_TRUE(prev_matched.has_value());
+    EXPECT_EQ(*prev_matched, current_step - 1);
 
     // Code for next step should work with window=1
     std::string next_code = totp::compute_code(secret_b32, current_step + 1);
-    EXPECT_TRUE(totp::verify_code(secret_b32, next_code, 1));
+    auto next_matched = totp::verify_code(secret_b32, next_code, std::nullopt, 1);
+    ASSERT_TRUE(next_matched.has_value());
+    EXPECT_EQ(*next_matched, current_step + 1);
 }
 
 TEST(TotpVerify, ZeroWindowOnlyCurrentStep) {
@@ -174,7 +181,57 @@ TEST(TotpVerify, ZeroWindowOnlyCurrentStep) {
 
     // Current step should work
     std::string current_code = totp::compute_code(secret_b32, current_step);
-    EXPECT_TRUE(totp::verify_code(secret_b32, current_code, 0));
+    auto matched = totp::verify_code(secret_b32, current_code, std::nullopt, 0);
+    ASSERT_TRUE(matched.has_value());
+    EXPECT_EQ(*matched, current_step);
+}
+
+// --- TOTP Replay Prevention Tests ---
+
+TEST(TotpVerify, ReplayRejected) {
+    std::string secret_raw = "12345678901234567890";
+    std::string secret_b32 = totp::base32_encode(secret_raw);
+
+    uint64_t current_step = static_cast<uint64_t>(std::time(nullptr)) / 30;
+    std::string code = totp::compute_code(secret_b32, current_step);
+
+    // Passing last_used_step = current_step should reject the code for current_step.
+    auto matched = totp::verify_code(secret_b32, code, current_step, 1);
+    EXPECT_FALSE(matched.has_value());
+}
+
+TEST(TotpVerify, StepAdvances) {
+    std::string secret_raw = "12345678901234567890";
+    std::string secret_b32 = totp::base32_encode(secret_raw);
+
+    uint64_t current_step = static_cast<uint64_t>(std::time(nullptr)) / 30;
+    std::string code = totp::compute_code(secret_b32, current_step);
+
+    // First verify with no prior step: should accept and return the step.
+    auto first = totp::verify_code(secret_b32, code, std::nullopt, 1);
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(*first, current_step);
+
+    // Second verify with last_used_step = returned step: replay, rejected.
+    auto second = totp::verify_code(secret_b32, code, *first, 1);
+    EXPECT_FALSE(second.has_value());
+}
+
+TEST(TotpVerify, PastWindowStepAcceptedOnce) {
+    std::string secret_raw = "12345678901234567890";
+    std::string secret_b32 = totp::base32_encode(secret_raw);
+
+    uint64_t current_step = static_cast<uint64_t>(std::time(nullptr)) / 30;
+    std::string prev_code = totp::compute_code(secret_b32, current_step - 1);
+
+    // With last_used_step = current_step - 2, step-1 is still > last_used_step, so accepted.
+    auto accepted = totp::verify_code(secret_b32, prev_code, current_step - 2, 1);
+    ASSERT_TRUE(accepted.has_value());
+    EXPECT_EQ(*accepted, current_step - 1);
+
+    // Now with last_used_step = step-1, replay of the same code is rejected.
+    auto rejected = totp::verify_code(secret_b32, prev_code, current_step - 1, 1);
+    EXPECT_FALSE(rejected.has_value());
 }
 
 // --- Secret Generation Tests ---

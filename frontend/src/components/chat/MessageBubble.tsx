@@ -1,4 +1,11 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useEffect,
+  useId,
+} from 'react';
 import {
   Button,
   Textarea,
@@ -81,36 +88,45 @@ function renderTextWithMentions(
 
 function useMentionMarkdownComponents(
   members: ChannelMemberInfo[],
+  keyPrefix: string,
 ): Components {
   return useMemo(() => {
     const memberUsernames = new Set(members.map((m) => m.username));
     return {
       p: ({ children, ...props }) => (
-        <p {...props}>{processChildren(children, memberUsernames)}</p>
+        <p {...props}>
+          {processChildren(children, memberUsernames, keyPrefix)}
+        </p>
       ),
       li: ({ children, ...props }) => (
-        <li {...props}>{processChildren(children, memberUsernames)}</li>
+        <li {...props}>
+          {processChildren(children, memberUsernames, keyPrefix)}
+        </li>
       ),
     };
-  }, [members]);
+  }, [members, keyPrefix]);
 }
 
 function processChildren(
   children: React.ReactNode,
   memberUsernames: Set<string>,
+  keyPrefix: string,
 ): React.ReactNode {
   if (!children) return children;
   if (typeof children === 'string') {
     return renderTextWithMentions(children, memberUsernames);
   }
   if (Array.isArray(children)) {
-    return children.map((child, i) => {
-      if (typeof child === 'string') {
-        const parts = renderTextWithMentions(child, memberUsernames);
+    let counter = 0;
+    return children.map((child) => {
+      const childType = typeof child;
+      if (childType === 'string') {
+        const parts = renderTextWithMentions(child as string, memberUsernames);
+        const key = `${keyPrefix}-${childType}-${counter++}`;
         return parts.length === 1 && typeof parts[0] === 'string' ? (
           child
         ) : (
-          <span key={i}>{parts}</span>
+          <span key={key}>{parts}</span>
         );
       }
       return child;
@@ -594,8 +610,10 @@ export function MessageBubble({
     if (authorServerRole === 'admin') return false;
     return true;
   })();
+  const reactId = useId();
   const mentionComponents = useMentionMarkdownComponents(
     activeChannel?.members || [],
+    `${message.id}-${reactId}`,
   );
 
   const time = new Date(message.created_at).toLocaleTimeString([], {

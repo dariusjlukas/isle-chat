@@ -1,13 +1,13 @@
 #include "db/database.h"
 #include <algorithm>
 #include <iomanip>
-#include <iostream>
 #include <random>
 #include <sstream>
+#include "logging/logger.h"
 
 Database::Database(const std::string& connection_string, int pool_size)
   : pool_(connection_string, pool_size) {
-  std::cout << "[DB] Connected to PostgreSQL" << std::endl;
+  LOG_INFO_N("db", nullptr, "Connected to PostgreSQL");
 }
 
 static std::string random_hex(int bytes) {
@@ -120,6 +120,12 @@ void Database::run_migrations() {
             used BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
+    )SQL");
+
+  // Index for session expiry scans (cleanup / validation).
+  // NOTE: will be folded into sqitch migration 0002 in P1.1.
+  txn.exec(R"SQL(
+        CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
     )SQL");
 
   // Add bio and status columns to users
@@ -436,6 +442,7 @@ void Database::run_migrations() {
     )SQL");
 
   // TOTP credentials
+  // NOTE: totp_last_step column will be folded into sqitch migration 0002 in P1.1.
   txn.exec(R"SQL(
         CREATE TABLE IF NOT EXISTS totp_credentials (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -445,6 +452,7 @@ void Database::run_migrations() {
             created_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(user_id)
         );
+        ALTER TABLE totp_credentials ADD COLUMN IF NOT EXISTS totp_last_step BIGINT;
     )SQL");
 
   // MFA pending tokens (short-lived, for two-step login)
@@ -907,7 +915,16 @@ void Database::run_migrations() {
     )SQL");
 
   txn.commit();
-  std::cout << "[DB] Migrations complete" << std::endl;
+  LOG_INFO_N("db", nullptr, "Migrations complete");
+}
+
+bool Database::schema_initialized() {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r =
+    txn.exec("SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='users' LIMIT 1");
+  txn.commit();
+  return !r.empty();
 }
 
 // --- Users ---
@@ -1567,12 +1584,55 @@ std::vector<Channel> Database::list_browsable_space_channels(
   return channels;
 }
 
-std::vector<Channel> Database::list_all_channels() {
+std::vector<Channel> Database::list_all_channels(int limit, int offset) {
   auto conn = pool_.acquire();
   pqxx::work txn(conn.get());
-  auto r = txn.exec(
+  auto r = txn.exec_params(
     std::string("SELECT ") + CH_COLS +
-    " FROM channels c WHERE c.is_direct = false ORDER BY c.name");
+      " FROM channels c WHERE c.is_direct = false "
+      "ORDER BY c.name ASC, c.id ASC "
+      "LIMIT $1 OFFSET $2",
+    limit,
+    offset);
+  txn.commit();
+  std::vector<Channel> channels;
+  for (const auto& row : r) {
+    channels.push_back(row_to_channel(row));
+  }
+  return channels;
+}
+
+std::vector<Channel> Database::list_visible_channels_for_user(
+  const std::string& user_id, bool is_server_admin, int limit, int offset) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  pqxx::result r;
+  if (is_server_admin) {
+    // Admins see: every non-DM channel + their own DMs/conversations.
+    r = txn.exec_params(
+      std::string("SELECT ") + CH_COLS +
+        " FROM channels c "
+        "WHERE c.is_direct = false "
+        "   OR EXISTS (SELECT 1 FROM channel_members cm "
+        "              WHERE cm.channel_id = c.id AND cm.user_id = $1) "
+        "ORDER BY c.name ASC, c.id ASC "
+        "LIMIT $2 OFFSET $3",
+      user_id,
+      limit,
+      offset);
+  } else {
+    // Non-admins see channels they're a member of (including DMs/conversations).
+    r = txn.exec_params(
+      std::string("SELECT ") + CH_COLS +
+        " FROM channels c "
+        "WHERE EXISTS (SELECT 1 FROM channel_members cm "
+        "              WHERE cm.channel_id = c.id AND cm.user_id = $1) "
+        "ORDER BY c.name ASC, c.id ASC "
+        "LIMIT $2 OFFSET $3",
+      user_id,
+      limit,
+      offset);
+  }
   txn.commit();
   std::vector<Channel> channels;
   for (const auto& row : r) {
@@ -1663,7 +1723,12 @@ Space Database::create_space(
   auto limit_row =
     txn.exec_params("SELECT value FROM server_settings WHERE key = 'default_space_storage_limit'");
   if (!limit_row.empty()) {
-    int64_t limit = std::stoll(limit_row[0][0].as<std::string>());
+    int64_t limit = 0;
+    try {
+      limit = std::stoll(limit_row[0][0].as<std::string>());
+    } catch (...) {
+      limit = 0;
+    }
     if (limit > 0) {
       txn.exec_params(
         "INSERT INTO server_settings (key, value) VALUES ($1, $2) "
@@ -1760,10 +1825,47 @@ std::vector<Space> Database::list_public_spaces(
   return spaces;
 }
 
-std::vector<Space> Database::list_all_spaces() {
+std::vector<Space> Database::list_all_spaces(int limit, int offset) {
   auto conn = pool_.acquire();
   pqxx::work txn(conn.get());
-  auto r = txn.exec(std::string("SELECT ") + SP_COLS + " FROM spaces s ORDER BY s.name");
+  auto r = txn.exec_params(
+    std::string("SELECT ") + SP_COLS +
+      " FROM spaces s "
+      "ORDER BY s.name ASC, s.id ASC "
+      "LIMIT $1 OFFSET $2",
+    limit,
+    offset);
+  txn.commit();
+  std::vector<Space> spaces;
+  for (const auto& row : r) spaces.push_back(row_to_space(row));
+  return spaces;
+}
+
+std::vector<Space> Database::list_visible_spaces_for_user(
+  const std::string& user_id, bool is_server_admin, int limit, int offset) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  pqxx::result r;
+  if (is_server_admin) {
+    r = txn.exec_params(
+      std::string("SELECT ") + SP_COLS +
+        " FROM spaces s "
+        "ORDER BY s.name ASC, s.id ASC "
+        "LIMIT $1 OFFSET $2",
+      limit,
+      offset);
+  } else {
+    r = txn.exec_params(
+      std::string("SELECT ") + SP_COLS +
+        " FROM spaces s "
+        "WHERE EXISTS (SELECT 1 FROM space_members sm "
+        "              WHERE sm.space_id = s.id AND sm.user_id = $1) "
+        "ORDER BY s.name ASC, s.id ASC "
+        "LIMIT $2 OFFSET $3",
+      user_id,
+      limit,
+      offset);
+  }
   txn.commit();
   std::vector<Space> spaces;
   for (const auto& row : r) spaces.push_back(row_to_space(row));
@@ -1821,7 +1923,12 @@ Space Database::create_personal_space(const std::string& user_id, const std::str
     "SELECT value FROM server_settings WHERE key = 'personal_spaces_storage_limit'");
   if (!limit_row.empty()) {
     std::string limit_str = limit_row[0][0].as<std::string>();
-    int64_t limit = std::stoll(limit_str);
+    int64_t limit = 0;
+    try {
+      limit = std::stoll(limit_str);
+    } catch (...) {
+      limit = 0;
+    }
     if (limit > 0) {
       txn.exec_params(
         "INSERT INTO server_settings (key, value) VALUES ($1, $2) "
@@ -5204,6 +5311,25 @@ bool Database::has_totp(const std::string& user_id) {
     "SELECT COUNT(*) FROM totp_credentials WHERE user_id = $1 AND verified = TRUE", user_id);
   txn.commit();
   return r[0][0].as<int>() > 0;
+}
+
+std::optional<int64_t> Database::get_totp_last_step(const std::string& user_id) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r =
+    txn.exec_params("SELECT totp_last_step FROM totp_credentials WHERE user_id = $1", user_id);
+  txn.commit();
+  if (r.empty() || r[0][0].is_null()) return std::nullopt;
+  return r[0][0].as<int64_t>();
+}
+
+bool Database::set_totp_last_step(const std::string& user_id, int64_t step) {
+  auto conn = pool_.acquire();
+  pqxx::work txn(conn.get());
+  auto r = txn.exec_params(
+    "UPDATE totp_credentials SET totp_last_step = $1 WHERE user_id = $2", step, user_id);
+  txn.commit();
+  return r.affected_rows() == 1;
 }
 
 // --- MFA pending tokens ---

@@ -39,26 +39,54 @@ import { useChatStore } from '../stores/chatStore';
 
 const API_BASE = '/api';
 
-function getToken(): string | null {
-  return localStorage.getItem('session_token');
+// Read a non-HttpOnly cookie value by name. Used to read the `csrf` cookie
+// (the `session` cookie is HttpOnly and not visible here, by design).
+function readCookie(name: string): string | null {
+  const prefix = name + '=';
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) return trimmed.slice(prefix.length);
+  }
+  return null;
+}
+
+const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
+
+// Configure an XHR for cookie-based auth. Sends cookies along with the
+// request and attaches the X-CSRF-Token header for state-changing methods.
+function applyXhrAuth(xhr: XMLHttpRequest, method = 'POST') {
+  xhr.withCredentials = true;
+  if (STATE_CHANGING_METHODS.has(method.toUpperCase())) {
+    const csrf = readCookie('csrf');
+    if (csrf) xhr.setRequestHeader('X-CSRF-Token', csrf);
+  }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const token = getToken();
+  const method = (options.method || 'GET').toUpperCase();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),
   };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  // Double-submit CSRF: for state-changing requests, send the csrf cookie
+  // value as an X-CSRF-Token header. The backend's csrf_ok helper compares
+  // the two; once Release C lands and CSRF enforcement is wired up, this
+  // header becomes mandatory for cookie-authed requests.
+  if (STATE_CHANGING_METHODS.has(method)) {
+    const csrf = readCookie('csrf');
+    if (csrf) headers['X-CSRF-Token'] = csrf;
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    credentials: 'include',
+    headers,
+  });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     // If the server rejects our session (expired, banned, etc.), clear auth
-    if (res.status === 401 && token) {
+    if (res.status === 401) {
       const store = useChatStore.getState();
       if (store.isAuthenticated) {
         store.clearAuth(
@@ -335,7 +363,7 @@ export function revokeInvite(id: string) {
   });
 }
 
-export function listJoinRequests() {
+export function listJoinRequests(signal?: AbortSignal) {
   return request<
     Array<{
       id: string;
@@ -345,7 +373,7 @@ export function listJoinRequests() {
       status: string;
       created_at: string;
     }>
-  >('/admin/requests');
+  >('/admin/requests', { signal });
 }
 
 export function approveRequest(requestId: string) {
@@ -473,14 +501,13 @@ export function updateProfile(data: {
 
 export function uploadAvatar(file: File): Promise<User> {
   return new Promise((resolve, reject) => {
-    const token = getToken();
     const params = new URLSearchParams({
       content_type: file.type || 'image/png',
     });
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/users/me/avatar?${params}`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    applyXhrAuth(xhr, 'POST');
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -525,14 +552,13 @@ async function sha256Hex(data: ArrayBuffer): Promise<string> {
 
 function uploadChunk(
   url: string,
-  token: string | null,
   chunk: Blob,
   onProgress?: (loaded: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', url);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    applyXhrAuth(xhr, 'POST');
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded);
     };
@@ -558,15 +584,19 @@ async function chunkedUpload<T>(
   initBody: Record<string, unknown>,
   onProgress?: (percent: number) => void,
 ): Promise<T> {
-  const token = getToken();
   const chunkCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  const csrf = readCookie('csrf');
+  const csrfHeader: Record<string, string> = csrf
+    ? { 'X-CSRF-Token': csrf }
+    : {};
 
   // Init
   const initRes = await fetch(`${baseUrl}/init`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...csrfHeader,
     },
     body: JSON.stringify({
       ...initBody,
@@ -595,7 +625,6 @@ async function chunkedUpload<T>(
       try {
         await uploadChunk(
           `${baseUrl}/${upload_id}/chunk?index=${i}&hash=${chunkHash}`,
-          token,
           chunk,
           (loaded) => {
             if (onProgress && file.size > 0) {
@@ -621,9 +650,10 @@ async function chunkedUpload<T>(
   // Complete (send empty body so uWebSockets triggers onData)
   const completeRes = await fetch(`${baseUrl}/${upload_id}/complete`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...csrfHeader,
     },
     body: '{}',
   });
@@ -654,8 +684,10 @@ export function uploadFile(
 }
 
 export function getFileUrl(fileId: string): string {
-  const token = getToken();
-  return `${API_BASE}/files/${fileId}?token=${token}`;
+  // Cookies (with credentials: 'include' / `<img crossorigin>`-style fetches
+  // and same-origin <a href=...> loads) are sent automatically by the browser,
+  // so we no longer embed the session token in the query string.
+  return `${API_BASE}/files/${fileId}`;
 }
 
 export async function downloadFile(
@@ -663,9 +695,8 @@ export async function downloadFile(
   fileName: string,
   onProgress?: (percent: number) => void,
 ) {
-  const token = getToken();
   const res = await fetch(`${API_BASE}/files/${fileId}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
   });
 
   if (!res.ok) throw new Error('Download failed');
@@ -779,10 +810,9 @@ export function uploadServerIcon(
   file: File,
 ): Promise<{ server_icon_file_id: string }> {
   return new Promise((resolve, reject) => {
-    const token = getToken();
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/admin/server-icon`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    applyXhrAuth(xhr, 'POST');
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
@@ -808,10 +838,9 @@ export function uploadServerIconDark(
   file: File,
 ): Promise<{ server_icon_dark_file_id: string }> {
   return new Promise((resolve, reject) => {
-    const token = getToken();
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/admin/server-icon-dark`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    applyXhrAuth(xhr, 'POST');
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
@@ -914,14 +943,13 @@ export function uploadSpaceAvatar(
   file: File,
 ): Promise<Partial<Space>> {
   return new Promise((resolve, reject) => {
-    const token = getToken();
     const params = new URLSearchParams({
       content_type: file.type || 'image/png',
     });
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/spaces/${spaceId}/avatar?${params}`);
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    applyXhrAuth(xhr, 'POST');
 
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
@@ -1602,9 +1630,9 @@ export function getSpaceFileDownloadUrl(
   fileId: string,
   inline?: boolean,
 ): string {
-  const token = getToken();
-  const base = `${API_BASE}/spaces/${spaceId}/files/${fileId}/download?token=${token}`;
-  return inline ? `${base}&inline=1` : base;
+  // Cookies are sent automatically; no need to embed the token in the URL.
+  const base = `${API_BASE}/spaces/${spaceId}/files/${fileId}/download`;
+  return inline ? `${base}?inline=1` : base;
 }
 
 export async function downloadSpaceFile(
@@ -1612,11 +1640,10 @@ export async function downloadSpaceFile(
   fileId: string,
   fileName: string,
 ) {
-  const token = getToken();
   const res = await fetch(
     `${API_BASE}/spaces/${spaceId}/files/${fileId}/download`,
     {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
     },
   );
   if (!res.ok) throw new Error('Download failed');
@@ -1629,11 +1656,10 @@ export async function downloadSpaceFolderAsZip(
   folderId: string,
   folderName: string,
 ) {
-  const token = getToken();
   const res = await fetch(
     `${API_BASE}/spaces/${spaceId}/files/${folderId}/download-zip`,
     {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
     },
   );
   if (!res.ok) throw new Error('Download failed');
@@ -1733,8 +1759,8 @@ export function getVersionDownloadUrl(
   fileId: string,
   versionId: string,
 ): string {
-  const token = getToken();
-  return `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions/${versionId}/download?token=${token}`;
+  // Cookies are sent automatically; no token in URL.
+  return `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions/${versionId}/download`;
 }
 
 export async function downloadFileVersion(
@@ -1743,11 +1769,10 @@ export async function downloadFileVersion(
   versionId: string,
   fileName: string,
 ) {
-  const token = getToken();
   const res = await fetch(
     `${API_BASE}/spaces/${spaceId}/files/${fileId}/versions/${versionId}/download`,
     {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
     },
   );
   if (!res.ok) throw new Error('Download failed');
@@ -2457,9 +2482,8 @@ export function uploadWikiMedia(
 }
 
 export function getWikiMediaUrl(url: string, inline?: boolean): string {
-  const token = getToken();
-  const base = `${url}?token=${token}`;
-  return inline ? `${base}&inline=1` : base;
+  // Cookies are sent automatically; no token in URL.
+  return inline ? `${url}?inline=1` : url;
 }
 
 // Shared with me

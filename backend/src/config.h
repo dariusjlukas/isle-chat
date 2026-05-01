@@ -1,7 +1,9 @@
 #pragma once
 #include <cstdint>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
+#include "logging/logger.h"
 
 struct Config {
   std::string pg_host;
@@ -21,6 +23,7 @@ struct Config {
   std::string webauthn_origin;
   int db_pool_size;
   int db_thread_pool_size;
+  bool enable_sqitch_only;
 
   bool has_ssl() const {
     return !ssl_cert_path.empty() && !ssl_key_path.empty();
@@ -33,15 +36,19 @@ struct Config {
     c.pg_user = env("POSTGRES_USER", "chatapp");
     c.pg_password = env("POSTGRES_PASSWORD", "changeme_in_production");
     c.pg_dbname = env("POSTGRES_DB", "chatapp");
-    c.server_port = std::stoi(env("BACKEND_PORT", "9001"));
-    c.session_expiry_hours = std::stoi(env("SESSION_EXPIRY_HOURS", "168"));
+    c.server_port = parse_int_env("BACKEND_PORT", "9001");
+    c.session_expiry_hours = parse_int_env("SESSION_EXPIRY_HOURS", "168");
     c.public_url = env("PUBLIC_URL", "");
     c.upload_dir = env("UPLOAD_DIR", "/data/uploads");
-    c.max_file_size = std::stoll(env("MAX_FILE_SIZE", "0"));
+    c.max_file_size = parse_i64_env("MAX_FILE_SIZE", "0");
     c.ssl_cert_path = env("SSL_CERT_PATH", "");
     c.ssl_key_path = env("SSL_KEY_PATH", "");
-    c.db_pool_size = std::stoi(env("DB_POOL_SIZE", "10"));
-    c.db_thread_pool_size = std::stoi(env("DB_THREAD_POOL_SIZE", "32"));
+    c.db_pool_size = parse_int_env("DB_POOL_SIZE", "10");
+    c.db_thread_pool_size = parse_int_env("DB_THREAD_POOL_SIZE", "32");
+    {
+      std::string v = env("ENABLE_SQITCH_ONLY", "0");
+      c.enable_sqitch_only = (v == "1" || v == "true");
+    }
     c.webauthn_rp_name = env("WEBAUTHN_RP_NAME", "EnclaveStation");
 
     // Derive WebAuthn RP ID and origin from PUBLIC_URL if not explicitly set
@@ -82,5 +89,56 @@ private:
   static std::string env(const char* name, const char* fallback) {
     const char* val = std::getenv(name);
     return val ? val : fallback;
+  }
+
+  // Fail-fast env parsing: throw std::invalid_argument on malformed numeric
+  // env vars. main() does not catch this — the process dies with a clear
+  // terminate message, which is the desired behavior at boot.
+  static int parse_int_env(const char* name, const char* fallback) {
+    std::string value = env(name, fallback);
+    size_t pos = 0;
+    int v = 0;
+    try {
+      v = std::stoi(value, &pos);
+    } catch (const std::exception&) {
+      LOG_ERROR_N(
+        "config",
+        nullptr,
+        std::string("FATAL: Invalid env var ") + name + "=" + value + " (expected integer)");
+      throw std::invalid_argument(std::string("Invalid env var ") + name + "=" + value);
+    }
+    if (pos != value.size()) {
+      LOG_ERROR_N(
+        "config",
+        nullptr,
+        std::string("FATAL: Invalid env var ") + name + "=" + value +
+          " (trailing non-numeric characters)");
+      throw std::invalid_argument(std::string("Invalid env var ") + name + "=" + value);
+    }
+    return v;
+  }
+
+  static int64_t parse_i64_env(const char* name, const char* fallback) {
+    std::string value = env(name, fallback);
+    size_t pos = 0;
+    int64_t v = 0;
+    try {
+      v = std::stoll(value, &pos);
+    } catch (const std::exception&) {
+      LOG_ERROR_N(
+        "config",
+        nullptr,
+        std::string("FATAL: Invalid env var ") + name + "=" + value + " (expected 64-bit integer)");
+      throw std::invalid_argument(std::string("Invalid env var ") + name + "=" + value);
+    }
+    if (pos != value.size()) {
+      LOG_ERROR_N(
+        "config",
+        nullptr,
+        std::string("FATAL: Invalid env var ") + name + "=" + value +
+          " (trailing non-numeric characters)");
+      throw std::invalid_argument(std::string("Invalid env var ") + name + "=" + value);
+    }
+    return v;
   }
 };

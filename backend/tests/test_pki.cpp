@@ -146,12 +146,12 @@ TEST(Base64, KnownVectors) {
 
 TEST(GenerateChallenge, Length) {
     std::string challenge = pki::generate_challenge();
-    EXPECT_EQ(challenge.size(), 64u); // 32 bytes * 2 hex chars
+    EXPECT_EQ(challenge.size(), 32u); // 16 bytes * 2 hex chars
 }
 
 TEST(GenerateChallenge, HexOnly) {
     std::string challenge = pki::generate_challenge();
-    EXPECT_TRUE(std::regex_match(challenge, std::regex("^[0-9a-f]{64}$")));
+    EXPECT_TRUE(std::regex_match(challenge, std::regex("^[0-9a-f]{32}$")));
 }
 
 TEST(GenerateChallenge, Uniqueness) {
@@ -160,6 +160,15 @@ TEST(GenerateChallenge, Uniqueness) {
         challenges.insert(pki::generate_challenge());
     }
     EXPECT_EQ(challenges.size(), 100u);
+}
+
+TEST(GenerateChallenge, SmokeNonColliding) {
+    // Smoke test: two consecutive calls must differ and both must be 32 hex chars.
+    std::string a = pki::generate_challenge();
+    std::string b = pki::generate_challenge();
+    EXPECT_NE(a, b);
+    EXPECT_TRUE(std::regex_match(a, std::regex("^[0-9a-f]{32}$")));
+    EXPECT_TRUE(std::regex_match(b, std::regex("^[0-9a-f]{32}$")));
 }
 
 // --- Signature Verification Tests ---

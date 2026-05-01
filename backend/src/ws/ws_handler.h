@@ -1,5 +1,6 @@
 #pragma once
 #include <App.h>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -16,6 +17,12 @@ struct WsUserData {
   std::string user_id;
   std::string username;
   std::string role;
+  // P1.6: per-connection token-bucket rate limit for inbound chatty events
+  // (send_message, typing). Burst kRateLimitBurst, refill kRateLimitRefillPerSec.
+  // Using steady_clock so adjustments to system time don't perturb the limiter.
+  // Self-contained on WsUserData — no shared mutex hot-path.
+  double rl_tokens = 20.0;
+  std::chrono::steady_clock::time_point rl_last_refill = std::chrono::steady_clock::now();
 };
 
 template <bool SSL>

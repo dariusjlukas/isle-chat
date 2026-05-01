@@ -1235,25 +1235,43 @@ void AdminHandler<SSL>::save_settings(
       db.set_setting(key, value);
     }
 
-    // Propagate default space storage limit to existing non-personal spaces
+    // Propagate default space storage limit to existing non-personal spaces.
+    // Page through to avoid loading every row at once.
+    // TODO(P1.5+): rewrite as a single bulk UPSERT into server_settings keyed off
+    // spaces.is_personal=false, so we don't iterate row-by-row.
     if (updates.count("default_space_storage_limit")) {
       int64_t limit = std::stoll(updates.at("default_space_storage_limit"));
-      auto all_spaces = db.list_all_spaces();
-      for (const auto& sp : all_spaces) {
-        if (!sp.is_personal) {
-          db.set_setting("space_storage_limit_" + sp.id, std::to_string(limit));
+      constexpr int kPageSize = 500;
+      int offset = 0;
+      while (true) {
+        auto page = db.list_all_spaces(kPageSize, offset);
+        if (page.empty()) break;
+        for (const auto& sp : page) {
+          if (!sp.is_personal) {
+            db.set_setting("space_storage_limit_" + sp.id, std::to_string(limit));
+          }
         }
+        if (static_cast<int>(page.size()) < kPageSize) break;
+        offset += kPageSize;
       }
     }
 
-    // Propagate personal space storage limit to existing personal spaces
+    // Propagate personal space storage limit to existing personal spaces.
+    // TODO(P1.5+): rewrite as a single bulk UPSERT keyed off spaces.is_personal=true.
     if (updates.count("personal_spaces_storage_limit")) {
       int64_t limit = std::stoll(updates.at("personal_spaces_storage_limit"));
-      auto all_spaces = db.list_all_spaces();
-      for (const auto& sp : all_spaces) {
-        if (sp.is_personal) {
-          db.set_setting("space_storage_limit_" + sp.id, std::to_string(limit));
+      constexpr int kPageSize = 500;
+      int offset = 0;
+      while (true) {
+        auto page = db.list_all_spaces(kPageSize, offset);
+        if (page.empty()) break;
+        for (const auto& sp : page) {
+          if (sp.is_personal) {
+            db.set_setting("space_storage_limit_" + sp.id, std::to_string(limit));
+          }
         }
+        if (static_cast<int>(page.size()) < kPageSize) break;
+        offset += kPageSize;
       }
     }
 

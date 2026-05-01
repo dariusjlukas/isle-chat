@@ -1,5 +1,41 @@
 #include "handlers/handler_utils.h"
 
+#include <cctype>
+#include <charconv>
+
+namespace handler_utils {
+
+std::optional<int> safe_parse_int(std::string_view s) {
+  // Trim leading ASCII whitespace to tolerate values like " 123" in query strings.
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
+    s.remove_prefix(1);
+  }
+  if (s.empty()) return std::nullopt;
+  int value = 0;
+  const char* begin = s.data();
+  const char* end = begin + s.size();
+  auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc()) return std::nullopt;
+  if (ptr != end) return std::nullopt;  // trailing garbage
+  return value;
+}
+
+std::optional<int64_t> safe_parse_int64(std::string_view s) {
+  while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
+    s.remove_prefix(1);
+  }
+  if (s.empty()) return std::nullopt;
+  int64_t value = 0;
+  const char* begin = s.data();
+  const char* end = begin + s.size();
+  auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc()) return std::nullopt;
+  if (ptr != end) return std::nullopt;
+  return value;
+}
+
+}  // namespace handler_utils
+
 int parse_int_setting_or(const std::optional<std::string>& setting, int fallback) {
   if (setting) {
     try {

@@ -68,6 +68,18 @@ add_executable(test_zip_builder test_zip_builder.cpp)
 target_link_libraries(test_zip_builder PRIVATE chat-lib GTest::gtest_main)
 add_test(NAME ZipBuilderTests COMMAND test_zip_builder)
 
+add_executable(test_upload_manager test_upload_manager.cpp)
+target_link_libraries(test_upload_manager PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME UploadManagerTests COMMAND test_upload_manager)
+
+add_executable(test_logger test_logger.cpp)
+target_link_libraries(test_logger PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME LoggerTests COMMAND test_logger)
+
+add_executable(test_metrics test_metrics.cpp)
+target_link_libraries(test_metrics PRIVATE chat-lib GTest::gtest_main)
+add_test(NAME MetricsTests COMMAND test_metrics)
+
 # Integration tests (require PostgreSQL)
 add_executable(test_database test_database.cpp)
 target_link_libraries(test_database PRIVATE chat-lib GTest::gtest_main)
@@ -105,6 +117,7 @@ add_test(NAME AuthCredentialTests COMMAND test_auth_credentials)
 set_tests_properties(PkiTests ConfigTests TotpTests PasswordTests WebAuthnTests HandlerUtilsTests
     AuthUtilsTests AuthPayloadUtilsTests AdminSettingsUtilsTests FileAccessUtilsTests
     AdminApprovalUtilsTests SearchHandlerTests FileHandlerTests RecurrenceTests ZipBuilderTests
+    UploadManagerTests LoggerTests MetricsTests
     PROPERTIES LABELS "unit")
 # PasswordTests runs many argon2 hash operations; with sanitizers this needs extra time
 set_tests_properties(PasswordTests PROPERTIES TIMEOUT 120)

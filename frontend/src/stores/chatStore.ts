@@ -13,8 +13,11 @@ import type {
 
 interface ChatState {
   // Auth
+  // The session is stored in an HttpOnly `session` cookie (P1.4 Release B);
+  // we only keep the user profile in the store. `setAuth` still accepts a
+  // `token` parameter for back-compat with login flows that pass the token
+  // returned by the server, but the value is ignored.
   user: User | null;
-  token: string | null;
   isAuthenticated: boolean;
   authError: string | null;
 
@@ -67,7 +70,10 @@ interface ChatState {
   showAiPanel: boolean;
 
   // Actions
-  setAuth: (user: User, token: string) => void;
+  // `token` is accepted but ignored — the session lives in an HttpOnly cookie
+  // (set by the server on login). Existing call sites pass `result.token`
+  // straight through; that's fine.
+  setAuth: (user: User, token?: string) => void;
   clearAuth: (reason?: string) => void;
   setChannels: (channels: Channel[]) => void;
   setActiveChannel: (channelId: string | null) => void;
@@ -151,7 +157,6 @@ interface ChatState {
 
 export const useChatStore = create<ChatState>((set) => ({
   user: null,
-  token: null,
   isAuthenticated: false,
   authError: null,
   channels: [],
@@ -183,16 +188,29 @@ export const useChatStore = create<ChatState>((set) => ({
   mentionCounts: {},
   readReceipts: {},
 
-  setAuth: (user, token) => {
-    localStorage.setItem('session_token', token);
-    set({ user, token, isAuthenticated: true, authError: null });
+  setAuth: (user) => {
+    // Persist a non-sensitive flag so we can show an authenticated UI on
+    // reload before the /users/me check completes. The session itself is
+    // in the HttpOnly cookie and not visible to JS.
+    try {
+      localStorage.setItem('logged_in', '1');
+    } catch {
+      // ignore — Safari private mode etc.
+    }
+    set({ user, isAuthenticated: true, authError: null });
   },
 
   clearAuth: (reason?) => {
-    localStorage.removeItem('session_token');
+    try {
+      localStorage.removeItem('logged_in');
+      // P1.4 cleanup: remove the legacy session_token if it's lingering from
+      // a pre-Release B install. Safe to remove unconditionally.
+      localStorage.removeItem('session_token');
+    } catch {
+      // ignore
+    }
     set({
       user: null,
-      token: null,
       isAuthenticated: false,
       authError: reason || null,
       channels: [],

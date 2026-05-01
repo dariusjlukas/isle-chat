@@ -1,0 +1,5 @@
+%syntax-version=1.0.0
+%project=enclave-station
+%uri=https://github.com/dariusjlukas/enclave-station
+
+0001-initial-schema 2026-04-29T00:00:00Z Darius J. Lukas <dariusjlukas@gmail.com> # Initial schema dumped from Database::init_schema() output as of 2026-04-29.

@@ -73,6 +73,63 @@ class TestChannelListing:
         assert "priv1" not in names
 
 
+class TestChannelListPagination:
+    def test_list_channels_pagination(self, client, admin_user):
+        # Create 5 channels with names that sort predictably
+        names = ["pag-a", "pag-b", "pag-c", "pag-d", "pag-e"]
+        for n in names:
+            r = client.post("/api/channels", json={"name": n},
+                            headers=admin_user["headers"])
+            assert r.status_code == 200
+
+        # First page: limit=2 should return exactly the first 2 by name order
+        r = client.get("/api/channels?limit=2",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        first_page = r.json()
+        # Filter to only the channels we just created (admin sees all channels)
+        first_names = [ch["name"] for ch in first_page if ch["name"] in names]
+        assert len(first_page) == 2
+
+        # Second page: offset=2 returns the next 2
+        r = client.get("/api/channels?limit=2&offset=2",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        second_page = r.json()
+        assert len(second_page) == 2
+
+        # Pages should not overlap
+        first_ids = {ch["id"] for ch in first_page}
+        second_ids = {ch["id"] for ch in second_page}
+        assert first_ids.isdisjoint(second_ids)
+
+    def test_list_channels_invalid_offset(self, client, admin_user):
+        r = client.get("/api/channels?offset=-1",
+                       headers=admin_user["headers"])
+        assert r.status_code == 400, (
+            f"Expected 400 for negative offset; got {r.status_code} "
+            f"({r.text!r})"
+        )
+
+    def test_list_channels_default_ordering(self, client, admin_user):
+        # Create channels in non-alphabetic creation order; expect alphabetic response.
+        creation_order = ["zzz-ord", "aaa-ord", "mmm-ord"]
+        for n in creation_order:
+            r = client.post("/api/channels", json={"name": n},
+                            headers=admin_user["headers"])
+            assert r.status_code == 200
+
+        r = client.get("/api/channels?limit=500",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        body = r.json()
+        # Filter to only the names we just created
+        seen = [ch["name"] for ch in body if ch["name"] in creation_order]
+        assert seen == sorted(creation_order), (
+            f"Expected alphabetic ordering, got {seen!r}"
+        )
+
+
 class TestChannelJoinLeave:
     def test_join_public_channel(self, client, admin_user, regular_user):
         r = client.post("/api/channels", json={"name": "open"},

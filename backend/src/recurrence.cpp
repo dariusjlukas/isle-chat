@@ -1,5 +1,6 @@
 #include "recurrence.h"
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
@@ -8,19 +9,30 @@ namespace recurrence {
 
 static const int MAX_OCCURRENCES = 1000;  // Safety limit per expansion
 
+// Local safe int parser (no exceptions) to avoid crashes on user-supplied RRULEs.
+static int safe_stoi(const std::string& s, int fallback = 0) {
+  if (s.empty()) return fallback;
+  int value = 0;
+  const char* begin = s.data();
+  const char* end = begin + s.size();
+  auto [ptr, ec] = std::from_chars(begin, end, value);
+  if (ec != std::errc() || ptr != end) return fallback;
+  return value;
+}
+
 std::tm parse_iso8601(const std::string& s) {
   std::tm t{};
   // Handle formats: "2026-03-15T10:00:00Z", "2026-03-15T10:00:00+00:00",
   // "2026-03-15 10:00:00+00", "2026-03-15"
   if (s.size() >= 10) {
-    t.tm_year = std::stoi(s.substr(0, 4)) - 1900;
-    t.tm_mon = std::stoi(s.substr(5, 2)) - 1;
-    t.tm_mday = std::stoi(s.substr(8, 2));
+    t.tm_year = safe_stoi(s.substr(0, 4), 1970) - 1900;
+    t.tm_mon = safe_stoi(s.substr(5, 2), 1) - 1;
+    t.tm_mday = safe_stoi(s.substr(8, 2), 1);
   }
   if (s.size() >= 19) {
-    t.tm_hour = std::stoi(s.substr(11, 2));
-    t.tm_min = std::stoi(s.substr(14, 2));
-    t.tm_sec = std::stoi(s.substr(17, 2));
+    t.tm_hour = safe_stoi(s.substr(11, 2), 0);
+    t.tm_min = safe_stoi(s.substr(14, 2), 0);
+    t.tm_sec = safe_stoi(s.substr(17, 2), 0);
   }
   t.tm_isdst = 0;
   return t;
@@ -116,9 +128,10 @@ RRule parse_rrule(const std::string& rrule_str) {
       else if (val == "YEARLY")
         rule.freq = Freq::YEARLY;
     } else if (key == "INTERVAL") {
-      rule.interval = std::max(1, std::stoi(val));
+      rule.interval = std::max(1, safe_stoi(val, 1));
     } else if (key == "COUNT") {
-      rule.count = std::stoi(val);
+      int count_val = safe_stoi(val, -1);
+      if (count_val >= 0) rule.count = count_val;
     } else if (key == "UNTIL") {
       // UNTIL can be in YYYYMMDD or YYYYMMDDTHHMMSSZ format
       std::string normalized;
@@ -143,10 +156,16 @@ RRule parse_rrule(const std::string& rrule_str) {
       }
     } else if (key == "BYMONTHDAY") {
       auto nums = split(val, ',');
-      for (const auto& n : nums) rule.by_monthday.push_back(std::stoi(n));
+      for (const auto& n : nums) {
+        int d = safe_stoi(n, 0);
+        if (d != 0) rule.by_monthday.push_back(d);
+      }
     } else if (key == "BYMONTH") {
       auto nums = split(val, ',');
-      for (const auto& n : nums) rule.by_month.push_back(std::stoi(n));
+      for (const auto& n : nums) {
+        int m = safe_stoi(n, 0);
+        if (m >= 1 && m <= 12) rule.by_month.push_back(m);
+      }
     }
   }
   return rule;

@@ -556,10 +556,10 @@ export function FileBrowser({ spaceId }: Props) {
     ) {
       setPreviewLoading(true);
       try {
-        const token = localStorage.getItem('session_token');
+        // Cookies are sent automatically; no token in URL or header.
         const res = await fetch(
           `/api/spaces/${spaceId}/files/${file.id}/download`,
-          { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+          { credentials: 'include' },
         );
         if (!res.ok) throw new Error('Failed to load');
         const text = await res.text();

@@ -26,7 +26,8 @@ private:
     uWS::HttpResponse<SSL>* res,
     std::shared_ptr<bool> aborted,
     const std::string& space_id,
-    const std::string& user_id);
+    const std::string& user_id,
+    const std::string& origin);
   std::string get_access_level(const std::string& space_id, const std::string& user_id);
   std::string get_page_access_level(
     const std::string& space_id, const std::string& page_id, const std::string& user_id);
@@ -35,13 +36,15 @@ private:
     std::shared_ptr<bool> aborted,
     const std::string& space_id,
     const std::string& user_id,
-    const std::string& required_level);
+    const std::string& required_level,
+    const std::string& origin);
   bool require_page_permission(
     uWS::HttpResponse<SSL>* res,
     std::shared_ptr<bool> aborted,
     const std::string& space_id,
     const std::string& page_id,
     const std::string& user_id,
-    const std::string& required_level);
+    const std::string& required_level,
+    const std::string& origin);
   static int perm_rank(const std::string& p);
 };

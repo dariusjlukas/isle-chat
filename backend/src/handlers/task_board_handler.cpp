@@ -1,5 +1,6 @@
 #include "handlers/task_board_handler.h"
 #include <pqxx/pqxx>
+#include "handlers/cors_utils.h"
 
 using json = nlohmann::json;
 
@@ -106,45 +107,48 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List boards
   app.get("/api/spaces/:id/tasks/boards", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), space_id = std::move(space_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
-      if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+    res->onAborted([aborted, origin]() { *aborted = true; });
+    pool_.submit(
+      [this, res, aborted, token = std::move(token), space_id = std::move(space_id), origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
+        if (user_id.empty()) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
-      auto boards = db.list_task_boards(space_id);
-      std::string my_perm = get_access_level(space_id, user_id);
+        auto boards = db.list_task_boards(space_id);
+        std::string my_perm = get_access_level(space_id, user_id);
 
-      json arr = json::array();
-      for (const auto& b : boards) arr.push_back(board_to_json(b));
+        json arr = json::array();
+        for (const auto& b : boards) arr.push_back(board_to_json(b));
 
-      json resp = {{"boards", arr}, {"my_permission", my_perm}};
-      auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
-        if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        json resp = {{"boards", arr}, {"my_permission", my_perm}};
+        auto resp_str = resp.dump();
+        loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          if (*aborted) return;
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        });
       });
-    });
   });
 
   // Create board
   app.post("/api/spaces/:id/tasks/boards", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -152,11 +156,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -164,11 +169,11 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string description = j.value("description", "");
 
           if (name.empty() || name.length() > 255) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"json({"error":"Name is required (max 255 characters)"})json");
             });
             return;
@@ -189,20 +194,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           for (const auto& c : cols) resp["columns"].push_back(column_to_json(c));
 
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -211,28 +213,30 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get board with columns and tasks
   app.get("/api/spaces/:id/tasks/boards/:boardId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  board_id = std::move(board_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  board_id = std::move(board_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto board = db.find_task_board(board_id);
       if (!board || board->space_id != space_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Board not found"})");
         });
         return;
@@ -279,30 +283,31 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       resp["dependencies"] = deps_arr;
 
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(resp_str);
       });
     });
   });
 
   // Update board
   app.put("/api/spaces/:id/tasks/boards/:boardId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -311,19 +316,20 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto existing = db.find_task_board(board_id);
         if (!existing || existing->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Board not found"})");
           });
           return;
@@ -339,20 +345,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           board.created_by_username = creator ? creator->username : "";
 
           auto resp_str = board_to_json(board).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -361,43 +364,44 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete board
   app.del("/api/spaces/:id/tasks/boards/:boardId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  board_id = std::move(board_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  board_id = std::move(board_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto board = db.find_task_board(board_id);
       if (!board || board->space_id != space_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Board not found"})");
         });
         return;
       }
 
       if (board->created_by != user_id) {
-        if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+        if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
       }
 
       db.delete_task_board(board_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
@@ -406,19 +410,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Create column
   app.post("/api/spaces/:id/tasks/boards/:boardId/columns", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -427,19 +433,20 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto board = db.find_task_board(board_id);
         if (!board || board->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Board not found"})");
           });
           return;
@@ -454,20 +461,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto col = db.create_task_column(board_id, name, position, wip_limit, color);
           auto resp_str = column_to_json(col).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -476,13 +480,14 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Update column
   app.put("/api/spaces/:id/tasks/boards/:boardId/columns/:columnId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto column_id = std::string(req->getParameter("columnId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
@@ -490,7 +495,8 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
                  column_id = std::move(column_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -500,19 +506,20 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
                     column_id = std::move(column_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto col = db.find_task_column(column_id);
         if (!col || col->board_id != board_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Column not found"})");
           });
           return;
@@ -526,20 +533,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto updated = db.update_task_column(column_id, name, wip_limit, color);
           auto resp_str = column_to_json(updated).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -548,19 +552,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Reorder columns
   app.put("/api/spaces/:id/tasks/boards/:boardId/columns/reorder", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -569,30 +575,28 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
           auto column_ids = j.at("column_ids").get<std::vector<std::string>>();
           db.reorder_task_columns(board_id, column_ids);
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(R"({"ok":true})");
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -601,31 +605,33 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete column
   app.del("/api/spaces/:id/tasks/boards/:boardId/columns/:columnId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto column_id = std::string(req->getParameter("columnId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   board_id = std::move(board_id),
-                  column_id = std::move(column_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  column_id = std::move(column_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
-      if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
       auto col = db.find_task_column(column_id);
       if (!col || col->board_id != board_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Column not found"})");
         });
         return;
@@ -634,22 +640,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       // Check if column has tasks
       int count = db.get_column_task_count(column_id);
       if (count > 0) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("400")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Column still has tasks. Move or delete them first."})");
         });
         return;
       }
 
       db.delete_task_column(column_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
@@ -658,19 +663,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Create task
   app.post("/api/spaces/:id/tasks/boards/:boardId/tasks", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -679,19 +686,20 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto board = db.find_task_board(board_id);
         if (!board || board->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Board not found"})");
           });
           return;
@@ -710,11 +718,11 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           int duration_days = j.value("duration_days", 0);
 
           if (title.empty() || title.length() > 255) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"json({"error":"Title is required (max 255 characters)"})json");
             });
             return;
@@ -764,20 +772,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           resp["labels"] = l_arr;
 
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -786,30 +791,32 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get single task detail (with checklists, activity)
   app.get("/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto task_id = std::string(req->getParameter("taskId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   board_id = std::move(board_id),
-                  task_id = std::move(task_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  task_id = std::move(task_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto task = db.find_task(task_id);
       if (!task || task->board_id != board_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Task not found"})");
         });
         return;
@@ -850,24 +857,24 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       resp["activity"] = act_arr;
 
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(resp_str);
       });
     });
   });
 
   // Update task
   app.put("/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto task_id = std::string(req->getParameter("taskId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
@@ -875,7 +882,8 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
                  task_id = std::move(task_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -885,19 +893,20 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
                     task_id = std::move(task_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto existing = db.find_task(task_id);
         if (!existing || existing->board_id != board_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Task not found"})");
           });
           return;
@@ -988,20 +997,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           resp["labels"] = l_arr;
 
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1010,64 +1016,67 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete task
   app.del("/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     auto task_id = std::string(req->getParameter("taskId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   board_id = std::move(board_id),
-                  task_id = std::move(task_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  task_id = std::move(task_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto task = db.find_task(task_id);
       if (!task || task->board_id != board_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Task not found"})");
         });
         return;
       }
 
       if (task->created_by != user_id) {
-        if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+        if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
       }
 
       db.delete_task(task_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
 
   // Reorder / move tasks
   app.put("/api/spaces/:id/tasks/boards/:boardId/tasks/reorder", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -1076,11 +1085,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -1118,20 +1128,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
           db.reorder_tasks(positions);
 
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(R"({"ok":true})");
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1143,13 +1150,14 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Create checklist
   app.post(
     "/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId/checklists", [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto board_id = std::string(req->getParameter("boardId"));
       auto task_id = std::string(req->getParameter("taskId"));
       std::string body;
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       res->onData([this,
                    res,
                    aborted,
@@ -1157,7 +1165,8 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                    space_id = std::move(space_id),
                    board_id = std::move(board_id),
                    task_id = std::move(task_id),
-                   body = std::move(body)](std::string_view data, bool last) mutable {
+                   body = std::move(body),
+                   origin](std::string_view data, bool last) mutable {
         body.append(data);
         if (!last) return;
         pool_.submit([this,
@@ -1167,11 +1176,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                       space_id = std::move(space_id),
                       board_id = std::move(board_id),
                       task_id = std::move(task_id),
-                      body = std::move(body)]() {
-          auto user_id = get_user_id(res, aborted, token);
+                      body = std::move(body),
+                      origin]() {
+          auto user_id = get_user_id(res, aborted, token, origin);
           if (user_id.empty()) return;
-          if (!check_space_access(res, aborted, space_id, user_id)) return;
-          if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+          if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+          if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
           try {
             auto j = json::parse(body);
@@ -1185,20 +1195,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             json resp = checklist_to_json(cl);
             resp["items"] = json::array();
             auto resp_str = resp.dump();
-            loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+            loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
               if (*aborted) return;
-              res->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(resp_str);
+              cors::apply(res, origin);
+              res->writeHeader("Content-Type", "application/json")->end(resp_str);
             });
           } catch (const std::exception& e) {
             auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err)]() {
+            loop_->defer([res, aborted, err = std::move(err), origin]() {
               if (*aborted) return;
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(err);
+              cors::apply(res, origin);
+              res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
             });
           }
         });
@@ -1209,28 +1216,29 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.del(
     "/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId/checklists/:checklistId",
     [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto checklist_id = std::string(req->getParameter("checklistId"));
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       pool_.submit([this,
                     res,
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    checklist_id = std::move(checklist_id)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    checklist_id = std::move(checklist_id),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         db.delete_task_checklist(checklist_id);
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
-            ->end(R"({"ok":true})");
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
       });
     });
@@ -1239,19 +1247,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.post(
     "/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId/checklists/:checklistId/items",
     [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto checklist_id = std::string(req->getParameter("checklistId"));
       std::string body;
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       res->onData([this,
                    res,
                    aborted,
                    token = std::move(token),
                    space_id = std::move(space_id),
                    checklist_id = std::move(checklist_id),
-                   body = std::move(body)](std::string_view data, bool last) mutable {
+                   body = std::move(body),
+                   origin](std::string_view data, bool last) mutable {
         body.append(data);
         if (!last) return;
         pool_.submit([this,
@@ -1260,11 +1270,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                       token = std::move(token),
                       space_id = std::move(space_id),
                       checklist_id = std::move(checklist_id),
-                      body = std::move(body)]() {
-          auto user_id = get_user_id(res, aborted, token);
+                      body = std::move(body),
+                      origin]() {
+          auto user_id = get_user_id(res, aborted, token, origin);
           if (user_id.empty()) return;
-          if (!check_space_access(res, aborted, space_id, user_id)) return;
-          if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+          if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+          if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
           try {
             auto j = json::parse(body);
@@ -1273,20 +1284,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
             auto item = db.create_checklist_item(checklist_id, content, position);
             auto resp_str = checklist_item_to_json(item).dump();
-            loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+            loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
               if (*aborted) return;
-              res->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(resp_str);
+              cors::apply(res, origin);
+              res->writeHeader("Content-Type", "application/json")->end(resp_str);
             });
           } catch (const std::exception& e) {
             auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err)]() {
+            loop_->defer([res, aborted, err = std::move(err), origin]() {
               if (*aborted) return;
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(err);
+              cors::apply(res, origin);
+              res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
             });
           }
         });
@@ -1297,19 +1305,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.put(
     "/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId/checklists/:checklistId/items/:itemId",
     [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto item_id = std::string(req->getParameter("itemId"));
       std::string body;
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       res->onData([this,
                    res,
                    aborted,
                    token = std::move(token),
                    space_id = std::move(space_id),
                    item_id = std::move(item_id),
-                   body = std::move(body)](std::string_view data, bool last) mutable {
+                   body = std::move(body),
+                   origin](std::string_view data, bool last) mutable {
         body.append(data);
         if (!last) return;
         pool_.submit([this,
@@ -1318,11 +1328,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                       token = std::move(token),
                       space_id = std::move(space_id),
                       item_id = std::move(item_id),
-                      body = std::move(body)]() {
-          auto user_id = get_user_id(res, aborted, token);
+                      body = std::move(body),
+                      origin]() {
+          auto user_id = get_user_id(res, aborted, token, origin);
           if (user_id.empty()) return;
-          if (!check_space_access(res, aborted, space_id, user_id)) return;
-          if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+          if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+          if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
           try {
             auto j = json::parse(body);
@@ -1331,20 +1342,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
             auto item = db.update_checklist_item(item_id, content, is_checked);
             auto resp_str = checklist_item_to_json(item).dump();
-            loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+            loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
               if (*aborted) return;
-              res->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(resp_str);
+              cors::apply(res, origin);
+              res->writeHeader("Content-Type", "application/json")->end(resp_str);
             });
           } catch (const std::exception& e) {
             auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err)]() {
+            loop_->defer([res, aborted, err = std::move(err), origin]() {
               if (*aborted) return;
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
-                ->end(err);
+              cors::apply(res, origin);
+              res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
             });
           }
         });
@@ -1355,28 +1363,29 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.del(
     "/api/spaces/:id/tasks/boards/:boardId/tasks/:taskId/checklists/:checklistId/items/:itemId",
     [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto item_id = std::string(req->getParameter("itemId"));
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       pool_.submit([this,
                     res,
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    item_id = std::move(item_id)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    item_id = std::move(item_id),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         db.delete_checklist_item(item_id);
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
-            ->end(R"({"ok":true})");
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
       });
     });
@@ -1385,19 +1394,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Create label
   app.post("/api/spaces/:id/tasks/boards/:boardId/labels", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -1406,11 +1417,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -1419,20 +1431,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto label = db.create_task_label(board_id, name, color);
           auto resp_str = label_to_json(label).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1441,19 +1450,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Update label
   app.put("/api/spaces/:id/tasks/boards/:boardId/labels/:labelId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto label_id = std::string(req->getParameter("labelId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  label_id = std::move(label_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -1462,11 +1473,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     label_id = std::move(label_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -1475,20 +1487,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto label = db.update_task_label(label_id, name, color);
           auto resp_str = label_to_json(label).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1497,28 +1506,29 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete label
   app.del("/api/spaces/:id/tasks/boards/:boardId/labels/:labelId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto label_id = std::string(req->getParameter("labelId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  label_id = std::move(label_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  label_id = std::move(label_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
-      if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
       db.delete_task_label(label_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
@@ -1527,19 +1537,21 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Add dependency
   app.post("/api/spaces/:id/tasks/boards/:boardId/dependencies", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto board_id = std::string(req->getParameter("boardId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  board_id = std::move(board_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -1548,11 +1560,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     board_id = std::move(board_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -1568,20 +1581,17 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             json({{"depends_on_id", depends_on_id}, {"type", dep_type}}).dump());
 
           auto resp_str = dependency_to_json(dep).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1591,28 +1601,29 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Remove dependency
   app.del(
     "/api/spaces/:id/tasks/boards/:boardId/dependencies/:depId", [this](auto* res, auto* req) {
+      std::string origin(req->getHeader("origin"));
       auto token = extract_bearer_token(req);
       auto space_id = std::string(req->getParameter("id"));
       auto dep_id = std::string(req->getParameter("depId"));
       auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted]() { *aborted = true; });
+      res->onAborted([aborted, origin]() { *aborted = true; });
       pool_.submit([this,
                     res,
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    dep_id = std::move(dep_id)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    dep_id = std::move(dep_id),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         db.remove_task_dependency(dep_id);
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
-            ->end(R"({"ok":true})");
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
         });
       });
     });
@@ -1621,43 +1632,46 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List permissions
   app.get("/api/spaces/:id/tasks/permissions", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), space_id = std::move(space_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
-      if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+    res->onAborted([aborted, origin]() { *aborted = true; });
+    pool_.submit(
+      [this, res, aborted, token = std::move(token), space_id = std::move(space_id), origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
+        if (user_id.empty()) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
-      auto perms = db.get_task_permissions(space_id);
-      json arr = json::array();
-      for (const auto& p : perms) arr.push_back(permission_to_json(p));
+        auto perms = db.get_task_permissions(space_id);
+        json arr = json::array();
+        for (const auto& p : perms) arr.push_back(permission_to_json(p));
 
-      json resp = {{"permissions", arr}, {"my_permission", get_access_level(space_id, user_id)}};
-      auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
-        if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        json resp = {{"permissions", arr}, {"my_permission", get_access_level(space_id, user_id)}};
+        auto resp_str = resp.dump();
+        loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          if (*aborted) return;
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        });
       });
-    });
   });
 
   // Set permission
   app.post("/api/spaces/:id/tasks/permissions", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -1665,11 +1679,12 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -1677,11 +1692,11 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string permission = j.at("permission");
 
           if (permission != "owner" && permission != "edit" && permission != "view") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"error":"Permission must be owner, edit, or view"})");
             });
             return;
@@ -1690,31 +1705,28 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Personal spaces: only view and edit allowed, not owner
           auto space_perm_check = db.find_space_by_id(space_id);
           if (space_perm_check && space_perm_check->is_personal && permission == "owner") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"error":"Cannot assign owner permission in a personal space"})");
             });
             return;
           }
 
           db.set_task_permission(space_id, target_user_id, permission, user_id);
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(R"({"ok":true})");
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -1723,28 +1735,29 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Remove permission
   app.del("/api/spaces/:id/tasks/permissions/:userId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto target_user_id = std::string(req->getParameter("userId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  target_user_id = std::move(target_user_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  target_user_id = std::move(target_user_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
-      if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
 
       db.remove_task_permission(space_id, target_user_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
@@ -1754,11 +1767,15 @@ void TaskBoardHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
 template <bool SSL>
 std::string TaskBoardHandler<SSL>::get_user_id(
-  uWS::HttpResponse<SSL>* res, std::shared_ptr<bool> aborted, const std::string& token) {
+  uWS::HttpResponse<SSL>* res,
+  std::shared_ptr<bool> aborted,
+  const std::string& token,
+  const std::string& origin) {
   auto user_id = db.validate_session(token);
   if (!user_id) {
-    loop_->defer([res, aborted]() {
+    loop_->defer([res, aborted, origin]() {
       if (*aborted) return;
+      cors::apply(res, origin);
       res->writeStatus("401")
         ->writeHeader("Content-Type", "application/json")
         ->end(R"({"error":"Unauthorized"})");
@@ -1773,7 +1790,8 @@ bool TaskBoardHandler<SSL>::check_space_access(
   uWS::HttpResponse<SSL>* res,
   std::shared_ptr<bool> aborted,
   const std::string& space_id,
-  const std::string& user_id) {
+  const std::string& user_id,
+  const std::string& origin) {
   if (db.is_space_member(space_id, user_id)) return true;
   auto user = db.find_user_by_id(user_id);
   if (user && (user->role == "admin" || user->role == "owner")) return true;
@@ -1784,11 +1802,11 @@ bool TaskBoardHandler<SSL>::check_space_access(
     if (db.has_resource_permission_in_space(space_id, user_id, "tasks")) return true;
   }
 
-  loop_->defer([res, aborted]() {
+  loop_->defer([res, aborted, origin]() {
     if (*aborted) return;
+    cors::apply(res, origin);
     res->writeStatus("403")
       ->writeHeader("Content-Type", "application/json")
-      ->writeHeader("Access-Control-Allow-Origin", "*")
       ->end(R"({"error":"Not a member of this space"})");
   });
   return false;
@@ -1818,17 +1836,16 @@ bool TaskBoardHandler<SSL>::require_permission(
   std::shared_ptr<bool> aborted,
   const std::string& space_id,
   const std::string& user_id,
-  const std::string& required_level) {
+  const std::string& required_level,
+  const std::string& origin) {
   auto level = get_access_level(space_id, user_id);
   if (perm_rank(level) >= perm_rank(required_level)) return true;
 
   auto err = json({{"error", "Requires " + required_level + " permission"}}).dump();
-  loop_->defer([res, aborted, err = std::move(err)]() {
+  loop_->defer([res, aborted, err = std::move(err), origin]() {
     if (*aborted) return;
-    res->writeStatus("403")
-      ->writeHeader("Content-Type", "application/json")
-      ->writeHeader("Access-Control-Allow-Origin", "*")
-      ->end(err);
+    cors::apply(res, origin);
+    res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
   });
   return false;
 }

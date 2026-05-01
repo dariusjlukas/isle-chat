@@ -1,4 +1,5 @@
 #include "handlers/search_handler.h"
+#include <algorithm>
 #include <sstream>
 
 using json = nlohmann::json;
@@ -44,8 +45,8 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       }
 
       int limit =
-        limit_str.empty() ? 20 : std::min(std::stoi(limit_str), defaults::SEARCH_MAX_RESULTS);
-      int offset = offset_str.empty() ? 0 : std::stoi(offset_str);
+        std::clamp(handler_utils::safe_parse_int(limit_str, 20), 1, defaults::SEARCH_MAX_RESULTS);
+      int offset = std::max(0, handler_utils::safe_parse_int(offset_str, 0));
       std::string effective_mode = mode.empty() ? "and" : mode;
 
       // Split query by | delimiter for multi-term
@@ -259,8 +260,8 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       std::string effective_result_type = result_type.empty() ? "messages" : result_type;
       int limit =
-        limit_str.empty() ? 20 : std::min(std::stoi(limit_str), defaults::SEARCH_MAX_RESULTS);
-      int offset = offset_str.empty() ? 0 : std::stoi(offset_str);
+        std::clamp(handler_utils::safe_parse_int(limit_str, 20), 1, defaults::SEARCH_MAX_RESULTS);
+      int offset = std::max(0, handler_utils::safe_parse_int(offset_str, 0));
       std::string effective_mode = mode.empty() ? "and" : mode;
 
       try {
@@ -435,7 +436,7 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         return;
       }
 
-      int limit = limit_str.empty() ? 50 : std::min(std::stoi(limit_str), 100);
+      int limit = std::clamp(handler_utils::safe_parse_int(limit_str, 50), 1, 100);
 
       try {
         auto msgs = db.get_messages_around(channel_id, message_id, limit);

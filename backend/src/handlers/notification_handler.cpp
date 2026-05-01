@@ -1,5 +1,7 @@
 #include "handlers/notification_handler.h"
 
+#include <algorithm>
+
 template <bool SSL>
 void NotificationHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // List notifications
@@ -26,8 +28,8 @@ void NotificationHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         return;
       }
 
-      int limit = limit_str.empty() ? 50 : std::min(std::stoi(limit_str), 100);
-      int offset = offset_str.empty() ? 0 : std::stoi(offset_str);
+      int limit = std::clamp(handler_utils::safe_parse_int(limit_str, 50), 1, 100);
+      int offset = std::max(0, handler_utils::safe_parse_int(offset_str, 0));
 
       try {
         auto notifications = db.get_notifications(*user_id, limit, offset);

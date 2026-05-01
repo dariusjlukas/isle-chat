@@ -20,7 +20,23 @@ class Database {
 public:
   explicit Database(const std::string& connection_string, int pool_size = 10);
 
+  // Embedded DDL bootstrap. Kept as the safety-net path; sqitch is the
+  // recommended way to manage schema (see sqitch/README.md). When
+  // ENABLE_SQITCH_ONLY=1 (the new default in P1.1 PR-B), main.cpp skips this
+  // and relies on a pre-applied sqitch deploy instead.
   void run_migrations();
+
+  // Returns true if a sentinel application table (users) exists. main() uses
+  // this to fail fast when ENABLE_SQITCH_ONLY=1 but no sqitch deploy has run.
+  bool schema_initialized();
+
+  // Connection-pool metrics accessors (used by /metrics).
+  size_t pool_size() const {
+    return pool_.size_total();
+  }
+  size_t pool_in_use() const {
+    return pool_.size_in_use();
+  }
 
   // Users
   std::optional<User> find_user_by_public_key(const std::string& public_key);
@@ -74,7 +90,12 @@ public:
     const std::string& default_role,
     const std::string& profile_color = "");
   std::vector<Space> list_public_spaces(const std::string& user_id, const std::string& search = "");
-  std::vector<Space> list_all_spaces();
+  std::vector<Space> list_all_spaces(int limit, int offset);
+  // Returns spaces visible to the given user: those they're a member of, OR all spaces
+  // if the user is a server admin/owner. Combines list_user_spaces + list_all_spaces
+  // into a single SQL query for the admin case to avoid fetch-all-then-filter.
+  std::vector<Space> list_visible_spaces_for_user(
+    const std::string& user_id, bool is_server_admin, int limit, int offset);
   void set_space_avatar(const std::string& space_id, const std::string& avatar_file_id);
   void clear_space_avatar(const std::string& space_id);
 
@@ -145,7 +166,12 @@ public:
     const std::string& user_id, const std::string& search = "");
   std::vector<Channel> list_browsable_space_channels(
     const std::string& space_id, const std::string& user_id, const std::string& search = "");
-  std::vector<Channel> list_all_channels();
+  std::vector<Channel> list_all_channels(int limit, int offset);
+  // Returns non-DM channels visible to the given user: those they're a member of, OR all
+  // non-DM channels if the user is a server admin/owner. Combines list_user_channels +
+  // list_all_channels into a single SQL query for the admin case.
+  std::vector<Channel> list_visible_channels_for_user(
+    const std::string& user_id, bool is_server_admin, int limit, int offset);
   std::vector<ChannelMember> get_channel_members_with_roles(const std::string& channel_id);
   // Messages
   Message create_message(
@@ -364,6 +390,9 @@ public:
   void verify_totp(const std::string& user_id);
   void delete_totp(const std::string& user_id);
   bool has_totp(const std::string& user_id);
+  // Replay prevention: the last successfully-consumed TOTP step for the user.
+  std::optional<int64_t> get_totp_last_step(const std::string& user_id);
+  bool set_totp_last_step(const std::string& user_id, int64_t step);
 
   // MFA pending tokens
   std::string create_mfa_pending_token(

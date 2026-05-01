@@ -8,8 +8,8 @@
 #include <openssl/sha.h>
 #include <openssl/x509.h>
 #include <cstring>
-#include <iostream>
 #include <nlohmann/json.hpp>
+#include "logging/logger.h"
 
 using json = nlohmann::json;
 
@@ -346,7 +346,7 @@ static bool verify_es256(
   if (
     EVP_PKEY_fromdata_init(pctx) <= 0 ||
     EVP_PKEY_fromdata(pctx, &pkey, EVP_PKEY_PUBLIC_KEY, params) <= 0) {
-    std::cerr << "[WebAuthn] Failed to create EC key from point" << std::endl;
+    LOG_ERROR_N("webauthn", nullptr, "Failed to create EC key from point");
     ERR_print_errors_fp(stderr);
     EVP_PKEY_CTX_free(pctx);
     OSSL_PARAM_free(params);
@@ -366,8 +366,8 @@ static bool verify_es256(
       md_ctx, signature.data(), signature.size(), signed_data.data(), signed_data.size());
     valid = (rc == 1);
     if (!valid) {
-      std::cerr << "[WebAuthn] Signature verification failed (rc=" << rc << ")" << std::endl;
-      ERR_print_errors_fp(stderr);
+      LOG_DEBUG_N(
+        "webauthn", nullptr, "Signature verification failed (rc=" + std::to_string(rc) + ")");
     }
   }
 
@@ -387,13 +387,13 @@ static bool verify_client_data(
 
     std::string type = client_data.at("type");
     if (type != expected_type) {
-      std::cerr << "[WebAuthn] Unexpected type: " << type << std::endl;
+      LOG_WARN_N("webauthn", nullptr, "Unexpected type: " + type);
       return false;
     }
 
     std::string challenge = client_data.at("challenge");
     if (challenge != expected_challenge) {
-      std::cerr << "[WebAuthn] Challenge mismatch" << std::endl;
+      LOG_WARN_N("webauthn", nullptr, "Challenge mismatch");
       return false;
     }
 
@@ -410,15 +410,17 @@ static bool verify_client_data(
         both_localhost = (orig_scheme == exp_scheme);
       }
       if (!both_localhost) {
-        std::cerr << "[WebAuthn] Origin mismatch: got '" << origin << "', expected '"
-                  << expected_origin << "'" << std::endl;
+        LOG_WARN_N(
+          "webauthn",
+          nullptr,
+          "Origin mismatch: got '" + origin + "', expected '" + expected_origin + "'");
         return false;
       }
     }
 
     return true;
   } catch (const std::exception& e) {
-    std::cerr << "[WebAuthn] Failed to parse clientDataJSON: " << e.what() << std::endl;
+    LOG_ERROR_N("webauthn", nullptr, std::string("Failed to parse clientDataJSON: ") + e.what());
     return false;
   }
 }
@@ -570,14 +572,14 @@ bool verify_pki_signature(
   const unsigned char* p = spki_bytes.data();
   EVP_PKEY* pkey = d2i_PUBKEY(nullptr, &p, static_cast<long>(spki_bytes.size()));
   if (!pkey) {
-    std::cerr << "[PKI] Failed to parse SPKI public key" << std::endl;
+    LOG_ERROR_N("pki", nullptr, "Failed to parse SPKI public key");
     ERR_print_errors_fp(stderr);
     return false;
   }
 
   // 3. Verify it's an EC key on P-256
   if (EVP_PKEY_id(pkey) != EVP_PKEY_EC) {
-    std::cerr << "[PKI] Key is not EC" << std::endl;
+    LOG_ERROR_N("pki", nullptr, "Key is not EC");
     EVP_PKEY_free(pkey);
     return false;
   }

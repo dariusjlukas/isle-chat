@@ -228,7 +228,10 @@ function App() {
           }
         }
       }),
-    ]).catch(() => {});
+    ]).catch((err) => {
+      console.error('Initial workspace load failed', err);
+      // TODO: surface via a user-visible toast once a toast system is added.
+    });
 
     // Load server status (archived, setup, name, icon)
     api.getPublicConfig().then((config) => {
@@ -276,20 +279,25 @@ function App() {
     if (!isAuthenticated || (user?.role !== 'admin' && user?.role !== 'owner'))
       return;
 
-    const fetchCount = () => {
-      api
-        .listJoinRequests()
-        .then((reqs) => {
-          setPendingRequestCount(
-            reqs.filter((r) => r.status === 'pending').length,
-          );
-        })
-        .catch(() => {});
+    const controller = new AbortController();
+    const fetchCount = async () => {
+      try {
+        const reqs = await api.listJoinRequests(controller.signal);
+        setPendingRequestCount(
+          reqs.filter((r) => r.status === 'pending').length,
+        );
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.error('Failed to fetch join requests', err);
+      }
     };
 
     fetchCount();
     const interval = setInterval(fetchCount, 15000);
-    return () => clearInterval(interval);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
   }, [isAuthenticated, user?.role, setPendingRequestCount]);
 
   // Live-update heartbeat info while card is open

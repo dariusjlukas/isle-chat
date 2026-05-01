@@ -3,11 +3,12 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <cstring>
 #include <iomanip>
-#include <iostream>
-#include <random>
 #include <sstream>
+#include <stdexcept>
+#include "logging/logger.h"
 
 namespace pki {
 
@@ -61,14 +62,14 @@ bool verify_signature(
   // Decode the signature from base64
   auto sig_bytes = base64_decode(signature_b64);
   if (sig_bytes.empty()) {
-    std::cerr << "[PKI] Failed to decode signature from base64" << std::endl;
+    LOG_ERROR_N("pki", nullptr, "Failed to decode signature from base64");
     return false;
   }
 
   // Load the public key from PEM
   BIO* bio = BIO_new_mem_buf(public_key_pem.data(), static_cast<int>(public_key_pem.size()));
   if (!bio) {
-    std::cerr << "[PKI] Failed to create BIO" << std::endl;
+    LOG_ERROR_N("pki", nullptr, "Failed to create BIO");
     return false;
   }
 
@@ -79,7 +80,7 @@ bool verify_signature(
     // Try reading as raw Ed25519 public key (base64 of 32 bytes)
     // The frontend sends the raw key in SPKI/PEM format, so this path
     // is mainly a fallback
-    std::cerr << "[PKI] Failed to read PEM public key" << std::endl;
+    LOG_ERROR_N("pki", nullptr, "Failed to read PEM public key");
     ERR_print_errors_fp(stderr);
     return false;
   }
@@ -97,8 +98,9 @@ bool verify_signature(
       message.size());
     valid = (rc == 1);
     if (!valid) {
-      std::cerr << "[PKI] Signature verification failed (rc=" << rc << ")" << std::endl;
-      ERR_print_errors_fp(stderr);
+      // Demoted to debug: this is expected during normal authentication flow
+      // (e.g. wrong key). Logging at error/info would be a noise/info-leak risk.
+      LOG_DEBUG_N("pki", nullptr, "Signature verification failed (rc=" + std::to_string(rc) + ")");
     }
   }
 
@@ -108,11 +110,14 @@ bool verify_signature(
 }
 
 std::string generate_challenge() {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<> dist(0, 255);
+  unsigned char buf[16];
+  if (RAND_bytes(buf, sizeof(buf)) != 1) {
+    throw std::runtime_error("RAND_bytes failed");
+  }
   std::ostringstream ss;
-  for (int i = 0; i < 32; i++) ss << std::hex << std::setfill('0') << std::setw(2) << dist(gen);
+  for (unsigned char b : buf) {
+    ss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(b);
+  }
   return ss.str();
 }
 

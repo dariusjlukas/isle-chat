@@ -11,7 +11,12 @@ export class WebSocketService {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private token: string | null = null;
+  /**
+   * Whether a connection has been requested (i.e. user is logged in).
+   * The actual session token lives in the HttpOnly `session` cookie now;
+   * we keep a flag here so we know whether to (re)connect on lifecycle events.
+   */
+  private wantConnection = false;
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private _connectionState: ConnectionState = 'disconnected';
@@ -52,18 +57,21 @@ export class WebSocketService {
     };
   }
 
-  connect(token: string) {
-    this.token = token;
+  connect() {
+    this.wantConnection = true;
     this.doConnect();
   }
 
   private doConnect() {
-    if (!this.token) return;
+    if (!this.wantConnection) return;
 
     this.setState('connecting');
 
+    // The session is identified via the HttpOnly `session` cookie which the
+    // browser sends automatically on the WS upgrade (same-origin). The legacy
+    // `?token=` query param is gone since P1.4 Release B.
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws?token=${this.token}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     const socket = new WebSocket(wsUrl);
     this.ws = socket;
@@ -207,7 +215,7 @@ export class WebSocketService {
   }
 
   disconnect() {
-    this.token = null;
+    this.wantConnection = false;
     this._hasConnected = false;
     this.stopHeartbeat();
     if (this.connectTimer) {

@@ -1,5 +1,12 @@
 #include "ws/ws_handler.h"
 
+#include <algorithm>
+#include <cmath>
+
+#include "handlers/handler_utils.h"
+#include "logging/logger.h"
+#include "metrics/metrics.h"
+
 using json = nlohmann::json;
 
 template <bool SSL>
@@ -18,7 +25,13 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
      .upgrade =
        [this](auto* res, auto* req, auto* context) {
          // Extract all request data synchronously (req invalid after return)
-         std::string token(req->getQuery("token"));
+         // Prefer the `session` cookie (P1.4 cookie-based auth); fall back
+         // to the legacy `?token=...` query param for clients that haven't
+         // migrated yet (will be removed once Release C lands).
+         std::string token = extract_session_token(req);
+         if (token.empty()) {
+           token = std::string(req->getQuery("token"));
+         }
          auto key = std::string(req->getHeader("sec-websocket-key"));
          auto protocol = std::string(req->getHeader("sec-websocket-protocol"));
          auto extensions = std::string(req->getHeader("sec-websocket-extensions"));
@@ -72,7 +85,8 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
      .open =
        [this](auto* ws) {
          auto* data = ws->getUserData();
-         std::cout << "[WS] User connected: " << data->username << std::endl;
+         LOG_INFO_N("ws", nullptr, "User connected: " + data->username);
+         metrics::ws_connected_clients().inc();
 
          // Register socket immediately (synchronous, on event loop)
          {
@@ -98,8 +112,13 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            std::vector<Channel> all_channels;
            std::vector<Space> all_spaces;
            if (is_admin) {
-             all_channels = db.list_all_channels();
-             all_spaces = db.list_all_spaces();
+             // TODO(P1.5+): admins subscribe to every channel/space presence topic on
+             // connect, which scales linearly with deployment size. For very large
+             // installs we should switch to lazy subscription on first message or a
+             // wildcard topic instead of fetching every row up front.
+             constexpr int kAdminSubscriptionCap = 5000;
+             all_channels = db.list_all_channels(kAdminSubscriptionCap, 0);
+             all_spaces = db.list_all_spaces(kAdminSubscriptionCap, 0);
            }
 
            auto unread = db.get_unread_counts(user_id);
@@ -171,7 +190,8 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
      .close =
        [this](auto* ws, int, std::string_view) {
          auto* data = ws->getUserData();
-         std::cout << "[WS] User disconnected: " << data->username << std::endl;
+         LOG_INFO_N("ws", nullptr, "User disconnected: " + data->username);
+         metrics::ws_connected_clients().dec();
 
          std::string user_id = data->user_id;
          bool was_last = false;
@@ -408,6 +428,32 @@ void WsHandler<SSL>::disconnect_non_admins(const std::string& notify_message) {
   }
 }
 
+// P1.6 rate-limit constants (token bucket, per-connection).
+// Burst 20, refill 10 tokens/sec. Tunable here; if exceeded the message is
+// dropped and the client gets back a JSON error with a retry hint.
+namespace {
+constexpr double kRateLimitBurst = 20.0;
+constexpr double kRateLimitRefillPerSec = 10.0;
+
+// Refill the bucket to current time and try to consume one token.
+// Returns true on success, false (and writes retry_ms) if the request is denied.
+bool consume_rate_token(WsUserData* data, int& retry_ms_out) {
+  auto now = std::chrono::steady_clock::now();
+  auto elapsed_s = std::chrono::duration<double>(now - data->rl_last_refill).count();
+  data->rl_tokens = std::min(kRateLimitBurst, data->rl_tokens + elapsed_s * kRateLimitRefillPerSec);
+  data->rl_last_refill = now;
+  if (data->rl_tokens >= 1.0) {
+    data->rl_tokens -= 1.0;
+    return true;
+  }
+  // Time until one token is available, in ms (rounded up).
+  double need = 1.0 - data->rl_tokens;
+  double seconds_until = need / kRateLimitRefillPerSec;
+  retry_ms_out = static_cast<int>(std::ceil(seconds_until * 1000.0));
+  return false;
+}
+}  // namespace
+
 template <bool SSL>
 void WsHandler<SSL>::handle_message(
   uWS::WebSocket<SSL, true, WsUserData>* ws, std::string_view raw) {
@@ -415,6 +461,20 @@ void WsHandler<SSL>::handle_message(
   try {
     auto j = json::parse(raw);
     std::string type = j.at("type");
+    metrics::inc_ws_messages_received(type);
+
+    // P1.6: rate-limit chatty client-driven events. Other event types
+    // (read receipts, reactions, wiki sync, ping) are not limited here —
+    // they are infrequent or already gated by DB ops.
+    if (type == "send_message" || type == "typing") {
+      int retry_ms = 0;
+      if (!consume_rate_token(data, retry_ms)) {
+        metrics::inc_ws_messages_received("rate_limited");
+        json err = {{"type", "error"}, {"reason", "rate_limit"}, {"retry_after_ms", retry_ms}};
+        ws->send(err.dump(), uWS::OpCode::TEXT);
+        return;
+      }
+    }
 
     // Handlers that need DB calls go through the thread pool
     if (type == "send_message") {

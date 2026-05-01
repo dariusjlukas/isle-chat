@@ -2,10 +2,12 @@
 
 #include <Loop.h>
 
+#include <algorithm>
 #include <thread>
 
 #include "ai/llm_client.h"
 #include "handlers/handler_utils.h"
+#include "logging/logger.h"
 
 template <bool SSL>
 void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
@@ -36,9 +38,8 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       if (!check_llm_enabled(res, aborted)) return;
       if (!check_agent_enabled(res, aborted, user_id)) return;
 
-      int limit = 50, offset = 0;
-      if (q_limit.length() > 0) limit = std::stoi(q_limit);
-      if (q_offset.length() > 0) offset = std::stoi(q_offset);
+      int limit = std::clamp(handler_utils::safe_parse_int(q_limit, 50), 1, 200);
+      int offset = std::max(0, handler_utils::safe_parse_int(q_offset, 0));
 
       auto conversations = db.list_ai_conversations(user_id, limit, offset);
       json arr = json::array();
@@ -409,9 +410,11 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                        tools_schema,
                        enabled_categories,
                        cancelled]() mutable {
-            std::cout << "[AI] Starting LLM request for conversation " << conv_id
-                      << " (url=" << llm_config.api_url << ", model=" << llm_config.model << ")"
-                      << std::endl;
+            LOG_INFO_N(
+              "ai",
+              nullptr,
+              "Starting LLM request for conversation " + conv_id + " (url=" + llm_config.api_url +
+                ", model=" + llm_config.model + ")");
 
             LlmClient client(llm_config);
             int tool_rounds = 0;
@@ -441,8 +444,7 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               };
 
               cb.on_error = [&](const std::string& error) {
-                std::cerr << "[AI] LLM error for conversation " << conv_id << ": " << error
-                          << std::endl;
+                LOG_ERROR_N("ai", nullptr, "LLM error for conversation " + conv_id + ": " + error);
                 json msg = {
                   {"type", "ai_stream_error"}, {"conversation_id", conv_id}, {"error", error}};
                 auto msg_str = msg.dump();
@@ -542,8 +544,11 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
                   // Auto-title: if this is the first exchange, generate a title
                   auto conv_check = db_ptr->find_ai_conversation(conv_id);
-                  std::cout << "[AI] Checking auto-title for " << conv_id << " (current title: \""
-                            << (conv_check ? conv_check->title : "N/A") << "\")" << std::endl;
+                  LOG_INFO_N(
+                    "ai",
+                    nullptr,
+                    "Checking auto-title for " + conv_id + " (current title: \"" +
+                      (conv_check ? conv_check->title : std::string("N/A")) + "\")");
                   if (conv_check && conv_check->title == "New conversation") {
                     // Find the first user message
                     std::string first_user_msg;
@@ -566,8 +571,8 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                       };
                       // Use generous max_tokens — reasoning models need room to think
                       auto title = client.streaming_completion(title_msgs, 256);
-                      std::cout << "[AI] Auto-title result for " << conv_id << ": \"" << title
-                                << "\"" << std::endl;
+                      LOG_INFO_N(
+                        "ai", nullptr, "Auto-title result for " + conv_id + ": \"" + title + "\"");
                       // Clean up the title
                       if (!title.empty()) {
                         // Remove surrounding quotes if present
@@ -596,7 +601,7 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
             run_completion(run_completion);
 
-            std::cout << "[AI] LLM request completed for conversation " << conv_id << std::endl;
+            LOG_INFO_N("ai", nullptr, "LLM request completed for conversation " + conv_id);
 
             // Clean up active generation tracker
             {

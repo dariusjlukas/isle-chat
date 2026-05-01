@@ -95,16 +95,24 @@ std::string compute_code(const std::string& base32_secret, uint64_t time_step) {
   return oss.str();
 }
 
-bool verify_code(const std::string& base32_secret, const std::string& code, int window) {
+std::optional<uint64_t> verify_code(
+  const std::string& base32_secret,
+  const std::string& code,
+  std::optional<uint64_t> last_used_step,
+  int window) {
   uint64_t current_step = static_cast<uint64_t>(std::time(nullptr)) / 30;
 
   for (int i = -window; i <= window; i++) {
     uint64_t step = current_step + i;
+    // Replay prevention: skip steps that are <= the last-consumed step.
+    if (last_used_step.has_value() && step <= *last_used_step) {
+      continue;
+    }
     if (compute_code(base32_secret, step) == code) {
-      return true;
+      return step;
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 static std::string url_encode(const std::string& str) {

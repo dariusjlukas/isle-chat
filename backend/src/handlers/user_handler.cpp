@@ -1167,7 +1167,13 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             return;
           }
 
-          if (!totp::verify_code(*secret, code)) {
+          auto last_step_signed = db.get_totp_last_step(*user_id);
+          std::optional<uint64_t> last_step;
+          if (last_step_signed.has_value()) {
+            last_step = static_cast<uint64_t>(*last_step_signed);
+          }
+          auto matched_step = totp::verify_code(*secret, code, last_step);
+          if (!matched_step) {
             loop_->defer([res, aborted]() {
               if (*aborted) return;
               res->writeStatus("401")
@@ -1178,6 +1184,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
 
           db.verify_totp(*user_id);
+          db.set_totp_last_step(*user_id, static_cast<int64_t>(*matched_step));
           loop_->defer([res, aborted]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
@@ -1229,7 +1236,13 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             return;
           }
 
-          if (!totp::verify_code(*secret, code)) {
+          auto last_step_signed = db.get_totp_last_step(*user_id);
+          std::optional<uint64_t> last_step;
+          if (last_step_signed.has_value()) {
+            last_step = static_cast<uint64_t>(*last_step_signed);
+          }
+          auto matched_step = totp::verify_code(*secret, code, last_step);
+          if (!matched_step) {
             loop_->defer([res, aborted]() {
               if (*aborted) return;
               res->writeStatus("401")
@@ -1238,6 +1251,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             });
             return;
           }
+          db.set_totp_last_step(*user_id, static_cast<int64_t>(*matched_step));
 
           // Check if user has auth methods that require MFA
           auto check_mfa = [&](const std::string& method) -> bool {

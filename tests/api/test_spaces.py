@@ -61,6 +61,58 @@ class TestSpaceListing:
         assert "Hidden" not in names
 
 
+class TestSpaceListPagination:
+    def test_list_spaces_pagination(self, client, admin_user):
+        # Create 5 spaces. Names chosen so they sort predictably.
+        names = ["Pag-A", "Pag-B", "Pag-C", "Pag-D", "Pag-E"]
+        for n in names:
+            r = client.post("/api/spaces", json={"name": n},
+                            headers=admin_user["headers"])
+            assert r.status_code == 200
+
+        # First page: limit=2
+        r = client.get("/api/spaces?limit=2",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        first_page = r.json()
+        assert len(first_page) == 2
+
+        # Second page: offset=2
+        r = client.get("/api/spaces?limit=2&offset=2",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        second_page = r.json()
+        assert len(second_page) == 2
+
+        first_ids = {sp["id"] for sp in first_page}
+        second_ids = {sp["id"] for sp in second_page}
+        assert first_ids.isdisjoint(second_ids)
+
+    def test_list_spaces_invalid_offset(self, client, admin_user):
+        r = client.get("/api/spaces?offset=-1",
+                       headers=admin_user["headers"])
+        assert r.status_code == 400, (
+            f"Expected 400 for negative offset; got {r.status_code} "
+            f"({r.text!r})"
+        )
+
+    def test_list_spaces_default_ordering(self, client, admin_user):
+        creation_order = ["ZZZ-ord", "AAA-ord", "MMM-ord"]
+        for n in creation_order:
+            r = client.post("/api/spaces", json={"name": n},
+                            headers=admin_user["headers"])
+            assert r.status_code == 200
+
+        r = client.get("/api/spaces?limit=500",
+                       headers=admin_user["headers"])
+        assert r.status_code == 200
+        body = r.json()
+        seen = [sp["name"] for sp in body if sp["name"] in creation_order]
+        assert seen == sorted(creation_order), (
+            f"Expected alphabetic ordering, got {seen!r}"
+        )
+
+
 class TestSpaceJoinLeave:
     def test_join_public_space(self, client, admin_user, regular_user):
         r = client.post("/api/spaces", json={"name": "Open"},

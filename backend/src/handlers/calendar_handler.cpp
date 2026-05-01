@@ -1,6 +1,7 @@
 #include "handlers/calendar_handler.h"
 #include <algorithm>
 #include <pqxx/pqxx>
+#include "handlers/cors_utils.h"
 #include "recurrence.h"
 
 using json = nlohmann::json;
@@ -58,30 +59,32 @@ template <bool SSL>
 void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // List events in date range (with recurrence expansion)
   app.get("/api/spaces/:id/calendar/events", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto range_start = std::string(req->getQuery("start"));
     auto range_end = std::string(req->getQuery("end"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   range_start = std::move(range_start),
-                  range_end = std::move(range_end)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  range_end = std::move(range_end),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       if (range_start.empty() || range_end.empty()) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("400")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"start and end query parameters required"})");
         });
         return;
@@ -167,46 +170,47 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       }
 
       // Sort by start_time
-      std::sort(arr.begin(), arr.end(), [](const json& a, const json& b) {
+      std::sort(arr.begin(), arr.end(), [origin](const json& a, const json& b) {
         return a["start_time"].get<std::string>() < b["start_time"].get<std::string>();
       });
 
       json resp = {{"events", arr}, {"my_permission", my_perm}};
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(resp_str);
       });
     });
   });
 
   // Get single event
   app.get("/api/spaces/:id/calendar/events/:eventId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  event_id = std::move(event_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  event_id = std::move(event_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto event = db.find_calendar_event(event_id);
       if (!event || event->space_id != space_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Event not found"})");
         });
         return;
@@ -218,28 +222,29 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       resp["my_permission"] = get_access_level(space_id, user_id);
 
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(resp_str);
       });
     });
   });
 
   // Create event
   app.post("/api/spaces/:id/calendar/events", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -247,12 +252,13 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
 
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -266,11 +272,11 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string rrule = j.value("rrule", "");
 
           if (title.empty() || title.length() > 255) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"json({"error":"Title is required (max 255 characters)"})json");
             });
             return;
@@ -292,20 +298,17 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = event_to_json(event);
           resp["my_rsvp"] = "";
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -314,19 +317,21 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Update event
   app.put("/api/spaces/:id/calendar/events/:eventId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  event_id = std::move(event_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -335,20 +340,21 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     event_id = std::move(event_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
 
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto existing = db.find_calendar_event(event_id);
         if (!existing || existing->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Event not found"})");
           });
           return;
@@ -366,11 +372,11 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string rrule = j.value("rrule", existing->rrule);
 
           if (title.empty() || title.length() > 255) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"json({"error":"Title is required (max 255 characters)"})json");
             });
             return;
@@ -382,20 +388,17 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           event.created_by_username = creator ? creator->username : "";
           json resp = event_to_json(event);
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -404,29 +407,31 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete event
   app.del("/api/spaces/:id/calendar/events/:eventId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  event_id = std::move(event_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  event_id = std::move(event_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto event = db.find_calendar_event(event_id);
       if (!event || event->space_id != space_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, origin]() {
           if (*aborted) return;
+          cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
-            ->writeHeader("Access-Control-Allow-Origin", "*")
             ->end(R"({"error":"Event not found"})");
         });
         return;
@@ -434,34 +439,35 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       // Creator can delete their own events; otherwise need owner permission
       if (event->created_by != user_id) {
-        if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+        if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
       }
 
       db.delete_calendar_event(event_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
 
   // Create/update exception (edit or delete single occurrence of recurring event)
   app.post("/api/spaces/:id/calendar/events/:eventId/exception", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  event_id = std::move(event_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -470,31 +476,32 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     event_id = std::move(event_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
 
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "edit")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
 
         auto event = db.find_calendar_event(event_id);
         if (!event || event->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Event not found"})");
           });
           return;
         }
 
         if (event->rrule.empty()) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Event is not recurring"})");
           });
           return;
@@ -529,20 +536,17 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             {"original_date", ex.original_date},
             {"is_deleted", ex.is_deleted}};
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -551,19 +555,21 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Set RSVP
   app.post("/api/spaces/:id/calendar/events/:eventId/rsvp", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  event_id = std::move(event_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -572,19 +578,20 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     token = std::move(token),
                     space_id = std::move(space_id),
                     event_id = std::move(event_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
 
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
         auto event = db.find_calendar_event(event_id);
         if (!event || event->space_id != space_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
+            cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
               ->end(R"({"error":"Event not found"})");
           });
           return;
@@ -596,11 +603,11 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string occurrence_date = j.value("occurrence_date", "1970-01-01 00:00:00+00");
 
           if (status != "yes" && status != "no" && status != "maybe") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"error":"Status must be yes, no, or maybe"})");
             });
             return;
@@ -608,20 +615,17 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           db.set_event_rsvp(event_id, user_id, occurrence_date, status);
           auto resp_str = json({{"status", status}}).dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(resp_str);
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -630,24 +634,26 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get RSVPs for an event
   app.get("/api/spaces/:id/calendar/events/:eventId/rsvps", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto event_id = std::string(req->getParameter("eventId"));
     auto occurrence_date = std::string(req->getQuery("date"));
     if (occurrence_date.empty()) occurrence_date = "1970-01-01 00:00:00+00";
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   event_id = std::move(event_id),
-                  occurrence_date = std::move(occurrence_date)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  occurrence_date = std::move(occurrence_date),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
       auto rsvps = db.get_event_rsvps(event_id, occurrence_date);
 
@@ -655,57 +661,59 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       for (const auto& r : rsvps) arr.push_back(rsvp_to_json(r));
 
       auto resp_str = json({{"rsvps", arr}}).dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(resp_str);
       });
     });
   });
 
   // List calendar permissions
   app.get("/api/spaces/:id/calendar/permissions", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), space_id = std::move(space_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
-      if (user_id.empty()) return;
+    res->onAborted([aborted, origin]() { *aborted = true; });
+    pool_.submit(
+      [this, res, aborted, token = std::move(token), space_id = std::move(space_id), origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
+        if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
 
-      auto perms = db.get_calendar_permissions(space_id);
-      json arr = json::array();
-      for (const auto& p : perms) arr.push_back(permission_to_json(p));
+        auto perms = db.get_calendar_permissions(space_id);
+        json arr = json::array();
+        for (const auto& p : perms) arr.push_back(permission_to_json(p));
 
-      std::string my_perm = get_access_level(space_id, user_id);
+        std::string my_perm = get_access_level(space_id, user_id);
 
-      json resp = {{"permissions", arr}, {"my_permission", my_perm}};
-      auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
-        if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(resp_str);
+        json resp = {{"permissions", arr}, {"my_permission", my_perm}};
+        auto resp_str = resp.dump();
+        loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          if (*aborted) return;
+          cors::apply(res, origin);
+          res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        });
       });
-    });
   });
 
   // Set calendar permission
   app.post("/api/spaces/:id/calendar/permissions", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     res->onData([this,
                  res,
                  aborted,
                  token = std::move(token),
                  space_id = std::move(space_id),
-                 body = std::move(body)](std::string_view data, bool last) mutable {
+                 body = std::move(body),
+                 origin](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
       pool_.submit([this,
@@ -713,12 +721,13 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     aborted,
                     token = std::move(token),
                     space_id = std::move(space_id),
-                    body = std::move(body)]() {
-        auto user_id = get_user_id(res, aborted, token);
+                    body = std::move(body),
+                    origin]() {
+        auto user_id = get_user_id(res, aborted, token, origin);
         if (user_id.empty()) return;
 
-        if (!check_space_access(res, aborted, space_id, user_id)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+        if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
 
         try {
           auto j = json::parse(body);
@@ -726,11 +735,11 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string permission = j.at("permission");
 
           if (permission != "owner" && permission != "edit" && permission != "view") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"error":"Permission must be owner, edit, or view"})");
             });
             return;
@@ -739,31 +748,28 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Personal spaces: only view and edit allowed, not owner
           auto space_perm_check = db.find_space_by_id(space_id);
           if (space_perm_check && space_perm_check->is_personal && permission == "owner") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, origin]() {
               if (*aborted) return;
+              cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->writeHeader("Access-Control-Allow-Origin", "*")
                 ->end(R"({"error":"Cannot assign owner permission in a personal space"})");
             });
             return;
           }
 
           db.set_calendar_permission(space_id, target_user_id, permission, user_id);
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, origin]() {
             if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(R"({"ok":true})");
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, err = std::move(err), origin]() {
             if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->writeHeader("Access-Control-Allow-Origin", "*")
-              ->end(err);
+            cors::apply(res, origin);
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
           });
         }
       });
@@ -772,29 +778,30 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Remove calendar permission
   app.del("/api/spaces/:id/calendar/permissions/:userId", [this](auto* res, auto* req) {
+    std::string origin(req->getHeader("origin"));
     auto token = extract_bearer_token(req);
     auto space_id = std::string(req->getParameter("id"));
     auto target_user_id = std::string(req->getParameter("userId"));
     auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted]() { *aborted = true; });
+    res->onAborted([aborted, origin]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
                   token = std::move(token),
                   space_id = std::move(space_id),
-                  target_user_id = std::move(target_user_id)]() {
-      auto user_id = get_user_id(res, aborted, token);
+                  target_user_id = std::move(target_user_id),
+                  origin]() {
+      auto user_id = get_user_id(res, aborted, token, origin);
       if (user_id.empty()) return;
 
-      if (!check_space_access(res, aborted, space_id, user_id)) return;
-      if (!require_permission(res, aborted, space_id, user_id, "owner")) return;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
 
       db.remove_calendar_permission(space_id, target_user_id);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, origin]() {
         if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")
-          ->writeHeader("Access-Control-Allow-Origin", "*")
-          ->end(R"({"ok":true})");
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
   });
@@ -802,11 +809,15 @@ void CalendarHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
 template <bool SSL>
 std::string CalendarHandler<SSL>::get_user_id(
-  uWS::HttpResponse<SSL>* res, std::shared_ptr<bool> aborted, const std::string& token) {
+  uWS::HttpResponse<SSL>* res,
+  std::shared_ptr<bool> aborted,
+  const std::string& token,
+  const std::string& origin) {
   auto user_id = db.validate_session(token);
   if (!user_id) {
-    loop_->defer([res, aborted]() {
+    loop_->defer([res, aborted, origin]() {
       if (*aborted) return;
+      cors::apply(res, origin);
       res->writeStatus("401")
         ->writeHeader("Content-Type", "application/json")
         ->end(R"({"error":"Unauthorized"})");
@@ -821,7 +832,8 @@ bool CalendarHandler<SSL>::check_space_access(
   uWS::HttpResponse<SSL>* res,
   std::shared_ptr<bool> aborted,
   const std::string& space_id,
-  const std::string& user_id) {
+  const std::string& user_id,
+  const std::string& origin) {
   if (db.is_space_member(space_id, user_id)) return true;
   auto user = db.find_user_by_id(user_id);
   if (user && (user->role == "admin" || user->role == "owner")) return true;
@@ -832,11 +844,11 @@ bool CalendarHandler<SSL>::check_space_access(
     if (db.has_resource_permission_in_space(space_id, user_id, "calendar")) return true;
   }
 
-  loop_->defer([res, aborted]() {
+  loop_->defer([res, aborted, origin]() {
     if (*aborted) return;
+    cors::apply(res, origin);
     res->writeStatus("403")
       ->writeHeader("Content-Type", "application/json")
-      ->writeHeader("Access-Control-Allow-Origin", "*")
       ->end(R"({"error":"Not a member of this space"})");
   });
   return false;
@@ -868,17 +880,16 @@ bool CalendarHandler<SSL>::require_permission(
   std::shared_ptr<bool> aborted,
   const std::string& space_id,
   const std::string& user_id,
-  const std::string& required_level) {
+  const std::string& required_level,
+  const std::string& origin) {
   auto level = get_access_level(space_id, user_id);
   if (perm_rank(level) >= perm_rank(required_level)) return true;
 
   auto err = json({{"error", "Requires " + required_level + " permission"}}).dump();
-  loop_->defer([res, aborted, err = std::move(err)]() {
+  loop_->defer([res, aborted, err = std::move(err), origin]() {
     if (*aborted) return;
-    res->writeStatus("403")
-      ->writeHeader("Content-Type", "application/json")
-      ->writeHeader("Access-Control-Allow-Origin", "*")
-      ->end(err);
+    cors::apply(res, origin);
+    res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
   });
   return false;
 }

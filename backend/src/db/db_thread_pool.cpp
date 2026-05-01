@@ -1,5 +1,5 @@
 #include "db_thread_pool.h"
-#include <iostream>
+#include "logging/logger.h"
 
 DbThreadPool::DbThreadPool(int num_threads) {
   workers_.reserve(num_threads);
@@ -18,7 +18,7 @@ DbThreadPool::DbThreadPool(int num_threads) {
       }
     });
   }
-  std::cout << "[ThreadPool] Started " << num_threads << " worker threads" << std::endl;
+  LOG_INFO_N("pool", nullptr, "Started " + std::to_string(num_threads) + " worker threads");
 }
 
 DbThreadPool::~DbThreadPool() {

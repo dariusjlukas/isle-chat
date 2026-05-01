@@ -2,10 +2,11 @@
 
 #include <httplib.h>
 
-#include <iostream>
 #include <map>
 #include <regex>
 #include <sstream>
+
+#include "logging/logger.h"
 
 LlmClient::LlmClient(const LlmConfig& config) : config_(config) {}
 
@@ -325,13 +326,18 @@ std::string LlmClient::simple_completion(const std::vector<LlmMessage>& messages
 
   auto result = cli.Post(endpoint, headers, body.dump(), "application/json");
   if (!result) {
-    std::cerr << "[AI] simple_completion HTTP failed: " << httplib::to_string(result.error())
-              << std::endl;
+    LOG_ERROR_N(
+      "ai",
+      nullptr,
+      std::string("simple_completion HTTP failed: ") + httplib::to_string(result.error()));
     return "";
   }
   if (result->status != 200) {
-    std::cerr << "[AI] simple_completion HTTP " << result->status << ": "
-              << result->body.substr(0, 300) << std::endl;
+    LOG_ERROR_N(
+      "ai",
+      nullptr,
+      "simple_completion HTTP " + std::to_string(result->status) + ": " +
+        result->body.substr(0, 300));
     return "";
   }
 
@@ -339,14 +345,20 @@ std::string LlmClient::simple_completion(const std::vector<LlmMessage>& messages
     auto resp = json::parse(result->body);
     auto content = resp["choices"][0]["message"]["content"];
     if (content.is_null()) {
-      std::cerr << "[AI] simple_completion: content is null. Response: "
-                << result->body.substr(0, 500) << std::endl;
+      LOG_ERROR_N(
+        "ai",
+        nullptr,
+        std::string("simple_completion: content is null. Response: ") +
+          result->body.substr(0, 500));
       return "";
     }
     return content.get<std::string>();
   } catch (const std::exception& e) {
-    std::cerr << "[AI] simple_completion parse error: " << e.what()
-              << ". Response: " << result->body.substr(0, 500) << std::endl;
+    LOG_ERROR_N(
+      "ai",
+      nullptr,
+      std::string("simple_completion parse error: ") + e.what() +
+        ". Response: " + result->body.substr(0, 500));
     return "";
   }
 }
@@ -365,7 +377,7 @@ std::string LlmClient::streaming_completion(
   cb.on_tool_call = [](const json&) {};
   cb.on_done = []() {};
   cb.on_error = [](const std::string& err) {
-    std::cerr << "[AI] streaming_completion error: " << err << std::endl;
+    LOG_ERROR_N("ai", nullptr, "streaming_completion error: " + err);
   };
 
   chat_completion(messages, json::array(), cb);

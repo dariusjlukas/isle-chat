@@ -1,0 +1,9 @@
+# Local development override: re-exposes postgres port 5432 on the host so
+# you can connect with psql / a GUI client from outside the compose network.
+#
+# Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+services:
+  postgres:
+    ports:
+      - "5432:5432"

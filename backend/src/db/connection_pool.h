@@ -45,6 +45,13 @@ public:
   }
   int available() const;
 
+  // Metrics accessors. size_total() is the constructed pool size;
+  // size_in_use() is connections currently checked out by callers.
+  size_t size_total() const {
+    return static_cast<size_t>(pool_size_);
+  }
+  size_t size_in_use() const;
+
 private:
   std::string conn_string_;
   int pool_size_;

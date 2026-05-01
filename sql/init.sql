@@ -1,4 +1,15 @@
 -- Chat Application Database Schema
+--
+-- HISTORICAL ARCHIVE — DO NOT USE.
+-- This file is no longer applied by anything. It was a hand-maintained
+-- snapshot that drifted out of sync with the embedded run_migrations() DDL
+-- in backend/src/db/database.cpp.
+--
+-- The canonical schema source is now sqitch/deploy/0001-initial-schema.sql.
+-- See sqitch/README.md for how to apply migrations.
+--
+-- Kept here for git-blame archaeology only. Will be removed in a future PR
+-- once nobody references it.
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 

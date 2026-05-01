@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -31,8 +33,11 @@ public:
     int64_t chunk_size,
     const nlohmann::json& metadata);
 
-  // Get session by ID, returns nullptr if not found
-  UploadSession* get_session(const std::string& upload_id);
+  // Get a snapshot copy of a session by ID, or std::nullopt if not found.
+  // Returning a copy (rather than a raw pointer into the internal map) ensures
+  // callers can safely observe session fields without racing against other
+  // threads that may create/remove sessions.
+  std::optional<UploadSession> get_session(const std::string& upload_id);
 
   // Write chunk data directly at its offset in the temp file.
   // If expected_hash is non-empty, verifies SHA-256 of data matches.
@@ -65,5 +70,6 @@ public:
 private:
   std::string upload_dir_;
   std::string tmp_dir_;
+  mutable std::mutex mutex_;
   std::map<std::string, UploadSession> sessions_;
 };

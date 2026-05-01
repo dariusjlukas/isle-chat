@@ -95,7 +95,8 @@ print_summary() {
     local order=("Frontend Lint" "Frontend Type Check" "Frontend Format Check"
                  "Frontend Build" "Backend Build" "Backend Static Analysis"
                  "Backend Unit Tests" "Backend Integration Tests"
-                 "API Tests" "E2E Tests" "Docker Build")
+                 "API Tests" "E2E Tests" "Docker Compose Config" "Docker Build"
+                 "Nginx Security Headers" "Sqitch Schema Check")
 
     printf "\n${BOLD}========================================${NC}\n"
     printf "${BOLD}  TEST RESULTS SUMMARY${NC}\n"
@@ -147,6 +148,8 @@ Options:
   --parallel N       Run API/E2E tests with N parallel workers (each gets own backend/DB)
   --static-analysis  Run C++ static analysis (clang-tidy)
   --docker           Run Docker container builds
+  --nginx-headers    Assert security headers are emitted by nginx (needs running stack on :80)
+  --sqitch-check     Verify sqitch schema matches run_migrations() output (needs docker)
   --no-build         Skip the backend CMake build step
   --help             Show this help message
 
@@ -173,6 +176,8 @@ RUN_API_TESTS=false
 RUN_E2E=false
 RUN_DOCKER=false
 RUN_STATIC_ANALYSIS=false
+RUN_NGINX_HEADERS=false
+RUN_SQITCH_CHECK=false
 SKIP_BUILD=false
 E2E_WORKERS=16
 API_WORKERS=64
@@ -219,6 +224,10 @@ for arg in "$@"; do
             RUN_STATIC_ANALYSIS=true; ANY_FLAG=true ;;
         --docker)
             RUN_DOCKER=true; ANY_FLAG=true ;;
+        --nginx-headers)
+            RUN_NGINX_HEADERS=true; ANY_FLAG=true ;;
+        --sqitch-check)
+            RUN_SQITCH_CHECK=true; ANY_FLAG=true ;;
         --no-build)
             SKIP_BUILD=true ;;
         --help)
@@ -678,7 +687,54 @@ fi
 # =====================================================================
 
 if [ "$RUN_DOCKER" = true ]; then
+    # Validate compose file syntax + required env vars before attempting a build.
+    # Uses .env.example as the env source so the check does not require a real .env.
+    run_check "Docker Compose Config" bash -c "cd '$SCRIPT_DIR' && docker compose --env-file .env.example config --quiet && docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.dev.yml config --quiet"
     run_check "Docker Build" bash -c "cd '$SCRIPT_DIR' && docker compose build"
+fi
+
+# =====================================================================
+# Optional: nginx security-headers smoke check (requires the stack to be
+# running on localhost:80, e.g. after `docker compose up -d`).
+# =====================================================================
+
+check_nginx_headers() {
+    local url="${NGINX_HEADERS_URL:-http://localhost/}"
+    local headers
+    headers=$(curl -sI "$url") || {
+        printf "curl to %s failed\n" "$url"
+        return 1
+    }
+    printf "%s\n" "$headers"
+    local missing=()
+    local expected=(
+        "Strict-Transport-Security:"
+        "X-Frame-Options: DENY"
+        "X-Content-Type-Options: nosniff"
+        "Referrer-Policy:"
+        "Content-Security-Policy-Report-Only:"
+    )
+    for needle in "${expected[@]}"; do
+        if ! grep -qi "^$needle" <<<"$headers"; then
+            missing+=("$needle")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        printf "\nMissing security headers:\n"
+        for m in "${missing[@]}"; do
+            printf "  - %s\n" "$m"
+        done
+        return 1
+    fi
+    return 0
+}
+
+if [ "$RUN_NGINX_HEADERS" = true ]; then
+    run_check "Nginx Security Headers" check_nginx_headers
+fi
+
+if [ "$RUN_SQITCH_CHECK" = true ]; then
+    run_check "Sqitch Schema Check" "$SCRIPT_DIR/tools/sqitch-check.sh"
 fi
 
 # =====================================================================

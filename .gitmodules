@@ -10,3 +10,6 @@
 [submodule "backend/libs/cpp-httplib"]
 	path = backend/libs/cpp-httplib
 	url = https://github.com/yhirose/cpp-httplib.git
+[submodule "backend/libs/spdlog"]
+	path = backend/libs/spdlog
+	url = https://github.com/gabime/spdlog.git

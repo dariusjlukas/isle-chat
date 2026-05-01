@@ -4,12 +4,27 @@
 #include <fcntl.h>
 #include <openssl/sha.h>
 #include <unistd.h>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 
 namespace fs = std::filesystem;
+
+namespace {
+// RAII wrapper for a POSIX file descriptor so the fd is always closed,
+// even on early-return or exception paths.
+struct FdGuard {
+  int fd;
+  explicit FdGuard(int f) : fd(f) {}
+  ~FdGuard() {
+    if (fd >= 0) ::close(fd);
+  }
+  FdGuard(const FdGuard&) = delete;
+  FdGuard& operator=(const FdGuard&) = delete;
+};
+}  // namespace
 
 UploadManager::UploadManager(const std::string& upload_dir)
   : upload_dir_(upload_dir), tmp_dir_(upload_dir + "/tmp") {
@@ -22,7 +37,10 @@ std::string UploadManager::create_session(
   int chunk_count,
   int64_t chunk_size,
   const nlohmann::json& metadata) {
+  // cleanup_stale() takes the lock itself; call it before we lock.
   cleanup_stale();
+
+  std::lock_guard<std::mutex> lock(mutex_);
 
   std::string upload_id = format_utils::random_hex(16);
   std::string tmp_path = tmp_dir_ + "/" + upload_id + ".dat";
@@ -46,9 +64,11 @@ std::string UploadManager::create_session(
   return upload_id;
 }
 
-UploadSession* UploadManager::get_session(const std::string& upload_id) {
+std::optional<UploadSession> UploadManager::get_session(const std::string& upload_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = sessions_.find(upload_id);
-  return it != sessions_.end() ? &it->second : nullptr;
+  if (it == sessions_.end()) return std::nullopt;
+  return it->second;
 }
 
 static std::string sha256_hex(std::string_view data) {
@@ -66,27 +86,52 @@ std::string UploadManager::store_chunk_err(
   int index,
   std::string_view data,
   const std::string& expected_hash) {
-  auto* session = get_session(upload_id);
-  if (!session) return "session_not_found";
-  if (index < 0 || index >= session->chunk_count) return "invalid_index";
+  // Phase 1: take the lock just long enough to validate the session + index
+  // and copy out the fields we need to do the write. We deliberately do NOT
+  // hold the lock across disk I/O.
+  std::string tmp_path;
+  int64_t chunk_size = 0;
+  int chunk_count = 0;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(upload_id);
+    if (it == sessions_.end()) return "session_not_found";
+    tmp_path = it->second.tmp_path;
+    chunk_size = it->second.chunk_size;
+    chunk_count = it->second.chunk_count;
+  }
 
-  // Verify SHA-256 hash if provided
+  if (index < 0 || index >= chunk_count) return "invalid_index";
+
+  // Overflow-safe offset computation: index * chunk_size must fit in int64_t.
+  int64_t offset = 0;
+  if (__builtin_mul_overflow(static_cast<int64_t>(index), chunk_size, &offset)) {
+    return "invalid_index";
+  }
+  if (offset < 0) return "invalid_index";
+
+  // Verify SHA-256 hash if provided (no lock needed — purely local work).
   if (!expected_hash.empty()) {
     std::string actual_hash = sha256_hex(data);
     if (actual_hash != expected_hash) return "hash_mismatch";
   }
 
-  int64_t offset = static_cast<int64_t>(index) * session->chunk_size;
+  // Phase 2: do the pwrite with no lock held. Use RAII so we always close fd.
+  FdGuard guard(open(tmp_path.c_str(), O_WRONLY));
+  if (guard.fd < 0) return "open_failed";
 
-  int fd = open(session->tmp_path.c_str(), O_WRONLY);
-  if (fd < 0) return "io_error";
+  ssize_t written = pwrite(guard.fd, data.data(), data.size(), offset);
+  if (written < 0) return "io_error";
+  if (static_cast<size_t>(written) < data.size()) return "short_write";
 
-  ssize_t written = pwrite(fd, data.data(), data.size(), offset);
-  close(fd);
-
-  if (written != static_cast<ssize_t>(data.size())) return "io_error";
-
-  session->received_chunks.insert(index);
+  // Phase 3: re-acquire the lock to record receipt. The session may have
+  // been removed while we were writing — if so, report that explicitly.
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = sessions_.find(upload_id);
+    if (it == sessions_.end()) return "session_gone";
+    it->second.received_chunks.insert(index);
+  }
   return "";
 }
 
@@ -99,28 +144,35 @@ bool UploadManager::store_chunk(
 }
 
 bool UploadManager::is_complete(const std::string& upload_id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = sessions_.find(upload_id);
   if (it == sessions_.end()) return false;
   return static_cast<int>(it->second.received_chunks.size()) == it->second.chunk_count;
 }
 
 int64_t UploadManager::assemble(const std::string& upload_id, const std::string& dest_path) {
-  auto* session = get_session(upload_id);
-  if (!session) return -1;
+  // Hold the lock across the file_size check AND the rename so a racing
+  // chunk write cannot touch the temp file between those two operations.
+  // (store_chunk_err releases the lock during pwrite, but it re-acquires
+  // the lock to update received_chunks; so any in-flight write must finish
+  // before we can get here, provided the caller first checks is_complete.)
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto it = sessions_.find(upload_id);
+  if (it == sessions_.end()) return -1;
 
-  // Verify file size matches expected total
   std::error_code ec;
-  auto actual_size = static_cast<int64_t>(fs::file_size(session->tmp_path, ec));
-  if (ec || actual_size != session->total_size) return -1;
+  auto actual_size = static_cast<int64_t>(fs::file_size(it->second.tmp_path, ec));
+  if (ec || actual_size != it->second.total_size) return -1;
 
   // Instant rename (same filesystem)
-  fs::rename(session->tmp_path, dest_path, ec);
+  fs::rename(it->second.tmp_path, dest_path, ec);
   if (ec) return -1;
 
-  return session->total_size;
+  return it->second.total_size;
 }
 
 void UploadManager::remove_session(const std::string& upload_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto it = sessions_.find(upload_id);
   if (it != sessions_.end()) {
     std::error_code ec;
@@ -130,6 +182,7 @@ void UploadManager::remove_session(const std::string& upload_id) {
 }
 
 void UploadManager::cleanup_stale(int max_age_seconds) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto now = std::chrono::steady_clock::now();
   auto it = sessions_.begin();
   while (it != sessions_.end()) {

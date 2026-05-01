@@ -23,15 +23,18 @@ import type {
  * component like ChatArea.
  */
 export function useWebSocketConnection() {
-  const token = useChatStore((s) => s.token);
+  // Authentication is identified by the HttpOnly `session` cookie since
+  // P1.4 Release B; the store no longer holds the raw token. We connect
+  // whenever the user is authenticated and reconnect on auth changes.
+  const isAuthenticated = useChatStore((s) => s.isAuthenticated);
   const typingTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
 
   useEffect(() => {
-    if (!token) return;
+    if (!isAuthenticated) return;
 
-    wsService.connect(token);
+    wsService.connect();
     const timers = typingTimers.current;
 
     const unsubs = [
@@ -440,7 +443,7 @@ export function useWebSocketConnection() {
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
     };
-  }, [token]);
+  }, [isAuthenticated]);
 }
 
 /**

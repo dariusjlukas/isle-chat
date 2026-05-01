@@ -205,8 +205,38 @@ def _worker_index(worker_id: str) -> int | None:
     return int(worker_id.replace("gw", ""))
 
 
+SQITCH_DEPLOY_SQL = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "sqitch",
+    "deploy",
+    "0001-initial-schema.sql",
+)
+
+
+def _apply_sqitch_deploy(dbname: str):
+    """Apply sqitch's initial schema script to a freshly created worker DB.
+
+    The deploy script has explicit BEGIN/COMMIT, but psycopg2 with autocommit=True
+    runs each statement independently — the BEGIN/COMMIT pair becomes a no-op
+    transaction wrapper, which is fine. SET statements are session-scoped.
+    """
+    with open(SQITCH_DEPLOY_SQL, "r") as f:
+        sql = f.read()
+    conn = psycopg2.connect(_get_pg_dsn(dbname))
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute(sql)
+    cur.close()
+    conn.close()
+
+
 def _create_worker_db(dbname: str):
-    """Create a fresh database for this xdist worker."""
+    """Create a fresh database for this xdist worker and apply the sqitch schema.
+
+    P1.1 PR-B (sqitch cutover): the backend now defaults to ENABLE_SQITCH_ONLY=1
+    and skips its embedded run_migrations(). Tests apply sqitch's initial schema
+    here so per-worker DBs are usable as soon as the backend connects.
+    """
     conn = psycopg2.connect(_get_pg_dsn("postgres"))
     conn.autocommit = True
     cur = conn.cursor()
@@ -214,6 +244,7 @@ def _create_worker_db(dbname: str):
     cur.execute(f"CREATE DATABASE {dbname} OWNER {PG_USER}")
     cur.close()
     conn.close()
+    _apply_sqitch_deploy(dbname)
 
 
 def _drop_worker_db(dbname: str):
@@ -289,6 +320,10 @@ def server_process(worker_db, worker_port):
             "UPLOAD_DIR": upload_dir,
             "DB_POOL_SIZE": "2",
             "SESSION_EXPIRY_HOURS": "168",
+            # P1.1 PR-B: sqitch is now the canonical schema source. Conftest
+            # applies the deploy script in _create_worker_db; the backend
+            # asserts the schema is initialized at boot.
+            "ENABLE_SQITCH_ONLY": "1",
         }
         proc = subprocess.Popen(
             [binary],

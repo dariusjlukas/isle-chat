@@ -140,7 +140,12 @@ export function MessageList({
   useEffect(() => {
     if (!jumpToMessageId || jumpToChannelId !== channelId) return;
 
+    let cancelled = false;
+    let rafId: number | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     api.getMessagesAround(channelId, jumpToMessageId).then((msgs) => {
+      if (cancelled) return;
       setMessages(channelId, msgs);
       setIsViewingAround(true);
       clearJumpToMessage();
@@ -151,18 +156,29 @@ export function MessageList({
       const targetId = `msg-${jumpToMessageId}`;
       let attempts = 0;
       const poll = () => {
+        if (cancelled) return;
+        rafId = null;
         const el = document.getElementById(targetId);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           el.classList.add('highlight-flash');
-          setTimeout(() => el.classList.remove('highlight-flash'), 2000);
+          timeoutId = setTimeout(() => {
+            timeoutId = null;
+            el.classList.remove('highlight-flash');
+          }, 2000);
         } else if (attempts < 20) {
           attempts++;
-          requestAnimationFrame(poll);
+          rafId = requestAnimationFrame(poll);
         }
       };
-      requestAnimationFrame(poll);
+      rafId = requestAnimationFrame(poll);
     });
+
+    return () => {
+      cancelled = true;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
   }, [
     jumpToMessageId,
     jumpToChannelId,

@@ -378,6 +378,8 @@ void AuthHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       db.delete_session(token);
       loop_->defer([res, aborted]() {
         if (*aborted) return;
+        // Clear the session/csrf cookies so cookie-authed clients log out too.
+        emit_clear_session_cookies(res);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
       });
     });
@@ -580,10 +582,13 @@ void AuthHandler<SSL>::handle_register_verify(
     complete_user_creation(user, invite_token);
 
     std::string token = db.create_session(user.id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const pqxx::unique_violation&) {
@@ -750,10 +755,13 @@ void AuthHandler<SSL>::handle_login_verify(
     if (check_and_handle_mfa(res, aborted, *user, "passkey")) return;
 
     std::string token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -887,11 +895,14 @@ void AuthHandler<SSL>::handle_pki_register(
     complete_user_creation(user, invite_token);
 
     std::string token = db.create_session(user.id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(
       token, make_user_json(user), json{{"recovery_keys", plaintext_keys}});
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const pqxx::unique_violation&) {
@@ -999,10 +1010,13 @@ void AuthHandler<SSL>::handle_pki_login(
     if (check_and_handle_mfa(res, aborted, *user, "pki")) return;
 
     std::string token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -1096,10 +1110,13 @@ void AuthHandler<SSL>::handle_add_device_pki(
     }
 
     std::string session = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(session, make_user_json(*user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), session, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, session, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -1273,10 +1290,13 @@ void AuthHandler<SSL>::handle_add_device_passkey_verify(
     }
 
     std::string session = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(session, make_user_json(*user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), session, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, session, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -1341,11 +1361,14 @@ void AuthHandler<SSL>::handle_recovery_login(
     }
 
     std::string token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(
       token, make_user_json(*user), json{{"must_setup_key", true}});
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -1411,11 +1434,14 @@ void AuthHandler<SSL>::handle_recovery_token_login(
     db.use_recovery_token(token);
 
     std::string session = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json resp = auth_payload_utils::build_token_user_response(
       session, make_user_json(*user), json{{"must_setup_key", true}});
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), session, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, session, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -1771,11 +1797,14 @@ void AuthHandler<SSL>::handle_password_register(
 
     // Create session
     auto token = db.create_session(user.id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
 
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(user));
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const pqxx::unique_violation&) {
@@ -1871,6 +1900,8 @@ void AuthHandler<SSL>::handle_password_login(
 
     // Create session
     auto token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
 
     // Check password expiry
     auto policy = get_password_policy();
@@ -1881,8 +1912,9 @@ void AuthHandler<SSL>::handle_password_login(
         ? json{{"must_change_password", db.is_password_expired(user->id, policy.max_age_days)}}
         : json::object());
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -2133,7 +2165,13 @@ void AuthHandler<SSL>::handle_mfa_verify(
       return;
     }
 
-    if (!totp::verify_code(*secret, totp_code)) {
+    auto last_step_signed = db.get_totp_last_step(user_id);
+    std::optional<uint64_t> last_step;
+    if (last_step_signed.has_value()) {
+      last_step = static_cast<uint64_t>(*last_step_signed);
+    }
+    auto matched_step = totp::verify_code(*secret, totp_code, last_step);
+    if (!matched_step) {
       loop_->defer([res, aborted]() {
         if (*aborted) return;
         res->writeStatus("401")
@@ -2142,6 +2180,7 @@ void AuthHandler<SSL>::handle_mfa_verify(
       });
       return;
     }
+    db.set_totp_last_step(user_id, static_cast<int64_t>(*matched_step));
 
     // MFA verified -- consume the token and create a real session
     db.delete_mfa_pending_token(mfa_token);
@@ -2178,6 +2217,8 @@ void AuthHandler<SSL>::handle_mfa_verify(
     }
 
     auto token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json extra = json::object();
     if (auth_method == "password") {
       auto policy = get_password_policy();
@@ -2189,8 +2230,9 @@ void AuthHandler<SSL>::handle_mfa_verify(
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user), extra);
 
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {
@@ -2286,7 +2328,13 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(
       return;
     }
 
-    if (!totp::verify_code(*secret, code)) {
+    auto last_step_signed = db.get_totp_last_step(user_id);
+    std::optional<uint64_t> last_step;
+    if (last_step_signed.has_value()) {
+      last_step = static_cast<uint64_t>(*last_step_signed);
+    }
+    auto matched_step = totp::verify_code(*secret, code, last_step);
+    if (!matched_step) {
       loop_->defer([res, aborted]() {
         if (*aborted) return;
         res->writeStatus("401")
@@ -2298,6 +2346,7 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(
 
     // TOTP verified -- mark as verified, consume MFA token, create session
     db.verify_totp(user_id);
+    db.set_totp_last_step(user_id, static_cast<int64_t>(*matched_step));
     db.delete_mfa_pending_token(mfa_token);
 
     auto user = db.find_user_by_id(user_id);
@@ -2332,6 +2381,8 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(
     }
 
     auto token = db.create_session(user->id, get_session_expiry());
+    int max_age = get_session_expiry() * 3600;
+    bool secure = config.has_ssl();
     json extra = json::object();
     if (auth_method == "password") {
       auto policy = get_password_policy();
@@ -2343,8 +2394,9 @@ void AuthHandler<SSL>::handle_mfa_setup_verify(
     json resp = auth_payload_utils::build_token_user_response(token, make_user_json(*user), extra);
 
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    loop_->defer([res, aborted, resp_body = std::move(resp_body), token, max_age, secure]() {
       if (*aborted) return;
+      emit_session_cookies(res, token, max_age, secure);
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {

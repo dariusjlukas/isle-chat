@@ -1,4 +1,5 @@
 #include "db/connection_pool.h"
+#include "logging/logger.h"
 
 // --- PooledConnection ---
 
@@ -43,7 +44,8 @@ ConnectionPool::ConnectionPool(const std::string& conn_string, int pool_size)
   for (int i = 0; i < pool_size_; ++i) {
     connections_.push(create_connection());
   }
-  std::cout << "[DB] Connection pool initialized (" << pool_size_ << " connections)" << std::endl;
+  LOG_INFO_N(
+    "db", nullptr, "Connection pool initialized (" + std::to_string(pool_size_) + " connections)");
 }
 
 PooledConnection ConnectionPool::acquire() {
@@ -64,7 +66,7 @@ PooledConnection ConnectionPool::acquire() {
       try {
         connections_.push(create_connection());
       } catch (...) {
-        std::cerr << "[DB Pool] Failed to create replacement connection" << std::endl;
+        LOG_ERROR_N("db", nullptr, "Failed to create replacement connection");
       }
       cv_.notify_one();
       throw;
@@ -80,7 +82,7 @@ void ConnectionPool::release(std::unique_ptr<pqxx::connection> conn) {
     try {
       conn = create_connection();
     } catch (const std::exception& e) {
-      std::cerr << "[DB Pool] Failed to create replacement connection on release" << std::endl;
+      LOG_ERROR_N("db", nullptr, "Failed to create replacement connection on release");
       // Pool will be one connection short until a future release repairs it
       conn = nullptr;
     }
@@ -96,6 +98,13 @@ void ConnectionPool::release(std::unique_ptr<pqxx::connection> conn) {
 int ConnectionPool::available() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return static_cast<int>(connections_.size());
+}
+
+size_t ConnectionPool::size_in_use() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  size_t available = connections_.size();
+  size_t total = static_cast<size_t>(pool_size_);
+  return total >= available ? total - available : 0;
 }
 
 std::unique_ptr<pqxx::connection> ConnectionPool::create_connection() {
