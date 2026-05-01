@@ -105,7 +105,7 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
           const result = await api.getRequestStatus(id);
           if (result.status === 'approved' && result.token && result.user) {
             if (pollRef.current) clearInterval(pollRef.current);
-            setAuth(result.user, result.token);
+            setAuth(result.user);
           } else if (result.status === 'denied') {
             if (pollRef.current) clearInterval(pollRef.current);
             setPhase('form');
@@ -132,7 +132,7 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
       });
       const credential = await webauthnRegister(options);
       const result = await api.verifyRegistration(credential);
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       if (e instanceof Error && e.name === 'NotAllowedError') {
         setError('Passkey creation was cancelled');
@@ -196,7 +196,7 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
         password,
         token: inviteToken.trim() || undefined,
       });
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Registration failed');
     } finally {
@@ -305,7 +305,7 @@ export function RegisterPage({ onSwitchToLogin, initialInviteToken }: Props) {
 
   const handleRecoveryKeysDone = () => {
     if (pendingAuth) {
-      setAuth(pendingAuth.user, pendingAuth.token);
+      setAuth(pendingAuth.user);
     }
   };
 

@@ -13,3 +13,6 @@
 [submodule "backend/libs/spdlog"]
 	path = backend/libs/spdlog
 	url = https://github.com/gabime/spdlog.git
+[submodule "backend/libs/hiredis"]
+	path = backend/libs/hiredis
+	url = https://github.com/redis/hiredis.git

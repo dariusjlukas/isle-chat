@@ -122,18 +122,20 @@ TEST(AuthPayloadUtils, BuildsExcludeCredentialsFromStoredCredentials) {
 TEST(AuthPayloadUtils, BuildsAuthAndStatusResponses) {
     json user = {{"id", "user-1"}, {"username", "alice"}};
 
+    // P1.4 Release C: token is no longer included in the response body.
+    // Auth is via Set-Cookie (set on the response object, not the JSON).
     auto token_response = auth_payload_utils::build_token_user_response(
         "session-1", user, json{{"must_change_password", true}, {"must_setup_key", true}});
-    EXPECT_EQ(token_response.at("token"), "session-1");
+    EXPECT_FALSE(token_response.contains("token"));
     EXPECT_EQ(token_response.at("user"), user);
     EXPECT_TRUE(token_response.at("must_change_password").get<bool>());
     EXPECT_TRUE(token_response.at("must_setup_key").get<bool>());
 
     auto basic_token_response = auth_payload_utils::build_token_user_response(
         "session-plain", user, json::array());
-    EXPECT_EQ(basic_token_response.at("token"), "session-plain");
+    EXPECT_FALSE(basic_token_response.contains("token"));
     EXPECT_EQ(basic_token_response.at("user"), user);
-    EXPECT_EQ(basic_token_response.size(), 2u);
+    EXPECT_EQ(basic_token_response.size(), 1u);
 
     auto totp = auth_payload_utils::build_totp_setup_response("secret-1", "otpauth://totp/test");
     EXPECT_EQ(totp.at("secret"), "secret-1");
@@ -147,6 +149,6 @@ TEST(AuthPayloadUtils, BuildsAuthAndStatusResponses) {
     auto approved = auth_payload_utils::build_join_request_status_response(
         "approved", "session-2", user);
     EXPECT_EQ(approved.at("status"), "approved");
-    EXPECT_EQ(approved.at("token"), "session-2");
+    EXPECT_FALSE(approved.contains("token"));
     EXPECT_EQ(approved.at("user"), user);
 }

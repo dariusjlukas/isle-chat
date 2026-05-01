@@ -10,6 +10,7 @@
 #include "handlers/admin_approval_utils.h"
 #include "handlers/admin_settings_utils.h"
 #include "handlers/format_utils.h"
+#include "handlers/request_scope.h"
 
 namespace {
 
@@ -90,15 +91,17 @@ using json = nlohmann::json;
 template <bool SSL>
 void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.post("/api/admin/invites", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/invites");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = get_admin_id(res, token, aborted);
         if (user_id.empty()) return;
 
@@ -117,19 +120,22 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         auto invite_token = db.create_invite(user_id, expiry, max_uses);
         json resp = {{"token", invite_token}};
         auto resp_str = resp.dump();
-        loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+        loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_str);
+          scope->observe(200);
         });
       });
     });
   });
 
   app.get("/api/admin/invites", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/invites");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_admin_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -153,45 +159,52 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back(obj);
       }
       auto resp_str = arr.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   app.del("/api/admin/invites/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/admin/invites/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto invite_id = std::string(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit(
-      [this, res, aborted, token = std::move(token), invite_id = std::move(invite_id)]() {
+      [this, res, aborted, scope, token = std::move(token), invite_id = std::move(invite_id)]() {
         auto user_id = get_admin_id(res, token, aborted);
         if (user_id.empty()) return;
 
         bool deleted = db.revoke_invite(invite_id);
         if (!deleted) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Invite not found or already used"})");
+            scope->observe(404);
           });
           return;
         }
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
   });
 
   app.get("/api/admin/requests", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/requests");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_admin_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -207,15 +220,19 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            {"created_at", r.created_at}});
       }
       auto resp_str = arr.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   app.post("/api/admin/requests/:id/approve", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/requests/:id/approve");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto request_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -223,22 +240,30 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  request_id = std::move(request_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit(
-        [this, res, aborted, token = std::move(token), request_id = std::move(request_id)]() {
-          auto admin_id = get_admin_id(res, token, aborted);
-          if (admin_id.empty()) return;
-          handle_approve(res, request_id, admin_id, aborted);
-        });
+      pool_.submit([this,
+                    res,
+                    aborted,
+                    scope,
+                    token = std::move(token),
+                    request_id = std::move(request_id)]() {
+        auto admin_id = get_admin_id(res, token, aborted);
+        if (admin_id.empty()) return;
+        handle_approve(res, request_id, admin_id, aborted);
+      });
     });
   });
 
   app.post("/api/admin/requests/:id/deny", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/requests/:id/deny");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto request_id = std::string(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -246,52 +271,63 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  request_id = std::move(request_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit(
-        [this, res, aborted, token = std::move(token), request_id = std::move(request_id)]() {
-          auto admin_id = get_admin_id(res, token, aborted);
-          if (admin_id.empty()) return;
+      pool_.submit([this,
+                    res,
+                    aborted,
+                    scope,
+                    token = std::move(token),
+                    request_id = std::move(request_id)]() {
+        auto admin_id = get_admin_id(res, token, aborted);
+        if (admin_id.empty()) return;
 
-          db.update_join_request(request_id, "denied", admin_id);
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-          });
+        db.update_join_request(request_id, "denied", admin_id);
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
+      });
     });
   });
 
   app.get("/api/admin/settings", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/settings");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_owner_id(res, token, aborted);
       if (user_id.empty()) return;
 
       json resp = build_settings_response();
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   app.put("/api/admin/settings", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("PUT", "/api/admin/settings");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token), body = std::move(body)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token), body = std::move(body)]() {
         auto admin_id = get_owner_id(res, token, aborted);
         if (admin_id.empty()) return;
         save_settings(res, body, aborted);
@@ -300,25 +336,28 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.post("/api/admin/setup", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/setup");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token), body = std::move(body)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token), body = std::move(body)]() {
         auto admin_id = get_owner_id(res, token, aborted);
         if (admin_id.empty()) return;
 
         auto completed = db.get_setting("setup_completed");
         if (completed && *completed == "true") {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Setup already completed"})");
+            scope->observe(400);
           });
           return;
         }
@@ -329,15 +368,18 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.post("/api/admin/recovery-tokens", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/recovery-tokens");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token), body = std::move(body)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token), body = std::move(body)]() {
         auto admin_id = get_admin_id(res, token, aborted);
         if (admin_id.empty()) return;
 
@@ -348,11 +390,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto user = db.find_user_by_id(user_id);
           if (!user) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -360,15 +403,17 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto recovery_token = db.create_recovery_token(admin_id, user_id, expiry);
           json resp = {{"token", recovery_token}};
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -376,10 +421,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.get("/api/admin/recovery-tokens", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/recovery-tokens");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_admin_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -399,61 +446,71 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back(obj);
       }
       auto resp_str = arr.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   app.del("/api/admin/recovery-tokens/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/admin/recovery-tokens/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto token_id = std::string(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), token_id = std::move(token_id)]() {
-      auto admin_id = get_admin_id(res, token, aborted);
-      if (admin_id.empty()) return;
+    pool_.submit(
+      [this, res, aborted, scope, token = std::move(token), token_id = std::move(token_id)]() {
+        auto admin_id = get_admin_id(res, token, aborted);
+        if (admin_id.empty()) return;
 
-      if (db.delete_recovery_token(token_id)) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-        });
-      } else {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("404")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Token not found or already used"})");
-        });
-      }
-    });
+        if (db.delete_recovery_token(token_id)) {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
+          });
+        } else {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeStatus("404")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Token not found or already used"})");
+            scope->observe(404);
+          });
+        }
+      });
   });
 
   // Upload server icon (owner only)
   app.post("/api/admin/server-icon", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/server-icon");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto body = std::make_shared<std::string>();
     int64_t max_size = 50 * 1024 * 1024;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
 
-    res->onData([this, res, aborted, body, max_size, token = std::move(token)](
+    res->onData([this, res, aborted, scope, body, max_size, token = std::move(token)](
                   std::string_view data, bool last) mutable {
       body->append(data);
       if (static_cast<int64_t>(body->size()) > max_size) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("413")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"json({"error":"Icon too large (max 50MB)"})json");
+          scope->observe(413);
         });
         return;
       }
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
 
@@ -470,11 +527,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string path = config.upload_dir + "/" + file_id;
           std::ofstream out(path, std::ios::binary);
           if (!out) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to save icon"})");
+              scope->observe(500);
             });
             return;
           }
@@ -485,15 +543,17 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           json resp = {{"server_icon_file_id", file_id}};
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });
@@ -502,10 +562,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete server icon (owner only)
   app.del("/api/admin/server-icon", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/admin/server-icon");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_owner_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -516,15 +578,17 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::filesystem::remove(old_path);
         }
         db.set_setting("server_icon_file_id", "");
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -532,27 +596,31 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Upload dark mode server icon (owner only)
   app.post("/api/admin/server-icon-dark", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/server-icon-dark");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto body = std::make_shared<std::string>();
     int64_t max_size = 50 * 1024 * 1024;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
 
-    res->onData([this, res, aborted, body, max_size, token = std::move(token)](
+    res->onData([this, res, aborted, scope, body, max_size, token = std::move(token)](
                   std::string_view data, bool last) mutable {
       body->append(data);
       if (static_cast<int64_t>(body->size()) > max_size) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("413")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"json({"error":"Icon too large (max 50MB)"})json");
+          scope->observe(413);
         });
         return;
       }
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
 
@@ -569,11 +637,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string path = config.upload_dir + "/" + file_id;
           std::ofstream out(path, std::ios::binary);
           if (!out) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to save icon"})");
+              scope->observe(500);
             });
             return;
           }
@@ -584,15 +653,17 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           json resp = {{"server_icon_dark_file_id", file_id}};
           auto resp_str = resp.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });
@@ -601,10 +672,13 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete dark mode server icon (owner only)
   app.del("/api/admin/server-icon-dark", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/admin/server-icon-dark");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_owner_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -615,15 +689,17 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::filesystem::remove(old_path);
         }
         db.set_setting("server_icon_dark_file_id", "");
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -631,48 +707,55 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Archive server (owner only)
   app.post("/api/admin/archive-server", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/archive-server");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
         db.set_server_archived(true);
         json notify = {{"type", "server_archived_changed"}, {"archived", true}};
         auto notify_str = notify.dump();
-        loop_->defer([this, res, aborted, notify_str = std::move(notify_str)]() {
+        loop_->defer([this, res, aborted, scope, notify_str = std::move(notify_str)]() {
           ws.broadcast_to_presence(notify_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
     });
   });
 
   app.post("/api/admin/unarchive-server", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/unarchive-server");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
         db.set_server_archived(false);
         json notify = {{"type", "server_archived_changed"}, {"archived", false}};
         auto notify_str = notify.dump();
-        loop_->defer([this, res, aborted, notify_str = std::move(notify_str)]() {
+        loop_->defer([this, res, aborted, scope, notify_str = std::move(notify_str)]() {
           ws.broadcast_to_presence(notify_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
     });
@@ -680,15 +763,18 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Lockdown server (owner only) — kicks all non-admin users
   app.post("/api/admin/lockdown-server", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/lockdown-server");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
         db.set_server_locked_down(true);
@@ -699,36 +785,41 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         loop_->defer([this,
                       res,
                       aborted,
+                      scope,
                       notify_str = std::move(notify_str),
                       kick_str = std::move(kick_str)]() {
           ws.broadcast_to_presence(notify_str);
           ws.disconnect_non_admins(kick_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
     });
   });
 
   app.post("/api/admin/unlock-server", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/unlock-server");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
         auto user_id = get_owner_id(res, token, aborted);
         if (user_id.empty()) return;
         db.set_server_locked_down(false);
         json notify = {{"type", "server_lockdown_changed"}, {"locked_down", false}};
         auto notify_str = notify.dump();
-        loop_->defer([this, res, aborted, notify_str = std::move(notify_str)]() {
+        loop_->defer([this, res, aborted, scope, notify_str = std::move(notify_str)]() {
           ws.broadcast_to_presence(notify_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
     });
@@ -736,10 +827,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List users (admin or owner)
   app.get("/api/admin/users", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/users");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_admin_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -756,16 +849,20 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            {"is_banned", u.is_banned}});
       }
       auto resp_str = arr.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   // Change user role (admin or owner, with hierarchy enforcement)
   app.put("/api/admin/users/:userId/role", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("PUT", "/api/admin/users/:userId/role");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto target_user_id = std::string(req->getParameter("userId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -773,6 +870,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  target_user_id = std::move(target_user_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -781,6 +879,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     token = std::move(token),
                     target_user_id = std::move(target_user_id),
                     body = std::move(body)]() {
@@ -791,11 +890,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto j = json::parse(body);
           std::string new_role = j.at("role");
           if (new_role != "owner" && new_role != "admin" && new_role != "user") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid role. Must be owner, admin, or user"})");
+              scope->observe(400);
             });
             return;
           }
@@ -803,11 +903,12 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto actor = db.find_user_by_id(actor_id);
           auto target = db.find_user_by_id(target_user_id);
           if (!actor || !target) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -818,22 +919,24 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           // Cannot promote anyone to a rank above your own
           if (new_rank > actor_rank) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot promote above your own rank"})");
+              scope->observe(403);
             });
             return;
           }
 
           // Cannot demote someone of equal or higher rank (unless self-demotion)
           if (new_rank < target_rank && target_rank >= actor_rank && actor_id != target_user_id) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot demote a user of equal or higher rank"})");
+              scope->observe(403);
             });
             return;
           }
@@ -842,12 +945,13 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (target->role == "owner" && new_role != "owner") {
             int owner_count = db.count_users_with_role("owner");
             if (owner_count <= 1) {
-              loop_->defer([res, aborted]() {
+              loop_->defer([res, aborted, scope]() {
                 if (*aborted) return;
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(
                     R"({"error":"Cannot demote the last owner. Assign a new owner or archive the server first.","last_owner":true})");
+                scope->observe(400);
               });
               return;
             }
@@ -867,6 +971,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         target_user_id,
                         notify_str = std::move(notify_str),
                         broadcast_str = std::move(broadcast_str)]() {
@@ -874,12 +979,14 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             ws.broadcast_to_presence(broadcast_str);
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -888,7 +995,10 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Ban user (admin or owner, with hierarchy enforcement)
   app.post("/api/admin/users/:userId/ban", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/admin/users/:userId/ban");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto target_user_id = std::string(req->getParameter("userId"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -896,6 +1006,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  target_user_id = std::move(target_user_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -904,6 +1015,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     token = std::move(token),
                     target_user_id = std::move(target_user_id)]() {
         auto actor_id = get_admin_id(res, token, aborted);
@@ -913,21 +1025,23 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto actor = db.find_user_by_id(actor_id);
           auto target = db.find_user_by_id(target_user_id);
           if (!actor || !target) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User not found"})");
+              scope->observe(404);
             });
             return;
           }
 
           if (target->is_banned) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User is already banned"})");
+              scope->observe(400);
             });
             return;
           }
@@ -937,22 +1051,24 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           // Cannot ban someone of equal or higher rank
           if (target_rank >= actor_rank) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot ban a user of equal or higher rank"})");
+              scope->observe(403);
             });
             return;
           }
 
           // Cannot ban yourself
           if (actor_id == target_user_id) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot ban yourself"})");
+              scope->observe(400);
             });
             return;
           }
@@ -970,6 +1086,7 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         target_user_id,
                         notify_str = std::move(notify_str),
                         broadcast_str = std::move(broadcast_str)]() {
@@ -978,12 +1095,14 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             ws.broadcast_to_presence(broadcast_str);
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -992,71 +1111,84 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Unban user (admin or owner, with hierarchy enforcement)
   app.del("/api/admin/users/:userId/ban", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/admin/users/:userId/ban");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto target_user_id = std::string(req->getParameter("userId"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit(
-      [this, res, aborted, token = std::move(token), target_user_id = std::move(target_user_id)]() {
-        auto actor_id = get_admin_id(res, token, aborted);
-        if (actor_id.empty()) return;
+    pool_.submit([this,
+                  res,
+                  aborted,
+                  scope,
+                  token = std::move(token),
+                  target_user_id = std::move(target_user_id)]() {
+      auto actor_id = get_admin_id(res, token, aborted);
+      if (actor_id.empty()) return;
 
-        auto actor = db.find_user_by_id(actor_id);
-        auto target = db.find_user_by_id(target_user_id);
-        if (!actor || !target) {
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeStatus("404")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"User not found"})");
-          });
-          return;
-        }
-
-        if (!target->is_banned) {
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"User is not banned"})");
-          });
-          return;
-        }
-
-        int actor_rank = server_role_rank(actor->role);
-        int target_rank = server_role_rank(target->role);
-
-        // Cannot unban someone of equal or higher rank
-        if (target_rank >= actor_rank) {
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeStatus("403")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Cannot unban a user of equal or higher rank"})");
-          });
-          return;
-        }
-
-        db.unban_user(target_user_id);
-
-        // Broadcast to all connected users
-        json broadcast = {{"type", "user_unbanned"}, {"user_id", target_user_id}};
-        auto broadcast_str = broadcast.dump();
-
-        loop_->defer([this, res, aborted, broadcast_str = std::move(broadcast_str)]() {
-          ws.broadcast_to_presence(broadcast_str);
+      auto actor = db.find_user_by_id(actor_id);
+      auto target = db.find_user_by_id(target_user_id);
+      if (!actor || !target) {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          res->writeStatus("404")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"User not found"})");
+          scope->observe(404);
         });
+        return;
+      }
+
+      if (!target->is_banned) {
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeStatus("400")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"User is not banned"})");
+          scope->observe(400);
+        });
+        return;
+      }
+
+      int actor_rank = server_role_rank(actor->role);
+      int target_rank = server_role_rank(target->role);
+
+      // Cannot unban someone of equal or higher rank
+      if (target_rank >= actor_rank) {
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeStatus("403")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"Cannot unban a user of equal or higher rank"})");
+          scope->observe(403);
+        });
+        return;
+      }
+
+      db.unban_user(target_user_id);
+
+      // Broadcast to all connected users
+      json broadcast = {{"type", "user_unbanned"}, {"user_id", target_user_id}};
+      auto broadcast_str = broadcast.dump();
+
+      loop_->defer([this, res, aborted, scope, broadcast_str = std::move(broadcast_str)]() {
+        ws.broadcast_to_presence(broadcast_str);
+        if (*aborted) return;
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
+    });
   });
 
   // System resource monitoring
   app.get("/api/admin/system-stats", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/system-stats");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = get_admin_id(res, token, aborted);
       if (user_id.empty()) return;
 
@@ -1103,9 +1235,10 @@ void AdminHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       };
 
       auto resp_str = resp.dump();
-      loop_->defer([res, aborted, resp_str = std::move(resp_str)]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });

@@ -22,6 +22,20 @@ const defaultConfig: ApiConfig = {
   pgContainer: process.env.TEST_PG_CONTAINER ?? "chatapp-test-postgres",
 };
 
+// P1.4 Release C: cookie-only auth. The Node-side helpers send a Cookie
+// header with the captured session value plus a synthetic csrf cookie, and
+// state-changing requests include a matching X-CSRF-Token header.
+const TEST_CSRF = "e2e-csrf";
+
+function authHeaders(token: string | undefined, stateChanging: boolean): Record<string, string> {
+  if (!token) return {};
+  const headers: Record<string, string> = {
+    Cookie: `session=${token}; csrf=${TEST_CSRF}`,
+  };
+  if (stateChanging) headers["X-CSRF-Token"] = TEST_CSRF;
+  return headers;
+}
+
 function apiPost(
   path: string,
   body: unknown,
@@ -30,8 +44,8 @@ function apiPost(
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...authHeaders(token, true),
   };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
   return fetch(`${config.apiBase}${path}`, {
     method: "POST",
     headers,
@@ -47,8 +61,8 @@ function apiPut(
 ): Promise<Response> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...authHeaders(token, true),
   };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
   return fetch(`${config.apiBase}${path}`, {
     method: "PUT",
     headers,
@@ -61,9 +75,7 @@ function apiGet(
   token?: string,
   config: ApiConfig = defaultConfig,
 ): Promise<Response> {
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${config.apiBase}${path}`, { headers });
+  return fetch(`${config.apiBase}${path}`, { headers: authHeaders(token, false) });
 }
 
 function apiDelete(
@@ -71,9 +83,32 @@ function apiDelete(
   token?: string,
   config: ApiConfig = defaultConfig,
 ): Promise<Response> {
-  const headers: Record<string, string> = {};
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return fetch(`${config.apiBase}${path}`, { method: "DELETE", headers });
+  return fetch(`${config.apiBase}${path}`, {
+    method: "DELETE",
+    headers: authHeaders(token, true),
+  });
+}
+
+/**
+ * Extract the `session` cookie value from a response's Set-Cookie headers.
+ * Returns empty string if not present. Used to capture auth state from
+ * register/login responses so subsequent API calls can include it.
+ */
+function captureSessionCookie(response: Response): string {
+  // node fetch exposes Set-Cookie via headers.getSetCookie() (Node 18+) or
+  // by getting all "set-cookie" entries.
+  const setCookies =
+    typeof (response.headers as { getSetCookie?: () => string[] }).getSetCookie === "function"
+      ? (response.headers as { getSetCookie: () => string[] }).getSetCookie()
+      : response.headers
+          .get("set-cookie")
+          ?.split(/,(?=[^ ;]+=[^;]+)/)
+          ?.map((s) => s.trim()) ?? [];
+  for (const raw of setCookies) {
+    const m = raw.match(/^session=([^;]*)/);
+    if (m) return m[1];
+  }
+  return "";
 }
 
 /**
@@ -144,13 +179,16 @@ export async function apiRegisterUser(
     undefined,
     config,
   );
+  // P1.4 Release C: token is no longer in the response body — capture it
+  // from the Set-Cookie header instead. The captured value is the same
+  // session token that subsequent calls need to identify this user.
+  const sessionToken = captureSessionCookie(regRes);
   const data = (await regRes.json()) as {
-    token: string;
     user: { id: string };
     recovery_keys: string[];
   };
   return {
-    token: data.token,
+    token: sessionToken,
     userId: data.user.id,
     recoveryKeys: data.recovery_keys,
   };
@@ -438,8 +476,9 @@ export async function apiPasswordRegister(
     const text = await res.text();
     throw new Error(`Password register failed (${res.status}): ${text}`);
   }
-  const data = (await res.json()) as { token: string; user: { id: string } };
-  return { token: data.token, userId: data.user.id };
+  const sessionToken = captureSessionCookie(res);
+  const data = (await res.json()) as { user: { id: string } };
+  return { token: sessionToken, userId: data.user.id };
 }
 
 /**

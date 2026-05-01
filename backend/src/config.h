@@ -1,8 +1,12 @@
 #pragma once
+#include <openssl/rand.h>
+
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+
 #include "logging/logger.h"
 
 struct Config {
@@ -24,6 +28,13 @@ struct Config {
   int db_pool_size;
   int db_thread_pool_size;
   bool enable_sqitch_only;
+  // Redis URL for cross-instance WS broadcast (e.g. "redis://host:6379").
+  // Empty = local-only mode; no Redis publisher/subscriber is started.
+  std::string redis_url;
+  // Stable per-process identifier used to filter self-published messages
+  // when the local broadcast loops back through Redis. Defaults to a random
+  // UUID v4 generated at boot.
+  std::string instance_id;
 
   bool has_ssl() const {
     return !ssl_cert_path.empty() && !ssl_key_path.empty();
@@ -48,6 +59,43 @@ struct Config {
     {
       std::string v = env("ENABLE_SQITCH_ONLY", "0");
       c.enable_sqitch_only = (v == "1" || v == "true");
+    }
+    c.redis_url = env("REDIS_URL", "");
+    {
+      const char* iid = std::getenv("INSTANCE_ID");
+      if (iid && *iid) {
+        c.instance_id = iid;
+      } else {
+        unsigned char buf[16];
+        if (RAND_bytes(buf, sizeof(buf)) != 1) {
+          throw std::runtime_error("RAND_bytes failed while generating INSTANCE_ID");
+        }
+        // Set RFC 4122 v4 variant bits.
+        buf[6] = static_cast<unsigned char>((buf[6] & 0x0f) | 0x40);
+        buf[8] = static_cast<unsigned char>((buf[8] & 0x3f) | 0x80);
+        char out[37];
+        std::snprintf(
+          out,
+          sizeof(out),
+          "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+          buf[0],
+          buf[1],
+          buf[2],
+          buf[3],
+          buf[4],
+          buf[5],
+          buf[6],
+          buf[7],
+          buf[8],
+          buf[9],
+          buf[10],
+          buf[11],
+          buf[12],
+          buf[13],
+          buf[14],
+          buf[15]);
+        c.instance_id = out;
+      }
     }
     c.webauthn_rp_name = env("WEBAUTHN_RP_NAME", "EnclaveStation");
 

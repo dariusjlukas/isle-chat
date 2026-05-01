@@ -92,6 +92,21 @@ void inc_ws_messages_received(std::string_view type);
 Gauge& db_pool_size();
 Gauge& db_pool_in_use();
 
+// --- Redis pub/sub ---------------------------------------------------------
+// Counter incremented on every successful PUBLISH, labeled by topic_kind
+// (the part before ':' in the topic — e.g. "channel" for "channel:abc").
+void inc_redis_publish(std::string_view topic_kind);
+// Counter incremented on every received non-self envelope.
+void inc_redis_subscribe_received(std::string_view topic_kind);
+// Counter incremented when a received envelope's instance_id matches our own.
+Counter& redis_self_echo_dropped_total();
+// Counter incremented on connect/PUBLISH/getReply errors.
+Counter& redis_health_check_failures_total();
+// Counter incremented every time the subscriber thread reconnects.
+Counter& redis_reconnect_total();
+// 1 if both publisher and subscriber currently believe they're connected.
+Gauge& redis_ok();
+
 // Render the full /metrics text output in Prometheus exposition format.
 std::string render();
 

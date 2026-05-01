@@ -1,4 +1,5 @@
 #include "handlers/ai_handler.h"
+#include "handlers/request_scope.h"
 
 #include <Loop.h>
 
@@ -13,7 +14,9 @@ template <bool SSL>
 void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // List conversations
   app.get("/api/ai/conversations", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/ai/conversations");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string q_limit(req->getQuery("limit"));
     std::string q_offset(req->getQuery("offset"));
     auto aborted = std::make_shared<bool>(false);
@@ -21,16 +24,18 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   q_limit = std::move(q_limit),
                   q_offset = std::move(q_offset)]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -51,31 +56,35 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            {"updated_at", c.updated_at}});
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   // Create conversation
   app.post("/api/ai/conversations", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/ai/conversations");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -98,9 +107,10 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           {"created_at", conv.created_at},
           {"updated_at", conv.updated_at}};
         auto resp_body = resp.dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       });
     });
@@ -108,101 +118,115 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get conversation with messages
   app.get("/api/ai/conversations/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/ai/conversations/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string conv_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), conv_id = std::move(conv_id)]() {
-      auto user_id_opt = db.validate_session(token);
-      if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+    pool_.submit(
+      [this, res, aborted, scope, token = std::move(token), conv_id = std::move(conv_id)]() {
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeStatus("401")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
+          });
+          return;
+        }
+        auto user_id = *user_id_opt;
+        if (!check_llm_enabled(res, aborted)) return;
+
+        auto conv = db.find_ai_conversation(conv_id);
+        if (!conv || conv->user_id != user_id) {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeStatus("404")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Conversation not found"})");
+            scope->observe(404);
+          });
+          return;
+        }
+
+        auto messages = db.get_ai_messages(conv_id);
+        json msg_arr = json::array();
+        for (const auto& m : messages) {
+          json mj = {
+            {"id", m.id}, {"role", m.role}, {"content", m.content}, {"created_at", m.created_at}};
+          if (!m.tool_calls.empty()) mj["tool_calls"] = json::parse(m.tool_calls);
+          if (!m.tool_call_id.empty()) mj["tool_call_id"] = m.tool_call_id;
+          if (!m.tool_name.empty()) mj["tool_name"] = m.tool_name;
+          msg_arr.push_back(mj);
+        }
+
+        json resp = {
+          {"id", conv->id},
+          {"title", conv->title},
+          {"created_at", conv->created_at},
+          {"updated_at", conv->updated_at},
+          {"messages", msg_arr}};
+        auto body = resp.dump();
+        loop_->defer([res, aborted, scope, body = std::move(body)]() {
           if (*aborted) return;
-          res->writeStatus("401")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Unauthorized"})");
+          res->writeHeader("Content-Type", "application/json")->end(body);
+          scope->observe(200);
         });
-        return;
-      }
-      auto user_id = *user_id_opt;
-      if (!check_llm_enabled(res, aborted)) return;
-
-      auto conv = db.find_ai_conversation(conv_id);
-      if (!conv || conv->user_id != user_id) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("404")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Conversation not found"})");
-        });
-        return;
-      }
-
-      auto messages = db.get_ai_messages(conv_id);
-      json msg_arr = json::array();
-      for (const auto& m : messages) {
-        json mj = {
-          {"id", m.id}, {"role", m.role}, {"content", m.content}, {"created_at", m.created_at}};
-        if (!m.tool_calls.empty()) mj["tool_calls"] = json::parse(m.tool_calls);
-        if (!m.tool_call_id.empty()) mj["tool_call_id"] = m.tool_call_id;
-        if (!m.tool_name.empty()) mj["tool_name"] = m.tool_name;
-        msg_arr.push_back(mj);
-      }
-
-      json resp = {
-        {"id", conv->id},
-        {"title", conv->title},
-        {"created_at", conv->created_at},
-        {"updated_at", conv->updated_at},
-        {"messages", msg_arr}};
-      auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
-        if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")->end(body);
       });
-    });
   });
 
   // Delete conversation
   app.del("/api/ai/conversations/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/ai/conversations/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string conv_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), conv_id = std::move(conv_id)]() {
-      auto user_id_opt = db.validate_session(token);
-      if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("401")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Unauthorized"})");
-        });
-        return;
-      }
-      auto user_id = *user_id_opt;
+    pool_.submit(
+      [this, res, aborted, scope, token = std::move(token), conv_id = std::move(conv_id)]() {
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeStatus("401")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
+          });
+          return;
+        }
+        auto user_id = *user_id_opt;
 
-      auto conv = db.find_ai_conversation(conv_id);
-      if (!conv || conv->user_id != user_id) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("404")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Conversation not found"})");
-        });
-        return;
-      }
+        auto conv = db.find_ai_conversation(conv_id);
+        if (!conv || conv->user_id != user_id) {
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeStatus("404")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Conversation not found"})");
+            scope->observe(404);
+          });
+          return;
+        }
 
-      db.delete_ai_conversation(conv_id);
-      loop_->defer([res, aborted]() {
-        if (*aborted) return;
-        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        db.delete_ai_conversation(conv_id);
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
+        });
       });
-    });
   });
 
   // Update conversation title
   app.put("/api/ai/conversations/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("PUT", "/api/ai/conversations/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string conv_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -210,6 +234,7 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  conv_id = std::move(conv_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -218,16 +243,18 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     conv_id = std::move(conv_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -235,11 +262,12 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto conv = db.find_ai_conversation(conv_id);
         if (!conv || conv->user_id != user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Conversation not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -248,15 +276,17 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto j = json::parse(body);
           std::string title = j.at("title").get<std::string>();
           db.update_ai_conversation_title(conv_id, title);
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -265,7 +295,10 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Send message and trigger LLM response
   app.post("/api/ai/conversations/:id/messages", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/ai/conversations/:id/messages");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string conv_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -273,6 +306,7 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  conv_id = std::move(conv_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -281,16 +315,18 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     conv_id = std::move(conv_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -300,11 +336,12 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto conv = db.find_ai_conversation(conv_id);
         if (!conv || conv->user_id != user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Conversation not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -331,11 +368,12 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             build_system_prompt(user_id, current_space_id, current_channel_id);
 
           if (llm_config.api_url.empty()) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("503")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"LLM API URL not configured"})");
+              scope->observe(503);
             });
             return;
           }
@@ -352,11 +390,12 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
 
           // Respond immediately
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("202")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"status":"streaming"})");
+            scope->observe(202);
           });
 
           // Load conversation history for LLM
@@ -612,9 +651,10 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -623,7 +663,10 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Stop generation
   app.post("/api/ai/conversations/:id/stop", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/ai/conversations/:id/stop");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string conv_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -631,36 +674,40 @@ void AiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  conv_id = std::move(conv_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, token = std::move(token), conv_id = std::move(conv_id)]() {
-        auto user_id_opt = db.validate_session(token);
-        if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeStatus("401")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
-          });
-          return;
-        }
-
-        {
-          std::lock_guard<std::mutex> lock(active_mutex_);
-          auto it = active_generations_.find(conv_id);
-          if (it != active_generations_.end()) {
-            it->second->store(true);
+      pool_.submit(
+        [this, res, aborted, scope, token = std::move(token), conv_id = std::move(conv_id)]() {
+          auto user_id_opt = db.validate_session(token);
+          if (!user_id_opt) {
+            loop_->defer([res, aborted, scope]() {
+              if (*aborted) return;
+              res->writeStatus("401")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
+            });
+            return;
           }
-        }
 
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          {
+            std::lock_guard<std::mutex> lock(active_mutex_);
+            auto it = active_generations_.find(conv_id);
+            if (it != active_generations_.end()) {
+              it->second->store(true);
+            }
+          }
+
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
+          });
         });
-      });
     });
   });
 }

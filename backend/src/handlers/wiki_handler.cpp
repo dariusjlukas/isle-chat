@@ -7,6 +7,7 @@
 #include "handlers/cors_utils.h"
 #include "handlers/file_access_utils.h"
 #include "handlers/format_utils.h"
+#include "handlers/request_scope.h"
 #include "logging/logger.h"
 
 using json = nlohmann::json;
@@ -109,8 +110,10 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List pages in folder
   app.get("/api/spaces/:id/wiki/pages", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/wiki/pages");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string parent_id(req->getQuery("parent_id"));
     auto aborted = std::make_shared<bool>(false);
@@ -118,17 +121,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   parent_id = std::move(parent_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -143,56 +148,69 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       json resp = {{"pages", arr}, {"my_permission", get_access_level(space_id, user_id)}};
       auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body), origin]() {
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   // Full page tree for sidebar
   app.get("/api/spaces/:id/wiki/tree", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/wiki/tree");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
-    pool_.submit(
-      [this, res, aborted, token = std::move(token), space_id = std::move(space_id), origin]() {
-        auto user_id_opt = db.validate_session(token);
-        if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            res->writeStatus("401")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
-          });
-          return;
-        }
-        auto user_id = *user_id_opt;
-        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "view", origin)) return;
-
-        auto pages = db.get_wiki_tree(space_id);
-
-        json arr = json::array();
-        for (const auto& p : pages) arr.push_back(page_to_json(p));
-
-        json resp = {{"pages", arr}, {"my_permission", get_access_level(space_id, user_id)}};
-        auto body = resp.dump();
-        loop_->defer([res, aborted, body = std::move(body), origin]() {
+    pool_.submit([this,
+                  res,
+                  aborted,
+                  scope,
+                  token = std::move(token),
+                  space_id = std::move(space_id),
+                  origin]() {
+      auto user_id_opt = db.validate_session(token);
+      if (!user_id_opt) {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
-          cors::apply(res, origin);
-          res->writeHeader("Content-Type", "application/json")->end(body);
+          res->writeStatus("401")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
+        return;
+      }
+      auto user_id = *user_id_opt;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "view", origin)) return;
+
+      auto pages = db.get_wiki_tree(space_id);
+
+      json arr = json::array();
+      for (const auto& p : pages) arr.push_back(page_to_json(p));
+
+      json resp = {{"pages", arr}, {"my_permission", get_access_level(space_id, user_id)}};
+      auto body = resp.dump();
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
+        if (*aborted) return;
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
+    });
   });
 
   // Create page or folder
   app.post("/api/spaces/:id/wiki/pages", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/wiki/pages");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -200,6 +218,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  body = std::move(body),
@@ -209,17 +228,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -238,12 +259,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           int position = j.value("position", 0);
 
           if (title.empty() || title.length() > 255) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"json({"error":"Title is required (max 255 characters)"})json");
+              scope->observe(400);
             });
             return;
           }
@@ -280,18 +302,20 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           page.created_by_username = creator ? creator->username : "";
 
           auto resp_body = page_to_json(page).dump();
-          loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           LOG_ERROR_N("wiki", nullptr, std::string("Create page error: ") + e.what());
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -300,8 +324,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get page with content + path
   app.get("/api/spaces/:id/wiki/pages/:pageId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/wiki/pages/:pageId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -309,17 +336,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -330,12 +359,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       auto page = db.find_wiki_page(page_id);
       if (!page || page->space_id != space_id || page->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Page not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -352,18 +382,22 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       resp["path"] = path_arr;
 
       auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body), origin]() {
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   // Update page
   app.put("/api/spaces/:id/wiki/pages/:pageId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("PUT", "/api/spaces/:id/wiki/pages/:pageId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     std::string body;
@@ -372,6 +406,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  page_id = std::move(page_id),
@@ -382,6 +417,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
@@ -389,11 +425,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -404,12 +441,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto existing = db.find_wiki_page(page_id);
         if (!existing || existing->space_id != space_id || existing->is_deleted) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Page not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -461,17 +499,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           page.last_edited_by_username = editor ? editor->username : "";
 
           auto resp_body = page_to_json(page).dump();
-          loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -480,8 +520,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete page (soft-delete)
   app.del("/api/spaces/:id/wiki/pages/:pageId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/spaces/:id/wiki/pages/:pageId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -489,17 +532,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -508,12 +553,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       auto page = db.find_wiki_page(page_id);
       if (!page || page->space_id != space_id || page->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Page not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -528,18 +574,22 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       }
 
       db.soft_delete_wiki_page(page_id);
-      loop_->defer([res, aborted, origin]() {
+      loop_->defer([res, aborted, scope, origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
 
   // Move page to new parent
   app.put("/api/spaces/:id/wiki/pages/:pageId/move", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "PUT", "/api/spaces/:id/wiki/pages/:pageId/move");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     std::string body;
@@ -548,6 +598,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  page_id = std::move(page_id),
@@ -558,6 +609,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
@@ -565,11 +617,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -580,12 +633,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto page = db.find_wiki_page(page_id);
         if (!page || page->space_id != space_id || page->is_deleted) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Page not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -598,17 +652,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto updated = db.find_wiki_page(page_id);
           auto resp_body = page_to_json(updated ? *updated : *page).dump();
-          loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -617,8 +673,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Reorder pages within folder
   app.post("/api/spaces/:id/wiki/pages/reorder", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/wiki/pages/reorder");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -626,6 +685,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  body = std::move(body),
@@ -635,17 +695,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -662,17 +724,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               pos.at("id").get<std::string>(), pos.at("position").get<int>());
           }
           db.reorder_wiki_pages(page_positions);
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -683,8 +747,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List version history
   app.get("/api/spaces/:id/wiki/pages/:pageId/versions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:id/wiki/pages/:pageId/versions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -692,17 +759,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -713,12 +782,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       auto page = db.find_wiki_page(page_id);
       if (!page || page->space_id != space_id || page->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Page not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -729,18 +799,22 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       json resp = {{"versions", arr}};
       auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body), origin]() {
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   // Get specific version
   app.get("/api/spaces/:id/wiki/pages/:pageId/versions/:versionId", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:id/wiki/pages/:pageId/versions/:versionId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     std::string version_id(req->getParameter(2));
@@ -749,6 +823,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
@@ -756,11 +831,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -771,33 +847,36 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       auto page = db.find_wiki_page(page_id);
       if (!page || page->space_id != space_id || page->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Page not found"})");
+          scope->observe(404);
         });
         return;
       }
 
       auto version = db.get_wiki_page_version(version_id);
       if (!version || version->page_id != page_id) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Version not found"})");
+          scope->observe(404);
         });
         return;
       }
 
       auto body = version_to_json(*version).dump();
-      loop_->defer([res, aborted, body = std::move(body), origin]() {
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
@@ -805,8 +884,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Revert to version
   app.post(
     "/api/spaces/:id/wiki/pages/:pageId/versions/:versionId/revert", [this](auto* res, auto* req) {
+      auto scope = std::make_shared<handler_utils::RequestScope>(
+        "POST", "/api/spaces/:id/wiki/pages/:pageId/versions/:versionId/revert");
+      handler_utils::set_request_id_header(res, *scope);
       std::string origin(req->getHeader("origin"));
-      auto token = extract_bearer_token(req);
+      auto token = extract_session_token(req);
       std::string space_id(req->getParameter(0));
       std::string page_id(req->getParameter(1));
       std::string version_id(req->getParameter(2));
@@ -816,6 +898,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       res->onData([this,
                    res,
                    aborted,
+                   scope,
                    token = std::move(token),
                    space_id = std::move(space_id),
                    page_id = std::move(page_id),
@@ -827,6 +910,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         pool_.submit([this,
                       res,
                       aborted,
+                      scope,
                       body = std::move(body),
                       token = std::move(token),
                       space_id = std::move(space_id),
@@ -835,11 +919,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                       origin]() {
           auto user_id_opt = db.validate_session(token);
           if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
             });
             return;
           }
@@ -850,24 +935,26 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto page = db.find_wiki_page(page_id);
           if (!page || page->space_id != space_id || page->is_deleted) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Page not found"})");
+              scope->observe(404);
             });
             return;
           }
 
           auto version = db.get_wiki_page_version(version_id);
           if (!version || version->page_id != page_id) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Version not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -894,17 +981,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             updated.last_edited_by_username = editor ? editor->username : "";
 
             auto resp_body = page_to_json(updated).dump();
-            loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
+            loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeHeader("Content-Type", "application/json")->end(resp_body);
+              scope->observe(200);
             });
           } catch (const std::exception& e) {
             auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(400);
             });
           }
         });
@@ -915,8 +1004,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List page permissions
   app.get("/api/spaces/:id/wiki/pages/:pageId/permissions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:id/wiki/pages/:pageId/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -924,17 +1016,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -950,18 +1044,22 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {
         {"permissions", arr}, {"my_permission", get_page_access_level(space_id, page_id, user_id)}};
       auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body), origin]() {
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   // Set page permission
   app.post("/api/spaces/:id/wiki/pages/:pageId/permissions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:id/wiki/pages/:pageId/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     std::string body;
@@ -970,6 +1068,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  page_id = std::move(page_id),
@@ -980,6 +1079,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
@@ -987,11 +1087,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1006,12 +1107,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string permission = j.at("permission");
 
           if (permission != "owner" && permission != "edit" && permission != "view") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid permission level"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1020,29 +1122,32 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           {
             auto space_perm_check = db.find_space_by_id(space_id);
             if (space_perm_check && space_perm_check->is_personal && permission == "owner") {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Cannot assign owner permission in a personal space"})");
+                scope->observe(400);
               });
               return;
             }
           }
 
           db.set_wiki_page_permission(page_id, target_user_id, permission, user_id);
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1051,8 +1156,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Remove page permission
   app.del("/api/spaces/:id/wiki/pages/:pageId/permissions/:userId", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "DEL", "/api/spaces/:id/wiki/pages/:pageId/permissions/:userId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string page_id(req->getParameter(1));
     std::string target_user_id(req->getParameter(2));
@@ -1061,6 +1169,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   page_id = std::move(page_id),
@@ -1068,11 +1177,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -1082,10 +1192,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         return;
 
       db.remove_wiki_page_permission(page_id, target_user_id);
-      loop_->defer([res, aborted, origin]() {
+      loop_->defer([res, aborted, scope, origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
@@ -1094,45 +1205,58 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List space-level wiki permissions
   app.get("/api/spaces/:id/wiki/permissions", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/wiki/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
-    pool_.submit(
-      [this, res, aborted, token = std::move(token), space_id = std::move(space_id), origin]() {
-        auto user_id_opt = db.validate_session(token);
-        if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            res->writeStatus("401")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
-          });
-          return;
-        }
-        auto user_id = *user_id_opt;
-        if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
-        if (!require_permission(res, aborted, space_id, user_id, "view", origin)) return;
-
-        auto perms = db.get_wiki_permissions(space_id);
-        json arr = json::array();
-        for (const auto& p : perms) arr.push_back(wiki_permission_to_json(p));
-
-        json resp = {{"permissions", arr}, {"my_permission", get_access_level(space_id, user_id)}};
-        auto body = resp.dump();
-        loop_->defer([res, aborted, body = std::move(body), origin]() {
+    pool_.submit([this,
+                  res,
+                  aborted,
+                  scope,
+                  token = std::move(token),
+                  space_id = std::move(space_id),
+                  origin]() {
+      auto user_id_opt = db.validate_session(token);
+      if (!user_id_opt) {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
-          cors::apply(res, origin);
-          res->writeHeader("Content-Type", "application/json")->end(body);
+          res->writeStatus("401")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
+        return;
+      }
+      auto user_id = *user_id_opt;
+      if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+      if (!require_permission(res, aborted, space_id, user_id, "view", origin)) return;
+
+      auto perms = db.get_wiki_permissions(space_id);
+      json arr = json::array();
+      for (const auto& p : perms) arr.push_back(wiki_permission_to_json(p));
+
+      json resp = {{"permissions", arr}, {"my_permission", get_access_level(space_id, user_id)}};
+      auto body = resp.dump();
+      loop_->defer([res, aborted, scope, body = std::move(body), origin]() {
+        if (*aborted) return;
+        cors::apply(res, origin);
+        res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
+    });
   });
 
   // Set space-level wiki permission
   app.post("/api/spaces/:id/wiki/permissions", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/wiki/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -1140,6 +1264,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  body = std::move(body),
@@ -1149,17 +1274,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     space_id = std::move(space_id),
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1173,12 +1300,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string permission = j.at("permission");
 
           if (permission != "owner" && permission != "edit" && permission != "view") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid permission level"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1187,29 +1315,32 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           {
             auto space_perm_check = db.find_space_by_id(space_id);
             if (space_perm_check && space_perm_check->is_personal && permission == "owner") {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Cannot assign owner permission in a personal space"})");
+                scope->observe(400);
               });
               return;
             }
           }
 
           db.set_wiki_permission(space_id, target_user_id, permission, user_id);
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1218,8 +1349,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Remove space-level wiki permission
   app.del("/api/spaces/:id/wiki/permissions/:userId", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "DEL", "/api/spaces/:id/wiki/permissions/:userId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string target_user_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -1227,17 +1361,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   space_id = std::move(space_id),
                   target_user_id = std::move(target_user_id),
                   origin]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -1246,139 +1382,159 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       if (!require_permission(res, aborted, space_id, user_id, "owner", origin)) return;
 
       db.remove_wiki_permission(space_id, target_user_id);
-      loop_->defer([res, aborted, origin]() {
+      loop_->defer([res, aborted, scope, origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
 
   // --- Chunked upload: init ---
   app.post("/api/spaces/:id/wiki/upload/init", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/wiki/upload/init");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     auto body = std::make_shared<std::string>();
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body, token = std::move(token), space_id = std::move(space_id), origin](
-        std::string_view data, bool last) mutable {
-        body->append(data);
-        if (!last) return;
-        pool_.submit([this,
-                      res,
-                      aborted,
-                      body,
-                      token = std::move(token),
-                      space_id = std::move(space_id),
-                      origin]() {
-          auto user_id_opt = db.validate_session(token);
-          if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              res->writeStatus("401")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Unauthorized"})");
-            });
-            return;
-          }
-          auto user_id = *user_id_opt;
+    res->onData([this,
+                 res,
+                 aborted,
+                 scope,
+                 body,
+                 token = std::move(token),
+                 space_id = std::move(space_id),
+                 origin](std::string_view data, bool last) mutable {
+      body->append(data);
+      if (!last) return;
+      pool_.submit([this,
+                    res,
+                    aborted,
+                    scope,
+                    body,
+                    token = std::move(token),
+                    space_id = std::move(space_id),
+                    origin]() {
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+          loop_->defer([res, aborted, scope, origin]() {
+            if (*aborted) return;
+            res->writeStatus("401")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
+          });
+          return;
+        }
+        auto user_id = *user_id_opt;
 
-          try {
-            auto j = json::parse(*body);
-            std::string filename = j.value("filename", "upload");
-            std::string content_type = j.value("content_type", "application/octet-stream");
-            int64_t total_size = j.value("total_size", int64_t(0));
-            int chunk_count = j.value("chunk_count", 0);
-            int64_t chunk_size = j.value("chunk_size", int64_t(0));
+        try {
+          auto j = json::parse(*body);
+          std::string filename = j.value("filename", "upload");
+          std::string content_type = j.value("content_type", "application/octet-stream");
+          int64_t total_size = j.value("total_size", int64_t(0));
+          int chunk_count = j.value("chunk_count", 0);
+          int64_t chunk_size = j.value("chunk_size", int64_t(0));
 
-            if (chunk_count <= 0 || chunk_size <= 0) {
-              loop_->defer([res, aborted, origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("400")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Invalid chunk count or size"})");
-              });
-              return;
-            }
-
-            if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
-            if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
-
-            int64_t max_size = file_access_utils::parse_max_file_size(
-              db.get_setting("max_file_size"), config.max_file_size);
-            if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
-              std::string msg = file_access_utils::file_too_large_message(max_size);
-              auto err = json{{"error", msg}}.dump();
-              loop_->defer([res, aborted, err = std::move(err), origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("413")->writeHeader("Content-Type", "application/json")->end(err);
-              });
-              return;
-            }
-
-            int64_t max_storage =
-              file_access_utils::parse_max_storage_size(db.get_setting("max_storage_size"));
-            if (
-              max_storage > 0 && file_access_utils::exceeds_storage_limit(
-                                   max_storage, db.get_total_file_size(), total_size)) {
-              loop_->defer([res, aborted, origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("413")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Server storage limit reached"})");
-              });
-              return;
-            }
-
-            int64_t space_limit = file_access_utils::parse_space_storage_limit(
-              db.get_setting("space_storage_limit_" + space_id));
-            if (
-              space_limit > 0 && file_access_utils::exceeds_storage_limit(
-                                   space_limit, db.get_space_storage_used(space_id), total_size)) {
-              loop_->defer([res, aborted, origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("413")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Space storage limit reached"})");
-              });
-              return;
-            }
-
-            json metadata = {
-              {"filename", filename}, {"content_type", content_type}, {"space_id", space_id}};
-            std::string upload_id =
-              uploads.create_session(user_id, total_size, chunk_count, chunk_size, metadata);
-
-            auto resp_body = json{{"upload_id", upload_id}}.dump();
-            loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeHeader("Content-Type", "application/json")->end(resp_body);
-            });
-          } catch (...) {
-            loop_->defer([res, aborted, origin]() {
+          if (chunk_count <= 0 || chunk_size <= 0) {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Invalid request body"})");
+                ->end(R"({"error":"Invalid chunk count or size"})");
+              scope->observe(400);
             });
+            return;
           }
-        });
+
+          if (!check_space_access(res, aborted, space_id, user_id, origin)) return;
+          if (!require_permission(res, aborted, space_id, user_id, "edit", origin)) return;
+
+          int64_t max_size = file_access_utils::parse_max_file_size(
+            db.get_setting("max_file_size"), config.max_file_size);
+          if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
+            std::string msg = file_access_utils::file_too_large_message(max_size);
+            auto err = json{{"error", msg}}.dump();
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(413);
+            });
+            return;
+          }
+
+          int64_t max_storage =
+            file_access_utils::parse_max_storage_size(db.get_setting("max_storage_size"));
+          if (
+            max_storage > 0 && file_access_utils::exceeds_storage_limit(
+                                 max_storage, db.get_total_file_size(), total_size)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server storage limit reached"})");
+              scope->observe(413);
+            });
+            return;
+          }
+
+          int64_t space_limit = file_access_utils::parse_space_storage_limit(
+            db.get_setting("space_storage_limit_" + space_id));
+          if (
+            space_limit > 0 && file_access_utils::exceeds_storage_limit(
+                                 space_limit, db.get_space_storage_used(space_id), total_size)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Space storage limit reached"})");
+              scope->observe(413);
+            });
+            return;
+          }
+
+          json metadata = {
+            {"filename", filename}, {"content_type", content_type}, {"space_id", space_id}};
+          std::string upload_id =
+            uploads.create_session(user_id, total_size, chunk_count, chunk_size, metadata);
+
+          auto resp_body = json{{"upload_id", upload_id}}.dump();
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
+            if (*aborted) return;
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
+          });
+        } catch (...) {
+          loop_->defer([res, aborted, scope, origin]() {
+            if (*aborted) return;
+            cors::apply(res, origin);
+            res->writeStatus("400")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Invalid request body"})");
+            scope->observe(400);
+          });
+        }
       });
+    });
   });
 
   // --- Chunked upload: receive chunk ---
   app.post("/api/spaces/:id/wiki/upload/:uploadId/chunk", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:id/wiki/upload/:uploadId/chunk");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string upload_id(req->getParameter(1));
     std::string index_str(req->getQuery("index"));
     std::string expected_hash(req->getQuery("hash"));
@@ -1394,6 +1550,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  body,
                  token = std::move(token),
                  upload_id = std::move(upload_id),
@@ -1405,6 +1562,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body,
                     token = std::move(token),
                     upload_id = std::move(upload_id),
@@ -1413,11 +1571,12 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1425,12 +1584,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto session = uploads.get_session(upload_id);
         if (!session || session->user_id != user_id) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Upload session not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -1438,37 +1598,41 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         auto err = uploads.store_chunk_err(upload_id, index, *body, expected_hash);
         if (!err.empty()) {
           if (err == "hash_mismatch") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("409")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Chunk integrity check failed"})");
+              scope->observe(409);
             });
           } else if (err == "invalid_index") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid chunk index"})");
+              scope->observe(400);
             });
           } else {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to store chunk"})");
+              scope->observe(500);
             });
           }
           return;
         }
 
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
     });
@@ -1476,8 +1640,11 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // --- Chunked upload: complete ---
   app.post("/api/spaces/:id/wiki/upload/:uploadId/complete", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:id/wiki/upload/:uploadId/complete");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string upload_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -1485,6 +1652,7 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  space_id = std::move(space_id),
                  upload_id = std::move(upload_id),
@@ -1493,17 +1661,19 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     token = std::move(token),
                     space_id = std::move(space_id),
                     upload_id = std::move(upload_id),
                     origin]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1511,23 +1681,25 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto session = uploads.get_session(upload_id);
         if (!session || session->user_id != user_id) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Upload session not found"})");
+            scope->observe(404);
           });
           return;
         }
 
         if (!uploads.is_complete(upload_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not all chunks have been uploaded"})");
+            scope->observe(400);
           });
           return;
         }
@@ -1553,12 +1725,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           int64_t assembled_size = uploads.assemble(upload_id, dest_path);
           if (assembled_size < 0) {
             uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to assemble file"})");
+              scope->observe(500);
             });
             return;
           }
@@ -1566,12 +1739,13 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (assembled_size != session->total_size) {
             std::filesystem::remove(dest_path);
             uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Assembled file size does not match expected size"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1588,27 +1762,30 @@ void WikiHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           json resp = {{"file_id", file.id}, {"url", "/api/files/" + disk_file_id}};
           auto resp_body = resp.dump();
-          loop_->defer([res, aborted, resp_body = std::move(resp_body), origin]() {
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const pqxx::unique_violation&) {
           uploads.remove_session(upload_id);
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("409")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"A file with this name already exists"})");
+            scope->observe(409);
           });
         } catch (const std::exception& e) {
           uploads.remove_session(upload_id);
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });

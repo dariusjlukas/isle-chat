@@ -53,6 +53,20 @@ set(SPDLOG_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(SPDLOG_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(libs/spdlog)
 
+# hiredis (Redis pub/sub for horizontal WS scaling). Vendored as a submodule
+# so build is self-contained (matches the spdlog/argon2 pattern). Off lets
+# tiny single-instance deployments build without a Redis dependency.
+option(ENCLAVE_ENABLE_REDIS "Enable Redis pub/sub for horizontal WS scaling" ON)
+if(ENCLAVE_ENABLE_REDIS)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(DISABLE_TESTS ON CACHE BOOL "" FORCE)
+    set(ENABLE_SSL OFF CACHE BOOL "" FORCE)
+    set(ENABLE_SSL_TESTS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(ENABLE_ASYNC_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(libs/hiredis)
+endif()
+
 # Application library (shared between main executable and tests)
 set(LIB_SOURCES
     src/auth/pki.cpp
@@ -90,6 +104,10 @@ set(LIB_SOURCES
     src/ai/llm_client.cpp
     src/ai/tool_registry.cpp
     src/handlers/ai_handler.cpp
+    src/redis/redis_envelope.cpp
+    src/redis/redis_publisher.cpp
+    src/redis/redis_subscriber.cpp
+    src/redis/redis_pubsub.cpp
 )
 
 add_library(chat-lib STATIC ${LIB_SOURCES})
@@ -114,6 +132,11 @@ target_link_libraries(chat-lib PUBLIC
 )
 
 target_compile_definitions(chat-lib PUBLIC LIBUS_USE_OPENSSL CPPHTTPLIB_OPENSSL_SUPPORT)
+
+if(ENCLAVE_ENABLE_REDIS)
+    target_link_libraries(chat-lib PUBLIC hiredis::hiredis)
+    target_compile_definitions(chat-lib PUBLIC BACKEND_HAS_REDIS=1)
+endif()
 
 # Compiler warnings for project code
 target_compile_options(chat-lib PRIVATE -Wall -Wextra -Wno-unused-parameter)

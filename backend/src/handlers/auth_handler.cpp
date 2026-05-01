@@ -1,6 +1,7 @@
 #include "handlers/auth_handler.h"
 #include "handlers/auth_payload_utils.h"
 #include "handlers/auth_utils.h"
+#include "handlers/request_scope.h"
 
 using json = nlohmann::json;
 
@@ -8,379 +9,443 @@ template <bool SSL>
 void AuthHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // WebAuthn (passkey) routes
   app.post("/api/auth/register/options", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/register/options");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_register_options(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_register_options(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/register/verify", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/register/verify");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_register_verify(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_register_verify(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/login/options", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/login/options");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_login_options(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_login_options(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/login/verify", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/login/verify");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_login_verify(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_login_verify(res, aborted, body);
       });
+    });
   });
 
   // PKI (browser key) routes
   app.post("/api/auth/pki/challenge", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/pki/challenge");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_pki_challenge(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_pki_challenge(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/pki/register", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/pki/register");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_pki_register(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_pki_register(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/pki/login", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/pki/login");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit(
-          [this, res, aborted, body = std::move(body)]() { handle_pki_login(res, aborted, body); });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_pki_login(res, aborted, body);
       });
+    });
   });
 
   // Recovery key login
   app.post("/api/auth/recovery", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/recovery");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_recovery_login(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_recovery_login(res, aborted, body);
       });
+    });
   });
 
   // Recovery token (admin-generated) login
   app.post("/api/auth/recover-account", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/recover-account");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_recovery_token_login(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_recovery_token_login(res, aborted, body);
       });
+    });
   });
 
   // Join request routes
   app.post("/api/auth/request-access/options", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/request-access/options");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_request_access_options(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_request_access_options(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/request-access", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/request-access");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_request_access(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_request_access(res, aborted, body);
       });
+    });
   });
 
   app.get("/api/auth/request-status/:id", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/auth/request-status/:id");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string request_id(req->getParameter(0));
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, request_id = std::move(request_id)]() {
+    pool_.submit([this, res, aborted, scope, request_id = std::move(request_id)]() {
       handle_request_status(res, aborted, request_id);
     });
   });
 
   // Password auth routes
   app.post("/api/auth/password/register", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/password/register");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_password_register(res, aborted, body);
-        });
-      });
-  });
-
-  app.post("/api/auth/password/login", [this](auto* res, auto* req) {
-    auto aborted = std::make_shared<bool>(false);
-    std::string body;
-    res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_password_login(res, aborted, body);
-        });
-      });
-  });
-
-  app.post("/api/auth/password/change", [this](auto* res, auto* req) {
-    auto aborted = std::make_shared<bool>(false);
-    auto token = extract_bearer_token(req);
-    std::string body;
-    res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_password_register(res, aborted, body);
+      });
+    });
+  });
+
+  app.post("/api/auth/password/login", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/password/login");
+    handler_utils::set_request_id_header(res, *scope);
+    auto aborted = std::make_shared<bool>(false);
+    std::string body;
+    res->onAborted([aborted]() { *aborted = true; });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_password_login(res, aborted, body);
+      });
+    });
+  });
+
+  app.post("/api/auth/password/change", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/password/change");
+    handler_utils::set_request_id_header(res, *scope);
+    auto aborted = std::make_shared<bool>(false);
+    auto token = extract_session_token(req);
+    std::string body;
+    res->onAborted([aborted]() { *aborted = true; });
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         handle_password_change(res, aborted, body, token);
       });
     });
   });
 
   app.post("/api/auth/password/set", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/password/set");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::move(body)](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::move(body)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         handle_password_set(res, aborted, body, token);
       });
     });
   });
 
   app.del("/api/auth/password", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/auth/password");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       handle_password_delete(res, aborted, token);
     });
   });
 
   app.post("/api/auth/mfa/verify", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/mfa/verify");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_mfa_verify(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_mfa_verify(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/mfa/setup", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/mfa/setup");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit(
-          [this, res, aborted, body = std::move(body)]() { handle_mfa_setup(res, aborted, body); });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_mfa_setup(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/mfa/setup/verify", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/mfa/setup/verify");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_mfa_setup_verify(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_mfa_setup_verify(res, aborted, body);
       });
+    });
   });
 
   // Device linking - get challenge for PKI device linking
   app.post("/api/auth/add-device/pki/challenge", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/add-device/pki/challenge");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          try {
-            auto j = json::parse(body);
-            std::string device_token = j.at("device_token");
-            auto user_id = db.validate_device_token(device_token);
-            if (!user_id) {
-              loop_->defer([res, aborted]() {
-                if (*aborted) return;
-                res->writeStatus("401")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Invalid or expired device token"})");
-              });
-              return;
-            }
-            std::string challenge = webauthn::generate_challenge();
-            json extra = auth_payload_utils::build_pki_challenge_extra("device_pki");
-            db.store_webauthn_challenge(challenge, extra.dump());
-            json resp = auth_payload_utils::build_challenge_response(challenge);
-            auto resp_body = resp.dump();
-            loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        try {
+          auto j = json::parse(body);
+          std::string device_token = j.at("device_token");
+          auto user_id = db.validate_device_token(device_token);
+          if (!user_id) {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
-              res->writeHeader("Content-Type", "application/json")->end(resp_body);
+              res->writeStatus("401")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Invalid or expired device token"})");
+              scope->observe(401);
             });
-          } catch (const std::exception& e) {
-            auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err)]() {
-              if (*aborted) return;
-              res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
-            });
+            return;
           }
-        });
+          std::string challenge = webauthn::generate_challenge();
+          json extra = auth_payload_utils::build_pki_challenge_extra("device_pki");
+          db.store_webauthn_challenge(challenge, extra.dump());
+          json resp = auth_payload_utils::build_challenge_response(challenge);
+          auto resp_body = resp.dump();
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
+          });
+        } catch (const std::exception& e) {
+          auto err = json({{"error", e.what()}}).dump();
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
+            if (*aborted) return;
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
+          });
+        }
       });
+    });
   });
 
   // Device linking - add browser key via device token
   app.post("/api/auth/add-device/pki", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/add-device/pki");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_add_device_pki(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_add_device_pki(res, aborted, body);
       });
+    });
   });
 
   // Device linking - passkey registration options
   app.post("/api/auth/add-device/passkey/options", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/add-device/passkey/options");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_add_device_passkey_options(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_add_device_passkey_options(res, aborted, body);
       });
+    });
   });
 
   // Device linking - passkey registration verify
   app.post("/api/auth/add-device/passkey/verify", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/add-device/passkey/verify");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
     std::string body;
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData(
-      [this, res, aborted, body = std::move(body)](std::string_view data, bool last) mutable {
-        body.append(data);
-        if (!last) return;
-        pool_.submit([this, res, aborted, body = std::move(body)]() {
-          handle_add_device_passkey_verify(res, aborted, body);
-        });
+    res->onData([this, res, aborted, scope, body = std::move(body)](
+                  std::string_view data, bool last) mutable {
+      body.append(data);
+      if (!last) return;
+      pool_.submit([this, res, aborted, scope, body = std::move(body)]() {
+        handle_add_device_passkey_verify(res, aborted, body);
       });
+    });
   });
 
   app.post("/api/auth/logout", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/auth/logout");
+    handler_utils::set_request_id_header(res, *scope);
     auto aborted = std::make_shared<bool>(false);
-    auto token = extract_bearer_token(req);
+    auto token = extract_session_token(req);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       db.delete_session(token);
-      loop_->defer([res, aborted]() {
+      loop_->defer([res, aborted, scope]() {
         if (*aborted) return;
         // Clear the session/csrf cookies so cookie-authed clients log out too.
         emit_clear_session_cookies(res);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
@@ -2425,6 +2490,7 @@ void AuthHandler<SSL>::handle_request_status(
     }
 
     json resp = auth_payload_utils::build_join_request_status_response(request->status);
+    std::string approved_token;
 
     if (request->status == "approved" && !request->session_token.empty()) {
       // Validate the session is still active
@@ -2434,13 +2500,24 @@ void AuthHandler<SSL>::handle_request_status(
         if (user) {
           resp = auth_payload_utils::build_join_request_status_response(
             request->status, request->session_token, make_user_json(*user));
+          approved_token = request->session_token;
         }
       }
     }
 
     auto resp_body = resp.dump();
-    loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+    int max_age = config.session_expiry_hours * 3600;
+    bool secure = config.has_ssl();
+    loop_->defer([res,
+                  aborted,
+                  resp_body = std::move(resp_body),
+                  approved_token = std::move(approved_token),
+                  max_age,
+                  secure]() {
       if (*aborted) return;
+      if (!approved_token.empty()) {
+        emit_session_cookies(res, approved_token, max_age, secure);
+      }
       res->writeHeader("Content-Type", "application/json")->end(resp_body);
     });
   } catch (const std::exception& e) {

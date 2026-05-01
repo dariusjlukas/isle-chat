@@ -23,9 +23,21 @@ services:
     environment:
       SQITCH_TARGET: db:pg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     volumes:
-      - ./sqitch:/repo
+      - ./sqitch:/repo:z
     working_dir: /repo
     command: ["deploy", "--verify"]
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   backend:
     build:
@@ -46,6 +58,13 @@ services:
       UPLOAD_DIR: /data/uploads
       MAX_FILE_SIZE: ${MAX_FILE_SIZE:-0}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      # P2.1: optional Redis pub/sub for horizontal WS scaling.
+      #   REDIS_URL=""              -> single-instance mode (default; no Redis).
+      #   REDIS_URL=redis://redis:6379 -> cross-instance broadcast via Redis.
+      # When enabled, run with `--profile redis` to bring the redis service up.
+      # See docs/ops/redis-pubsub.md for the rollout playbook.
+      REDIS_URL: ${REDIS_URL:-}
+      INSTANCE_ID: ${INSTANCE_ID:-}
       # Sqitch rollout (P1.1):
       #   ENABLE_SQITCH_ONLY=0 (default): backend runs Database::init_schema() as before.
       #     Optional: with DEBUG_SCHEMA_DIFF=1 backend asserts the live schema matches

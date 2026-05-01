@@ -5,6 +5,7 @@
 #include "handlers/cors_utils.h"
 #include "handlers/file_access_utils.h"
 #include "handlers/format_utils.h"
+#include "handlers/request_scope.h"
 #include "zip_builder.h"
 
 using json = nlohmann::json;
@@ -40,24 +41,27 @@ template <bool SSL>
 void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // List files in a folder (root if no parent_id)
   app.get("/api/spaces/:id/files", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/files");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string parent_id(req->getQuery("parent_id"));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, parent_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, parent_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -65,12 +69,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       // check_space_access inline
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
@@ -97,18 +102,22 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {{"files", arr}, {"path", path_arr}, {"my_permission", my_perm}};
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   // Create folder
   app.post("/api/spaces/:id/files/folder", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/files/folder");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
 
     auto body = std::make_shared<std::string>();
@@ -116,33 +125,35 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, space_id, origin](
+    res->onData([this, res, body, aborted, scope, token, space_id, origin](
                   std::string_view data, bool last) {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, space_id, origin]() {
+      pool_.submit([this, res, body, aborted, scope, token, space_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
         std::string user_id = *user_id_opt;
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
@@ -153,12 +164,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string parent_id = j.value("parent_id", "");
 
           if (name.empty() || name.length() > 255) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid folder name"})");
+              scope->observe(400);
             });
             return;
           }
@@ -166,21 +178,23 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Permission check: need "edit" on parent
           if (!require_permission_sync(space_id, parent_id, user_id, "edit")) {
             auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
             });
             return;
           }
 
           if (db.space_file_name_exists(space_id, parent_id, name)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("409")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"A file or folder with this name already exists"})");
+              scope->observe(409);
             });
             return;
           }
@@ -189,12 +203,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             auto parent = db.find_space_file(parent_id);
             if (
               !parent || parent->space_id != space_id || !parent->is_folder || parent->is_deleted) {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Invalid parent folder"})");
+                scope->observe(400);
               });
               return;
             }
@@ -205,25 +220,28 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = space_file_to_json(folder, creator ? creator->username : "");
           std::string resp_str = resp.dump();
 
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const pqxx::unique_violation&) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("409")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"A file or folder with this name already exists"})");
+            scope->observe(409);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -232,8 +250,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Upload file
   app.post("/api/spaces/:id/files/upload", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/files/upload");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
     std::string parent_id(req->getQuery("parent_id"));
     std::string filename(req->getQuery("filename"));
@@ -251,6 +272,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                  res,
                  body,
                  aborted,
+                 scope,
                  token,
                  space_id,
                  parent_id,
@@ -264,6 +286,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     res,
                     body,
                     aborted,
+                    scope,
                     token,
                     space_id,
                     parent_id,
@@ -274,11 +297,12 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -291,21 +315,23 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               max_size, static_cast<int64_t>(body->size()))) {
           std::string msg = file_access_utils::file_too_large_message(max_size);
           auto err_json = json{{"error", msg}}.dump();
-          loop_->defer([res, aborted, err_json = std::move(err_json), origin]() {
+          loop_->defer([res, aborted, scope, err_json = std::move(err_json), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("413")->writeHeader("Content-Type", "application/json")->end(err_json);
+            scope->observe(413);
           });
           return;
         }
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
@@ -313,10 +339,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         // Permission check: need "edit" on parent
         if (!require_permission_sync(space_id, parent_id, user_id, "edit")) {
           auto err = json({{"error", "Requires edit permission"}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(403);
           });
           return;
         }
@@ -324,24 +351,26 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         if (!parent_id.empty()) {
           auto parent = db.find_space_file(parent_id);
           if (!parent || parent->space_id != space_id || !parent->is_folder || parent->is_deleted) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid parent folder"})");
+              scope->observe(400);
             });
             return;
           }
         }
 
         if (db.space_file_name_exists(space_id, parent_id, filename)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("409")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"A file or folder with this name already exists"})");
+            scope->observe(409);
           });
           return;
         }
@@ -354,12 +383,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             max_storage > 0 &&
             file_access_utils::exceeds_storage_limit(
               max_storage, db.get_total_file_size(), static_cast<int64_t>(body->size()))) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Server storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -372,12 +402,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                                  space_limit,
                                  db.get_space_storage_used(space_id),
                                  static_cast<int64_t>(body->size()))) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Space storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -386,12 +417,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string personal_err =
             check_personal_total_limit_sync(space_id, static_cast<int64_t>(body->size()));
           if (!personal_err.empty()) {
-            loop_->defer([res, aborted, personal_err = std::move(personal_err), origin]() {
+            loop_->defer([res, aborted, scope, personal_err = std::move(personal_err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(personal_err);
+              scope->observe(413);
             });
             return;
           }
@@ -400,12 +432,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string path = config.upload_dir + "/" + disk_file_id;
           std::ofstream out(path, std::ios::binary);
           if (!out) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to save file"})");
+              scope->observe(500);
             });
             return;
           }
@@ -420,25 +453,28 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = space_file_to_json(file, creator ? creator->username : "");
           std::string resp_str = resp.dump();
 
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const pqxx::unique_violation&) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("409")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"A file or folder with this name already exists"})");
+            scope->observe(409);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });
@@ -447,8 +483,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // --- Chunked upload: init ---
   app.post("/api/spaces/:id/files/upload/init", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/spaces/:id/files/upload/init");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
 
     auto body = std::make_shared<std::string>();
@@ -456,21 +495,22 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, space_id, origin](
+    res->onData([this, res, body, aborted, scope, token, space_id, origin](
                   std::string_view data, bool last) {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, space_id, origin]() {
+      pool_.submit([this, res, body, aborted, scope, token, space_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -486,33 +526,36 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string parent_id = j.value("parent_id", "");
 
           if (chunk_count <= 0 || chunk_size <= 0) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid chunk count or size"})");
+              scope->observe(400);
             });
             return;
           }
 
           if (!check_space_access_sync(space_id, user_id)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Not a member of this space"})");
+              scope->observe(403);
             });
             return;
           }
 
           if (!require_permission_sync(space_id, parent_id, user_id, "edit")) {
             auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
             });
             return;
           }
@@ -521,24 +564,26 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             auto parent = db.find_space_file(parent_id);
             if (
               !parent || parent->space_id != space_id || !parent->is_folder || parent->is_deleted) {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Invalid parent folder"})");
+                scope->observe(400);
               });
               return;
             }
           }
 
           if (db.space_file_name_exists(space_id, parent_id, filename)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("409")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"A file or folder with this name already exists"})");
+              scope->observe(409);
             });
             return;
           }
@@ -548,12 +593,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
             std::string msg = file_access_utils::file_too_large_message(max_size);
             auto err_json = json{{"error", msg}}.dump();
-            loop_->defer([res, aborted, err_json = std::move(err_json), origin]() {
+            loop_->defer([res, aborted, scope, err_json = std::move(err_json), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(err_json);
+              scope->observe(413);
             });
             return;
           }
@@ -563,12 +609,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (
             max_storage > 0 && file_access_utils::exceeds_storage_limit(
                                  max_storage, db.get_total_file_size(), total_size)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Server storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -578,12 +625,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (
             space_limit > 0 && file_access_utils::exceeds_storage_limit(
                                  space_limit, db.get_space_storage_used(space_id), total_size)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Space storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -591,12 +639,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Check aggregate personal spaces storage limit
           std::string personal_err = check_personal_total_limit_sync(space_id, total_size);
           if (!personal_err.empty()) {
-            loop_->defer([res, aborted, personal_err = std::move(personal_err), origin]() {
+            loop_->defer([res, aborted, scope, personal_err = std::move(personal_err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(personal_err);
+              scope->observe(413);
             });
             return;
           }
@@ -610,18 +659,20 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             uploads.create_session(user_id, total_size, chunk_count, chunk_size, metadata);
 
           auto resp_str = json{{"upload_id", upload_id}}.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (...) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Invalid request body"})");
+            scope->observe(400);
           });
         }
       });
@@ -630,8 +681,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // --- Chunked upload: receive chunk ---
   app.post("/api/spaces/:id/files/upload/:uploadId/chunk", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:id/files/upload/:uploadId/chunk");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string upload_id(req->getParameter(1));
     std::string index_str(req->getQuery("index"));
     std::string expected_hash(req->getQuery("hash"));
@@ -646,93 +700,23 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, upload_id, index, expected_hash, origin](
+    res->onData([this, res, body, aborted, scope, token, upload_id, index, expected_hash, origin](
                   std::string_view data, bool last) {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, upload_id, index, expected_hash, origin]() {
-        if (*aborted) return;
-
-        auto user_id_opt = db.validate_session(token);
-        if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            res->writeStatus("401")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
-          });
-          return;
-        }
-        std::string user_id = *user_id_opt;
-
-        auto session = uploads.get_session(upload_id);
-        if (!session || session->user_id != user_id) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            cors::apply(res, origin);
-            res->writeStatus("404")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Upload session not found"})");
-          });
-          return;
-        }
-
-        auto err = uploads.store_chunk_err(upload_id, index, *body, expected_hash);
-        if (!err.empty()) {
-          std::string status;
-          std::string msg;
-          if (err == "hash_mismatch") {
-            status = "409";
-            msg = R"({"error":"Chunk integrity check failed"})";
-          } else if (err == "invalid_index") {
-            status = "400";
-            msg = R"({"error":"Invalid chunk index"})";
-          } else {
-            status = "500";
-            msg = R"({"error":"Failed to store chunk"})";
-          }
-          loop_->defer([res, aborted, status = std::move(status), msg = std::move(msg), origin]() {
-            if (*aborted) return;
-            cors::apply(res, origin);
-            res->writeStatus(status)->writeHeader("Content-Type", "application/json")->end(msg);
-          });
-          return;
-        }
-
-        loop_->defer([res, aborted, origin]() {
-          if (*aborted) return;
-          cors::apply(res, origin);
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-        });
-      });
-    });
-  });
-
-  // --- Chunked upload: complete ---
-  app.post("/api/spaces/:id/files/upload/:uploadId/complete", [this](auto* res, auto* req) {
-    std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
-    std::string space_id(req->getParameter(0));
-    std::string upload_id(req->getParameter(1));
-
-    auto aborted = std::make_shared<bool>(false);
-    res->onAborted([aborted, origin]() { *aborted = true; });
-
-    res->onData(
-      [this, res, aborted, space_id, upload_id, token, origin](std::string_view, bool last) {
-        if (!last) return;
-
-        pool_.submit([this, res, aborted, space_id, upload_id, token, origin]() {
+      pool_.submit(
+        [this, res, body, aborted, scope, token, upload_id, index, expected_hash, origin]() {
           if (*aborted) return;
 
           auto user_id_opt = db.validate_session(token);
           if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
             });
             return;
           }
@@ -740,330 +724,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto session = uploads.get_session(upload_id);
           if (!session || session->user_id != user_id) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Upload session not found"})");
-            });
-            return;
-          }
-
-          if (!uploads.is_complete(upload_id)) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Not all chunks have been uploaded"})");
-            });
-            return;
-          }
-
-          if (!check_space_access_sync(space_id, user_id)) {
-            uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("403")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Not a member of this space"})");
-            });
-            return;
-          }
-
-          std::string parent_id = session->metadata.value("parent_id", "");
-          if (!require_permission_sync(space_id, parent_id, user_id, "edit")) {
-            uploads.remove_session(upload_id);
-            auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
-            });
-            return;
-          }
-
-          try {
-            std::string filename = session->metadata.value("filename", "upload");
-            std::string content_type =
-              session->metadata.value("content_type", "application/octet-stream");
-
-            std::string disk_file_id = format_utils::random_hex(32);
-            std::string dest_path = config.upload_dir + "/" + disk_file_id;
-
-            int64_t assembled_size = uploads.assemble(upload_id, dest_path);
-            if (assembled_size < 0) {
-              uploads.remove_session(upload_id);
-              loop_->defer([res, aborted, origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("500")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Failed to assemble file"})");
-              });
-              return;
-            }
-
-            if (assembled_size != session->total_size) {
-              std::filesystem::remove(dest_path);
-              uploads.remove_session(upload_id);
-              loop_->defer([res, aborted, origin]() {
-                if (*aborted) return;
-                cors::apply(res, origin);
-                res->writeStatus("400")
-                  ->writeHeader("Content-Type", "application/json")
-                  ->end(R"({"error":"Assembled file size does not match expected size"})");
-              });
-              return;
-            }
-
-            auto file = db.create_space_file(
-              space_id, parent_id, filename, disk_file_id, assembled_size, content_type, user_id);
-            auto creator = db.find_user_by_id(user_id);
-            json resp = space_file_to_json(file, creator ? creator->username : "");
-            std::string resp_str = resp.dump();
-            uploads.remove_session(upload_id);
-
-            loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeHeader("Content-Type", "application/json")->end(resp_str);
-            });
-          } catch (const pqxx::unique_violation&) {
-            uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("409")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"A file or folder with this name already exists"})");
-            });
-          } catch (const std::exception& e) {
-            uploads.remove_session(upload_id);
-            auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
-            });
-          }
-        });
-      });
-  });
-
-  // --- Chunked version upload: init ---
-  app.post("/api/spaces/:spaceId/files/:fileId/versions/init", [this](auto* res, auto* req) {
-    std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
-    std::string space_id(req->getParameter(0));
-    std::string file_id(req->getParameter(1));
-
-    auto body = std::make_shared<std::string>();
-    auto aborted = std::make_shared<bool>(false);
-
-    res->onAborted([aborted, origin]() { *aborted = true; });
-
-    res->onData([this, res, body, aborted, token, space_id, file_id, origin](
-                  std::string_view data, bool last) {
-      body->append(data);
-      if (!last) return;
-
-      pool_.submit([this, res, body, aborted, token, space_id, file_id, origin]() {
-        if (*aborted) return;
-
-        auto user_id_opt = db.validate_session(token);
-        if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            res->writeStatus("401")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
-          });
-          return;
-        }
-        std::string user_id = *user_id_opt;
-
-        try {
-          auto j = json::parse(*body);
-          int64_t total_size = j.value("total_size", int64_t(0));
-          int chunk_count = j.value("chunk_count", 0);
-          int64_t chunk_size = j.value("chunk_size", int64_t(0));
-
-          if (chunk_count <= 0 || chunk_size <= 0) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Invalid chunk count or size"})");
-            });
-            return;
-          }
-
-          if (!check_space_access_sync(space_id, user_id)) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("403")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Not a member of this space"})");
-            });
-            return;
-          }
-
-          if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
-            auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
-            });
-            return;
-          }
-
-          auto file = db.find_space_file(file_id);
-          if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("404")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"File not found"})");
-            });
-            return;
-          }
-
-          int64_t max_size = file_access_utils::parse_max_file_size(
-            db.get_setting("max_file_size"), config.max_file_size);
-          if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
-            std::string msg = file_access_utils::file_too_large_message(max_size);
-            auto err_json = json{{"error", msg}}.dump();
-            loop_->defer([res, aborted, err_json = std::move(err_json), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("413")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(err_json);
-            });
-            return;
-          }
-
-          int64_t max_storage =
-            file_access_utils::parse_max_storage_size(db.get_setting("max_storage_size"));
-          if (
-            max_storage > 0 && file_access_utils::exceeds_storage_limit(
-                                 max_storage, db.get_total_file_size(), total_size)) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("413")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Server storage limit reached"})");
-            });
-            return;
-          }
-
-          int64_t space_limit = file_access_utils::parse_space_storage_limit(
-            db.get_setting("space_storage_limit_" + space_id));
-          if (
-            space_limit > 0 && file_access_utils::exceeds_storage_limit(
-                                 space_limit, db.get_space_storage_used(space_id), total_size)) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("413")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Space storage limit reached"})");
-            });
-            return;
-          }
-
-          // Check aggregate personal spaces storage limit
-          std::string personal_err = check_personal_total_limit_sync(space_id, total_size);
-          if (!personal_err.empty()) {
-            loop_->defer([res, aborted, personal_err = std::move(personal_err), origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("413")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(personal_err);
-            });
-            return;
-          }
-
-          json metadata = {
-            {"space_id", space_id}, {"file_id", file_id}, {"mime_type", file->mime_type}};
-          std::string upload_id =
-            uploads.create_session(user_id, total_size, chunk_count, chunk_size, metadata);
-
-          auto resp_str = json{{"upload_id", upload_id}}.dump();
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
-            if (*aborted) return;
-            cors::apply(res, origin);
-            res->writeHeader("Content-Type", "application/json")->end(resp_str);
-          });
-        } catch (...) {
-          loop_->defer([res, aborted, origin]() {
-            if (*aborted) return;
-            cors::apply(res, origin);
-            res->writeStatus("400")
-              ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Invalid request body"})");
-          });
-        }
-      });
-    });
-  });
-
-  // --- Chunked version upload: receive chunk ---
-  app.post(
-    "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/chunk", [this](auto* res, auto* req) {
-      std::string origin(req->getHeader("origin"));
-      std::string token = extract_bearer_token(req);
-      std::string upload_id(req->getParameter(2));
-      std::string index_str(req->getQuery("index"));
-      std::string expected_hash(req->getQuery("hash"));
-
-      int index = -1;
-      try {
-        index = std::stoi(index_str);
-      } catch (...) {}
-
-      auto body = std::make_shared<std::string>();
-      auto aborted = std::make_shared<bool>(false);
-
-      res->onAborted([aborted, origin]() { *aborted = true; });
-
-      res->onData([this, res, body, aborted, token, upload_id, index, expected_hash, origin](
-                    std::string_view data, bool last) {
-        body->append(data);
-        if (!last) return;
-
-        pool_.submit([this, res, body, aborted, token, upload_id, index, expected_hash, origin]() {
-          if (*aborted) return;
-
-          auto user_id_opt = db.validate_session(token);
-          if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              res->writeStatus("401")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Unauthorized"})");
-            });
-            return;
-          }
-          std::string user_id = *user_id_opt;
-
-          auto session = uploads.get_session(upload_id);
-          if (!session || session->user_id != user_id) {
-            loop_->defer([res, aborted, origin]() {
-              if (*aborted) return;
-              cors::apply(res, origin);
-              res->writeStatus("404")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Upload session not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -1083,49 +750,53 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               msg = R"({"error":"Failed to store chunk"})";
             }
             loop_->defer(
-              [res, aborted, status = std::move(status), msg = std::move(msg), origin]() {
+              [res, aborted, scope, status = std::move(status), msg = std::move(msg), origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus(status)->writeHeader("Content-Type", "application/json")->end(msg);
+                scope->observe(200);
               });
             return;
           }
 
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         });
-      });
     });
+  });
 
-  // --- Chunked version upload: complete ---
-  app.post(
-    "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/complete", [this](auto* res, auto* req) {
-      std::string origin(req->getHeader("origin"));
-      std::string token = extract_bearer_token(req);
-      std::string space_id(req->getParameter(0));
-      std::string file_id(req->getParameter(1));
-      std::string upload_id(req->getParameter(2));
+  // --- Chunked upload: complete ---
+  app.post("/api/spaces/:id/files/upload/:uploadId/complete", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:id/files/upload/:uploadId/complete");
+    handler_utils::set_request_id_header(res, *scope);
+    std::string origin(req->getHeader("origin"));
+    std::string token = extract_session_token(req);
+    std::string space_id(req->getParameter(0));
+    std::string upload_id(req->getParameter(1));
 
-      auto aborted = std::make_shared<bool>(false);
-      res->onAborted([aborted, origin]() { *aborted = true; });
+    auto aborted = std::make_shared<bool>(false);
+    res->onAborted([aborted, origin]() { *aborted = true; });
 
-      res->onData([this, res, aborted, space_id, file_id, upload_id, token, origin](
-                    std::string_view, bool last) {
+    res->onData(
+      [this, res, aborted, scope, space_id, upload_id, token, origin](std::string_view, bool last) {
         if (!last) return;
 
-        pool_.submit([this, res, aborted, space_id, file_id, upload_id, token, origin]() {
+        pool_.submit([this, res, aborted, scope, space_id, upload_id, token, origin]() {
           if (*aborted) return;
 
           auto user_id_opt = db.validate_session(token);
           if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
             });
             return;
           }
@@ -1133,35 +804,468 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto session = uploads.get_session(upload_id);
           if (!session || session->user_id != user_id) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Upload session not found"})");
+              scope->observe(404);
             });
             return;
           }
 
           if (!uploads.is_complete(upload_id)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Not all chunks have been uploaded"})");
+              scope->observe(400);
             });
             return;
           }
 
           if (!check_space_access_sync(space_id, user_id)) {
             uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Not a member of this space"})");
+              scope->observe(403);
+            });
+            return;
+          }
+
+          std::string parent_id = session->metadata.value("parent_id", "");
+          if (!require_permission_sync(space_id, parent_id, user_id, "edit")) {
+            uploads.remove_session(upload_id);
+            auto err = json({{"error", "Requires edit permission"}}).dump();
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
+            });
+            return;
+          }
+
+          try {
+            std::string filename = session->metadata.value("filename", "upload");
+            std::string content_type =
+              session->metadata.value("content_type", "application/octet-stream");
+
+            std::string disk_file_id = format_utils::random_hex(32);
+            std::string dest_path = config.upload_dir + "/" + disk_file_id;
+
+            int64_t assembled_size = uploads.assemble(upload_id, dest_path);
+            if (assembled_size < 0) {
+              uploads.remove_session(upload_id);
+              loop_->defer([res, aborted, scope, origin]() {
+                if (*aborted) return;
+                cors::apply(res, origin);
+                res->writeStatus("500")
+                  ->writeHeader("Content-Type", "application/json")
+                  ->end(R"({"error":"Failed to assemble file"})");
+                scope->observe(500);
+              });
+              return;
+            }
+
+            if (assembled_size != session->total_size) {
+              std::filesystem::remove(dest_path);
+              uploads.remove_session(upload_id);
+              loop_->defer([res, aborted, scope, origin]() {
+                if (*aborted) return;
+                cors::apply(res, origin);
+                res->writeStatus("400")
+                  ->writeHeader("Content-Type", "application/json")
+                  ->end(R"({"error":"Assembled file size does not match expected size"})");
+                scope->observe(400);
+              });
+              return;
+            }
+
+            auto file = db.create_space_file(
+              space_id, parent_id, filename, disk_file_id, assembled_size, content_type, user_id);
+            auto creator = db.find_user_by_id(user_id);
+            json resp = space_file_to_json(file, creator ? creator->username : "");
+            std::string resp_str = resp.dump();
+            uploads.remove_session(upload_id);
+
+            loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeHeader("Content-Type", "application/json")->end(resp_str);
+              scope->observe(200);
+            });
+          } catch (const pqxx::unique_violation&) {
+            uploads.remove_session(upload_id);
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("409")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"A file or folder with this name already exists"})");
+              scope->observe(409);
+            });
+          } catch (const std::exception& e) {
+            uploads.remove_session(upload_id);
+            auto err = json({{"error", e.what()}}).dump();
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(500);
+            });
+          }
+        });
+      });
+  });
+
+  // --- Chunked version upload: init ---
+  app.post("/api/spaces/:spaceId/files/:fileId/versions/init", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:spaceId/files/:fileId/versions/init");
+    handler_utils::set_request_id_header(res, *scope);
+    std::string origin(req->getHeader("origin"));
+    std::string token = extract_session_token(req);
+    std::string space_id(req->getParameter(0));
+    std::string file_id(req->getParameter(1));
+
+    auto body = std::make_shared<std::string>();
+    auto aborted = std::make_shared<bool>(false);
+
+    res->onAborted([aborted, origin]() { *aborted = true; });
+
+    res->onData([this, res, body, aborted, scope, token, space_id, file_id, origin](
+                  std::string_view data, bool last) {
+      body->append(data);
+      if (!last) return;
+
+      pool_.submit([this, res, body, aborted, scope, token, space_id, file_id, origin]() {
+        if (*aborted) return;
+
+        auto user_id_opt = db.validate_session(token);
+        if (!user_id_opt) {
+          loop_->defer([res, aborted, scope, origin]() {
+            if (*aborted) return;
+            res->writeStatus("401")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
+          });
+          return;
+        }
+        std::string user_id = *user_id_opt;
+
+        try {
+          auto j = json::parse(*body);
+          int64_t total_size = j.value("total_size", int64_t(0));
+          int chunk_count = j.value("chunk_count", 0);
+          int64_t chunk_size = j.value("chunk_size", int64_t(0));
+
+          if (chunk_count <= 0 || chunk_size <= 0) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("400")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Invalid chunk count or size"})");
+              scope->observe(400);
+            });
+            return;
+          }
+
+          if (!check_space_access_sync(space_id, user_id)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("403")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Not a member of this space"})");
+              scope->observe(403);
+            });
+            return;
+          }
+
+          if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
+            auto err = json({{"error", "Requires edit permission"}}).dump();
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
+            });
+            return;
+          }
+
+          auto file = db.find_space_file(file_id);
+          if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("404")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"File not found"})");
+              scope->observe(404);
+            });
+            return;
+          }
+
+          int64_t max_size = file_access_utils::parse_max_file_size(
+            db.get_setting("max_file_size"), config.max_file_size);
+          if (file_access_utils::exceeds_file_size_limit(max_size, total_size)) {
+            std::string msg = file_access_utils::file_too_large_message(max_size);
+            auto err_json = json{{"error", msg}}.dump();
+            loop_->defer([res, aborted, scope, err_json = std::move(err_json), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(err_json);
+              scope->observe(413);
+            });
+            return;
+          }
+
+          int64_t max_storage =
+            file_access_utils::parse_max_storage_size(db.get_setting("max_storage_size"));
+          if (
+            max_storage > 0 && file_access_utils::exceeds_storage_limit(
+                                 max_storage, db.get_total_file_size(), total_size)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Server storage limit reached"})");
+              scope->observe(413);
+            });
+            return;
+          }
+
+          int64_t space_limit = file_access_utils::parse_space_storage_limit(
+            db.get_setting("space_storage_limit_" + space_id));
+          if (
+            space_limit > 0 && file_access_utils::exceeds_storage_limit(
+                                 space_limit, db.get_space_storage_used(space_id), total_size)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Space storage limit reached"})");
+              scope->observe(413);
+            });
+            return;
+          }
+
+          // Check aggregate personal spaces storage limit
+          std::string personal_err = check_personal_total_limit_sync(space_id, total_size);
+          if (!personal_err.empty()) {
+            loop_->defer([res, aborted, scope, personal_err = std::move(personal_err), origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("413")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(personal_err);
+              scope->observe(413);
+            });
+            return;
+          }
+
+          json metadata = {
+            {"space_id", space_id}, {"file_id", file_id}, {"mime_type", file->mime_type}};
+          std::string upload_id =
+            uploads.create_session(user_id, total_size, chunk_count, chunk_size, metadata);
+
+          auto resp_str = json{{"upload_id", upload_id}}.dump();
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
+            if (*aborted) return;
+            cors::apply(res, origin);
+            res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
+          });
+        } catch (...) {
+          loop_->defer([res, aborted, scope, origin]() {
+            if (*aborted) return;
+            cors::apply(res, origin);
+            res->writeStatus("400")
+              ->writeHeader("Content-Type", "application/json")
+              ->end(R"({"error":"Invalid request body"})");
+            scope->observe(400);
+          });
+        }
+      });
+    });
+  });
+
+  // --- Chunked version upload: receive chunk ---
+  app.post(
+    "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/chunk", [this](auto* res, auto* req) {
+      auto scope = std::make_shared<handler_utils::RequestScope>(
+        "POST", "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/chunk");
+      handler_utils::set_request_id_header(res, *scope);
+      std::string origin(req->getHeader("origin"));
+      std::string token = extract_session_token(req);
+      std::string upload_id(req->getParameter(2));
+      std::string index_str(req->getQuery("index"));
+      std::string expected_hash(req->getQuery("hash"));
+
+      int index = -1;
+      try {
+        index = std::stoi(index_str);
+      } catch (...) {}
+
+      auto body = std::make_shared<std::string>();
+      auto aborted = std::make_shared<bool>(false);
+
+      res->onAborted([aborted, origin]() { *aborted = true; });
+
+      res->onData([this, res, body, aborted, scope, token, upload_id, index, expected_hash, origin](
+                    std::string_view data, bool last) {
+        body->append(data);
+        if (!last) return;
+
+        pool_.submit(
+          [this, res, body, aborted, scope, token, upload_id, index, expected_hash, origin]() {
+            if (*aborted) return;
+
+            auto user_id_opt = db.validate_session(token);
+            if (!user_id_opt) {
+              loop_->defer([res, aborted, scope, origin]() {
+                if (*aborted) return;
+                res->writeStatus("401")
+                  ->writeHeader("Content-Type", "application/json")
+                  ->end(R"({"error":"Unauthorized"})");
+                scope->observe(401);
+              });
+              return;
+            }
+            std::string user_id = *user_id_opt;
+
+            auto session = uploads.get_session(upload_id);
+            if (!session || session->user_id != user_id) {
+              loop_->defer([res, aborted, scope, origin]() {
+                if (*aborted) return;
+                cors::apply(res, origin);
+                res->writeStatus("404")
+                  ->writeHeader("Content-Type", "application/json")
+                  ->end(R"({"error":"Upload session not found"})");
+                scope->observe(404);
+              });
+              return;
+            }
+
+            auto err = uploads.store_chunk_err(upload_id, index, *body, expected_hash);
+            if (!err.empty()) {
+              std::string status;
+              std::string msg;
+              if (err == "hash_mismatch") {
+                status = "409";
+                msg = R"({"error":"Chunk integrity check failed"})";
+              } else if (err == "invalid_index") {
+                status = "400";
+                msg = R"({"error":"Invalid chunk index"})";
+              } else {
+                status = "500";
+                msg = R"({"error":"Failed to store chunk"})";
+              }
+              loop_->defer(
+                [res, aborted, scope, status = std::move(status), msg = std::move(msg), origin]() {
+                  if (*aborted) return;
+                  cors::apply(res, origin);
+                  res->writeStatus(status)
+                    ->writeHeader("Content-Type", "application/json")
+                    ->end(msg);
+                  scope->observe(200);
+                });
+              return;
+            }
+
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+              scope->observe(200);
+            });
+          });
+      });
+    });
+
+  // --- Chunked version upload: complete ---
+  app.post(
+    "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/complete", [this](auto* res, auto* req) {
+      auto scope = std::make_shared<handler_utils::RequestScope>(
+        "POST", "/api/spaces/:spaceId/files/:fileId/versions/:uploadId/complete");
+      handler_utils::set_request_id_header(res, *scope);
+      std::string origin(req->getHeader("origin"));
+      std::string token = extract_session_token(req);
+      std::string space_id(req->getParameter(0));
+      std::string file_id(req->getParameter(1));
+      std::string upload_id(req->getParameter(2));
+
+      auto aborted = std::make_shared<bool>(false);
+      res->onAborted([aborted, origin]() { *aborted = true; });
+
+      res->onData([this, res, aborted, scope, space_id, file_id, upload_id, token, origin](
+                    std::string_view, bool last) {
+        if (!last) return;
+
+        pool_.submit([this, res, aborted, scope, space_id, file_id, upload_id, token, origin]() {
+          if (*aborted) return;
+
+          auto user_id_opt = db.validate_session(token);
+          if (!user_id_opt) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              res->writeStatus("401")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
+            });
+            return;
+          }
+          std::string user_id = *user_id_opt;
+
+          auto session = uploads.get_session(upload_id);
+          if (!session || session->user_id != user_id) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("404")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Upload session not found"})");
+              scope->observe(404);
+            });
+            return;
+          }
+
+          if (!uploads.is_complete(upload_id)) {
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("400")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Not all chunks have been uploaded"})");
+              scope->observe(400);
+            });
+            return;
+          }
+
+          if (!check_space_access_sync(space_id, user_id)) {
+            uploads.remove_session(upload_id);
+            loop_->defer([res, aborted, scope, origin]() {
+              if (*aborted) return;
+              cors::apply(res, origin);
+              res->writeStatus("403")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Not a member of this space"})");
+              scope->observe(403);
             });
             return;
           }
@@ -1169,10 +1273,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
             uploads.remove_session(upload_id);
             auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
             });
             return;
           }
@@ -1180,12 +1285,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto file = db.find_space_file(file_id);
           if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
             uploads.remove_session(upload_id);
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"File not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -1197,12 +1303,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             int64_t assembled_size = uploads.assemble(upload_id, dest_path);
             if (assembled_size < 0) {
               uploads.remove_session(upload_id);
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("500")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Failed to assemble file"})");
+                scope->observe(500);
               });
               return;
             }
@@ -1210,12 +1317,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             if (assembled_size != session->total_size) {
               std::filesystem::remove(dest_path);
               uploads.remove_session(upload_id);
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Assembled file size does not match expected size"})");
+                scope->observe(400);
               });
               return;
             }
@@ -1227,18 +1335,20 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             std::string resp_str = resp.dump();
             uploads.remove_session(upload_id);
 
-            loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+            loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeHeader("Content-Type", "application/json")->end(resp_str);
+              scope->observe(200);
             });
           } catch (const std::exception& e) {
             uploads.remove_session(upload_id);
             auto err = json({{"error", e.what()}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(500);
             });
           }
         });
@@ -1247,48 +1357,54 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get file/folder details
   app.get("/api/spaces/:spaceId/files/:fileId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:spaceId/files/:fileId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       auto file = db.find_space_file(file_id);
       if (!file || file->space_id != space_id || file->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -1306,10 +1422,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
@@ -1317,8 +1434,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Download file
   // Auth via header or query param (needed for <img>/<iframe> tags)
   app.get("/api/spaces/:spaceId/files/:fileId/download", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:spaceId/files/:fileId/download");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     if (token.empty()) token = std::string(req->getQuery("token"));
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
@@ -1327,41 +1447,44 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, inline_query, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, inline_query, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       auto file = db.find_space_file(file_id);
       if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -1369,12 +1492,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       std::string path = config.upload_dir + "/" + file->disk_file_id;
       std::ifstream in(path, std::ios::binary);
       if (!in) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File data not found on disk"})");
+          scope->observe(404);
         });
         return;
       }
@@ -1390,6 +1514,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       loop_->defer([res,
                     aborted,
+                    scope,
                     data,
                     content_type = std::move(content_type),
                     disposition = std::move(disposition),
@@ -1399,14 +1524,18 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         res->writeHeader("Content-Type", content_type)
           ->writeHeader("Content-Disposition", disposition)
           ->end(*data);
+        scope->observe(200);
       });
     });
   });
 
   // Update file/folder (rename, move)
   app.put("/api/spaces/:spaceId/files/:fileId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("PUT", "/api/spaces/:spaceId/files/:fileId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
@@ -1415,33 +1544,35 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, space_id, file_id, origin](
+    res->onData([this, res, body, aborted, scope, token, space_id, file_id, origin](
                   std::string_view data, bool last) mutable {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, space_id, file_id, origin]() {
+      pool_.submit([this, res, body, aborted, scope, token, space_id, file_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
         std::string user_id = *user_id_opt;
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
@@ -1449,22 +1580,24 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         // Permission check: need "edit" on the file
         if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
           auto err = json({{"error", "Requires edit permission"}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(403);
           });
           return;
         }
 
         auto file = db.find_space_file(file_id);
         if (!file || file->space_id != space_id || file->is_deleted) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"File not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -1475,22 +1608,24 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (j.contains("name")) {
             std::string new_name = j["name"];
             if (new_name.empty() || new_name.length() > 255) {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Invalid name"})");
+                scope->observe(400);
               });
               return;
             }
             if (db.space_file_name_exists(space_id, file->parent_id, new_name, file_id)) {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("409")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"A file or folder with this name already exists"})");
+                scope->observe(409);
               });
               return;
             }
@@ -1502,12 +1637,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               j["parent_id"].is_null() ? "" : j["parent_id"].get<std::string>();
             if (!new_parent.empty()) {
               if (new_parent == file_id) {
-                loop_->defer([res, aborted, origin]() {
+                loop_->defer([res, aborted, scope, origin]() {
                   if (*aborted) return;
                   cors::apply(res, origin);
                   res->writeStatus("400")
                     ->writeHeader("Content-Type", "application/json")
                     ->end(R"({"error":"Cannot move a folder into itself"})");
+                  scope->observe(400);
                 });
                 return;
               }
@@ -1515,12 +1651,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               if (
                 !parent || parent->space_id != space_id || !parent->is_folder ||
                 parent->is_deleted) {
-                loop_->defer([res, aborted, origin]() {
+                loop_->defer([res, aborted, scope, origin]() {
                   if (*aborted) return;
                   cors::apply(res, origin);
                   res->writeStatus("400")
                     ->writeHeader("Content-Type", "application/json")
                     ->end(R"({"error":"Invalid parent folder"})");
+                  scope->observe(400);
                 });
                 return;
               }
@@ -1528,12 +1665,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                 auto path = db.get_space_file_path(new_parent);
                 for (const auto& p : path) {
                   if (p.id == file_id) {
-                    loop_->defer([res, aborted, origin]() {
+                    loop_->defer([res, aborted, scope, origin]() {
                       if (*aborted) return;
                       cors::apply(res, origin);
                       res->writeStatus("400")
                         ->writeHeader("Content-Type", "application/json")
                         ->end(R"({"error":"Cannot move a folder into its own descendant"})");
+                      scope->observe(400);
                     });
                     return;
                   }
@@ -1542,13 +1680,14 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             }
             std::string current_name = j.value("name", file->name);
             if (db.space_file_name_exists(space_id, new_parent, current_name, file_id)) {
-              loop_->defer([res, aborted, origin]() {
+              loop_->defer([res, aborted, scope, origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("409")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(
                     R"({"error":"A file or folder with this name already exists in the destination"})");
+                scope->observe(409);
               });
               return;
             }
@@ -1559,25 +1698,28 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = space_file_to_json(*updated);
           std::string resp_str = resp.dump();
 
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const pqxx::unique_violation&) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("409")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"A file or folder with this name already exists"})");
+            scope->observe(409);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1586,58 +1728,65 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Delete file/folder -- requires "owner" permission
   app.del("/api/spaces/:spaceId/files/:fileId", [this](auto* res, auto* req) {
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/spaces/:spaceId/files/:fileId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       if (!require_permission_sync(space_id, file_id, user_id, "owner")) {
         auto err = json({{"error", "Requires owner permission"}}).dump();
-        loop_->defer([res, aborted, err = std::move(err), origin]() {
+        loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(403);
         });
         return;
       }
 
       auto file = db.find_space_file(file_id);
       if (!file || file->space_id != space_id || file->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -1651,45 +1800,50 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         std::filesystem::remove(path);
       }
 
-      loop_->defer([res, aborted, origin]() {
+      loop_->defer([res, aborted, scope, origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
 
   // Get space storage usage
   app.get("/api/spaces/:id/storage", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/spaces/:id/storage");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter("id"));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
@@ -1715,10 +1869,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {{"used", used}, {"limit", limit}, {"breakdown", breakdown_arr}};
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
@@ -1727,48 +1882,54 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Get permissions for a file/folder
   app.get("/api/spaces/:spaceId/files/:fileId/permissions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:spaceId/files/:fileId/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       auto file = db.find_space_file(file_id);
       if (!file || file->space_id != space_id || file->is_deleted) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -1793,18 +1954,22 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {{"permissions", arr}, {"my_permission", my_perm}};
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   // Set permission for a user on a file/folder -- requires "owner" on the file
   app.put("/api/spaces/:spaceId/files/:fileId/permissions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "PUT", "/api/spaces/:spaceId/files/:fileId/permissions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
@@ -1813,43 +1978,46 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, space_id, file_id, origin](
+    res->onData([this, res, body, aborted, scope, token, space_id, file_id, origin](
                   std::string_view data, bool last) mutable {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, space_id, file_id, origin]() {
+      pool_.submit([this, res, body, aborted, scope, token, space_id, file_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
         std::string user_id = *user_id_opt;
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
 
         if (!require_permission_sync(space_id, file_id, user_id, "owner")) {
           auto err = json({{"error", "Requires owner permission"}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(403);
           });
           return;
         }
@@ -1860,13 +2028,14 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string permission = j.at("permission");
 
           if (permission != "owner" && permission != "edit" && permission != "view") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(
                   R"json({"error":"Invalid permission level (must be owner, edit, or view)"})json");
+              scope->observe(400);
             });
             return;
           }
@@ -1874,12 +2043,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Personal spaces: only view and edit allowed, not owner
           auto space_perm_check = db.find_space_by_id(space_id);
           if (space_perm_check && space_perm_check->is_personal && permission == "owner") {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot assign owner permission in a personal space"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1887,12 +2057,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Verify target user exists and is a space member
           auto target = db.find_user_by_id(target_user_id);
           if (!target) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User not found"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1907,10 +2078,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                 json(
                   {{"error", "Cannot set permission below inherited level (" + parent_perm + ")"}})
                   .dump();
-              loop_->defer([res, aborted, err = std::move(err), origin]() {
+              loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
                 if (*aborted) return;
                 cors::apply(res, origin);
                 res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+                scope->observe(400);
               });
               return;
             }
@@ -1918,17 +2090,19 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           db.set_file_permission(file_id, target_user_id, permission, user_id);
 
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1937,8 +2111,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Remove a specific user's permission on a file
   app.del("/api/spaces/:spaceId/files/:fileId/permissions/:userId", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "DEL", "/api/spaces/:spaceId/files/:fileId/permissions/:userId");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
     std::string target_user_id(req->getParameter(2));
@@ -1946,48 +2123,52 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, target_user_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, target_user_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       if (!require_permission_sync(space_id, file_id, user_id, "owner")) {
         auto err = json({{"error", "Requires owner permission"}}).dump();
-        loop_->defer([res, aborted, err = std::move(err), origin]() {
+        loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(403);
         });
         return;
       }
 
       db.remove_file_permission(file_id, target_user_id);
 
-      loop_->defer([res, aborted, origin]() {
+      loop_->defer([res, aborted, scope, origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
       });
     });
   });
@@ -1996,48 +2177,54 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // List versions for a file
   app.get("/api/spaces/:spaceId/files/:fileId/versions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:spaceId/files/:fileId/versions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, file_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, file_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       auto file = db.find_space_file(file_id);
       if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"File not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -2051,18 +2238,22 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {{"versions", arr}};
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
 
   // Upload new version of a file -- requires "edit" permission
   app.post("/api/spaces/:spaceId/files/:fileId/versions", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/spaces/:spaceId/files/:fileId/versions");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     std::string space_id(req->getParameter(0));
     std::string file_id(req->getParameter(1));
 
@@ -2071,21 +2262,22 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    res->onData([this, res, body, aborted, token, space_id, file_id, origin](
+    res->onData([this, res, body, aborted, scope, token, space_id, file_id, origin](
                   std::string_view data, bool last) mutable {
       body->append(data);
       if (!last) return;
 
-      pool_.submit([this, res, body, aborted, token, space_id, file_id, origin]() {
+      pool_.submit([this, res, body, aborted, scope, token, space_id, file_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -2098,43 +2290,47 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
               max_size, static_cast<int64_t>(body->size()))) {
           std::string msg = file_access_utils::file_too_large_message(max_size);
           auto err_json = json{{"error", msg}}.dump();
-          loop_->defer([res, aborted, err_json = std::move(err_json), origin]() {
+          loop_->defer([res, aborted, scope, err_json = std::move(err_json), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("413")->writeHeader("Content-Type", "application/json")->end(err_json);
+            scope->observe(413);
           });
           return;
         }
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
 
         if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
           auto err = json({{"error", "Requires edit permission"}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(403);
           });
           return;
         }
 
         auto file = db.find_space_file(file_id);
         if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"File not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -2147,12 +2343,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             max_storage > 0 &&
             file_access_utils::exceeds_storage_limit(
               max_storage, db.get_total_file_size(), static_cast<int64_t>(body->size()))) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Server storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -2165,12 +2362,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                                  space_limit,
                                  db.get_space_storage_used(space_id),
                                  static_cast<int64_t>(body->size()))) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Space storage limit reached"})");
+              scope->observe(413);
             });
             return;
           }
@@ -2179,12 +2377,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string personal_err =
             check_personal_total_limit_sync(space_id, static_cast<int64_t>(body->size()));
           if (!personal_err.empty()) {
-            loop_->defer([res, aborted, personal_err = std::move(personal_err), origin]() {
+            loop_->defer([res, aborted, scope, personal_err = std::move(personal_err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("413")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(personal_err);
+              scope->observe(413);
             });
             return;
           }
@@ -2193,12 +2392,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string path = config.upload_dir + "/" + disk_file_id;
           std::ofstream out(path, std::ios::binary);
           if (!out) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to save file"})");
+              scope->observe(500);
             });
             return;
           }
@@ -2213,17 +2413,19 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = space_file_version_to_json(version);
           std::string resp_str = resp.dump();
 
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err), origin]() {
+          loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });
@@ -2235,8 +2437,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.get(
     "/api/spaces/:spaceId/files/:fileId/versions/:versionId/download",
     [this](auto* res, auto* req) {
+      auto scope = std::make_shared<handler_utils::RequestScope>(
+        "GET", "/api/spaces/:spaceId/files/:fileId/versions/:versionId/download");
+      handler_utils::set_request_id_header(res, *scope);
       std::string origin(req->getHeader("origin"));
-      std::string token = extract_bearer_token(req);
+      std::string token = extract_session_token(req);
       if (token.empty()) token = std::string(req->getQuery("token"));
       std::string space_id(req->getParameter(0));
       std::string file_id(req->getParameter(1));
@@ -2245,53 +2450,57 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       auto aborted = std::make_shared<bool>(false);
       res->onAborted([aborted, origin]() { *aborted = true; });
 
-      pool_.submit([this, res, aborted, token, space_id, file_id, version_id, origin]() {
+      pool_.submit([this, res, aborted, scope, token, space_id, file_id, version_id, origin]() {
         if (*aborted) return;
 
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
         std::string user_id = *user_id_opt;
 
         if (!check_space_access_sync(space_id, user_id)) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this space"})");
+            scope->observe(403);
           });
           return;
         }
 
         auto file = db.find_space_file(file_id);
         if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"File not found"})");
+            scope->observe(404);
           });
           return;
         }
 
         auto version = db.get_file_version(version_id);
         if (!version || version->file_id != file_id) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Version not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -2299,12 +2508,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         std::string path = config.upload_dir + "/" + version->disk_file_id;
         std::ifstream in(path, std::ios::binary);
         if (!in) {
-          loop_->defer([res, aborted, origin]() {
+          loop_->defer([res, aborted, scope, origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Version data not found on disk"})");
+            scope->observe(404);
           });
           return;
         }
@@ -2319,6 +2529,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         loop_->defer([res,
                       aborted,
+                      scope,
                       data,
                       content_type = std::move(content_type),
                       disposition = std::move(disposition),
@@ -2328,6 +2539,7 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           res->writeHeader("Content-Type", content_type)
             ->writeHeader("Content-Disposition", disposition)
             ->end(*data);
+          scope->observe(200);
         });
       });
     });
@@ -2335,8 +2547,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Revert to a specific version -- requires "edit" permission
   app.post(
     "/api/spaces/:spaceId/files/:fileId/versions/:versionId/revert", [this](auto* res, auto* req) {
+      auto scope = std::make_shared<handler_utils::RequestScope>(
+        "POST", "/api/spaces/:spaceId/files/:fileId/versions/:versionId/revert");
+      handler_utils::set_request_id_header(res, *scope);
       std::string origin(req->getHeader("origin"));
-      std::string token = extract_bearer_token(req);
+      std::string token = extract_session_token(req);
       std::string space_id(req->getParameter(0));
       std::string file_id(req->getParameter(1));
       std::string version_id(req->getParameter(2));
@@ -2344,66 +2559,71 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       auto aborted = std::make_shared<bool>(false);
       res->onAborted([aborted, origin]() { *aborted = true; });
 
-      res->onData([this, res, aborted, token, space_id, file_id, version_id, origin](
+      res->onData([this, res, aborted, scope, token, space_id, file_id, version_id, origin](
                     std::string_view, bool last) mutable {
         if (!last) return;
 
-        pool_.submit([this, res, aborted, token, space_id, file_id, version_id, origin]() {
+        pool_.submit([this, res, aborted, scope, token, space_id, file_id, version_id, origin]() {
           if (*aborted) return;
 
           auto user_id_opt = db.validate_session(token);
           if (!user_id_opt) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Unauthorized"})");
+              scope->observe(401);
             });
             return;
           }
           std::string user_id = *user_id_opt;
 
           if (!check_space_access_sync(space_id, user_id)) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Not a member of this space"})");
+              scope->observe(403);
             });
             return;
           }
 
           if (!require_permission_sync(space_id, file_id, user_id, "edit")) {
             auto err = json({{"error", "Requires edit permission"}}).dump();
-            loop_->defer([res, aborted, err = std::move(err), origin]() {
+            loop_->defer([res, aborted, scope, err = std::move(err), origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
             });
             return;
           }
 
           auto file = db.find_space_file(file_id);
           if (!file || file->space_id != space_id || file->is_deleted || file->is_folder) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"File not found"})");
+              scope->observe(404);
             });
             return;
           }
 
           auto version = db.get_file_version(version_id);
           if (!version || version->file_id != file_id) {
-            loop_->defer([res, aborted, origin]() {
+            loop_->defer([res, aborted, scope, origin]() {
               if (*aborted) return;
               cors::apply(res, origin);
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Version not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -2414,10 +2634,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           json resp = space_file_version_to_json(new_version);
           std::string resp_str = resp.dump();
 
-          loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+          loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
             if (*aborted) return;
             cors::apply(res, origin);
             res->writeHeader("Content-Type", "application/json")->end(resp_str);
+            scope->observe(200);
           });
         });
       });
@@ -2426,33 +2647,37 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // --- Admin storage endpoint ---
 
   app.get("/api/admin/storage", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/admin/storage");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, origin]() {
+    pool_.submit([this, res, aborted, scope, token, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
 
       auto user = db.find_user_by_id(*user_id_opt);
       if (!user || (user->role != "admin" && user->role != "owner")) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Admin access required"})");
+          scope->observe(403);
         });
         return;
       }
@@ -2475,10 +2700,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       json resp = {{"spaces", arr}, {"total_used", total_used}};
       std::string resp_str = resp.dump();
 
-      loop_->defer([res, aborted, resp_str = std::move(resp_str), origin]() {
+      loop_->defer([res, aborted, scope, resp_str = std::move(resp_str), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/json")->end(resp_str);
+        scope->observe(200);
       });
     });
   });
@@ -2486,8 +2712,11 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Download folder as ZIP
   // Auth via header or query param (same pattern as single-file download)
   app.get("/api/spaces/:spaceId/files/:folderId/download-zip", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "GET", "/api/spaces/:spaceId/files/:folderId/download-zip");
+    handler_utils::set_request_id_header(res, *scope);
     std::string origin(req->getHeader("origin"));
-    std::string token = extract_bearer_token(req);
+    std::string token = extract_session_token(req);
     if (token.empty()) token = std::string(req->getQuery("token"));
     std::string space_id(req->getParameter(0));
     std::string folder_id(req->getParameter(1));
@@ -2495,41 +2724,44 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted, origin]() { *aborted = true; });
 
-    pool_.submit([this, res, aborted, token, space_id, folder_id, origin]() {
+    pool_.submit([this, res, aborted, scope, token, space_id, folder_id, origin]() {
       if (*aborted) return;
 
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       std::string user_id = *user_id_opt;
 
       if (!check_space_access_sync(space_id, user_id)) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this space"})");
+          scope->observe(403);
         });
         return;
       }
 
       auto folder = db.find_space_file(folder_id);
       if (!folder || folder->space_id != space_id || folder->is_deleted || !folder->is_folder) {
-        loop_->defer([res, aborted, origin]() {
+        loop_->defer([res, aborted, scope, origin]() {
           if (*aborted) return;
           cors::apply(res, origin);
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Folder not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -2550,12 +2782,13 @@ void SpaceFileHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       auto archive = std::make_shared<std::string>(zip.build());
       std::string disposition = file_access_utils::attachment_disposition(folder->name + ".zip");
 
-      loop_->defer([res, aborted, archive, disposition = std::move(disposition), origin]() {
+      loop_->defer([res, aborted, scope, archive, disposition = std::move(disposition), origin]() {
         if (*aborted) return;
         cors::apply(res, origin);
         res->writeHeader("Content-Type", "application/zip")
           ->writeHeader("Content-Disposition", disposition)
           ->end(*archive);
+        scope->observe(200);
       });
     });
   });

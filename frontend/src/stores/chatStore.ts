@@ -13,10 +13,8 @@ import type {
 
 interface ChatState {
   // Auth
-  // The session is stored in an HttpOnly `session` cookie (P1.4 Release B);
-  // we only keep the user profile in the store. `setAuth` still accepts a
-  // `token` parameter for back-compat with login flows that pass the token
-  // returned by the server, but the value is ignored.
+  // The session is stored in an HttpOnly `session` cookie; we only keep
+  // the user profile in the store.
   user: User | null;
   isAuthenticated: boolean;
   authError: string | null;
@@ -70,10 +68,9 @@ interface ChatState {
   showAiPanel: boolean;
 
   // Actions
-  // `token` is accepted but ignored — the session lives in an HttpOnly cookie
-  // (set by the server on login). Existing call sites pass `result.token`
-  // straight through; that's fine.
-  setAuth: (user: User, token?: string) => void;
+  // The session is in an HttpOnly cookie set by the server on login;
+  // setAuth just records the user profile.
+  setAuth: (user: User) => void;
   clearAuth: (reason?: string) => void;
   setChannels: (channels: Channel[]) => void;
   setActiveChannel: (channelId: string | null) => void;
@@ -203,9 +200,6 @@ export const useChatStore = create<ChatState>((set) => ({
   clearAuth: (reason?) => {
     try {
       localStorage.removeItem('logged_in');
-      // P1.4 cleanup: remove the legacy session_token if it's lingering from
-      // a pre-Release B install. Safe to remove unconditionally.
-      localStorage.removeItem('session_token');
     } catch {
       // ignore
     }

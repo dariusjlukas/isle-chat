@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Spinner } from '@heroui/react';
 import {
   faGear,
@@ -20,12 +20,6 @@ import { NewSidebar } from './components/sidebar/NewSidebar';
 import { Header } from './components/layout/Header';
 import { ServerStatusBanner } from './components/layout/ServerStatusBanner';
 import { ChatArea } from './components/layout/ChatArea';
-import { FileBrowser } from './components/files/FileBrowser';
-import { CalendarView } from './components/calendar/CalendarView';
-import { TaskBoardView } from './components/tasks/TaskBoardView';
-import { WikiView } from './components/wiki/WikiView';
-import { MinigamesView } from './components/minigames/MinigamesView';
-import { SandboxView } from './components/sandbox/SandboxView';
 import { CreateChannel } from './components/channels/CreateChannel';
 import { ChannelBrowser } from './components/channels/ChannelBrowser';
 import { ChannelSettings } from './components/channels/ChannelSettings';
@@ -39,17 +33,99 @@ import {
   SettingsLayout,
   type SettingsCategory,
 } from './components/common/SettingsLayout';
-import { InviteManager } from './components/admin/InviteManager';
-import { JoinRequests } from './components/admin/JoinRequests';
-import { ServerSettings } from './components/admin/ServerSettings';
-import { RecoveryTokenManager } from './components/admin/RecoveryTokenManager';
-import { SetupWizard } from './components/admin/SetupWizard';
-import { UserManager } from './components/admin/UserManager';
-import { StorageManager } from './components/admin/StorageManager';
-import { DangerZone } from './components/admin/DangerZone';
-import { SystemMonitor } from './components/admin/SystemMonitor';
-import { UserSettings } from './components/settings/UserSettings';
 import { AiChatPanel } from './components/ai/AiChatPanel';
+
+// Lazy-loaded feature views (split into separate chunks).
+const FileBrowser = lazy(() =>
+  import('./components/files/FileBrowser').then((m) => ({
+    default: m.FileBrowser,
+  })),
+);
+const CalendarView = lazy(() =>
+  import('./components/calendar/CalendarView').then((m) => ({
+    default: m.CalendarView,
+  })),
+);
+const TaskBoardView = lazy(() =>
+  import('./components/tasks/TaskBoardView').then((m) => ({
+    default: m.TaskBoardView,
+  })),
+);
+const WikiView = lazy(() =>
+  import('./components/wiki/WikiView').then((m) => ({ default: m.WikiView })),
+);
+const MinigamesView = lazy(() =>
+  import('./components/minigames/MinigamesView').then((m) => ({
+    default: m.MinigamesView,
+  })),
+);
+const SandboxView = lazy(() =>
+  import('./components/sandbox/SandboxView').then((m) => ({
+    default: m.SandboxView,
+  })),
+);
+
+// Admin / settings panels (only opened on demand).
+const InviteManager = lazy(() =>
+  import('./components/admin/InviteManager').then((m) => ({
+    default: m.InviteManager,
+  })),
+);
+const JoinRequests = lazy(() =>
+  import('./components/admin/JoinRequests').then((m) => ({
+    default: m.JoinRequests,
+  })),
+);
+const ServerSettings = lazy(() =>
+  import('./components/admin/ServerSettings').then((m) => ({
+    default: m.ServerSettings,
+  })),
+);
+const RecoveryTokenManager = lazy(() =>
+  import('./components/admin/RecoveryTokenManager').then((m) => ({
+    default: m.RecoveryTokenManager,
+  })),
+);
+const SetupWizard = lazy(() =>
+  import('./components/admin/SetupWizard').then((m) => ({
+    default: m.SetupWizard,
+  })),
+);
+const UserManager = lazy(() =>
+  import('./components/admin/UserManager').then((m) => ({
+    default: m.UserManager,
+  })),
+);
+const StorageManager = lazy(() =>
+  import('./components/admin/StorageManager').then((m) => ({
+    default: m.StorageManager,
+  })),
+);
+const DangerZone = lazy(() =>
+  import('./components/admin/DangerZone').then((m) => ({
+    default: m.DangerZone,
+  })),
+);
+const SystemMonitor = lazy(() =>
+  import('./components/admin/SystemMonitor').then((m) => ({
+    default: m.SystemMonitor,
+  })),
+);
+const UserSettings = lazy(() =>
+  import('./components/settings/UserSettings').then((m) => ({
+    default: m.UserSettings,
+  })),
+);
+
+// Fallback used while a lazy chunk loads. Matches the app shell so layout
+// doesn't shift around the spinner.
+function ViewLoadingFallback() {
+  return (
+    <div className='flex-1 flex items-center justify-center bg-background'>
+      <Spinner size='lg' />
+    </div>
+  );
+}
 import { ResizeHandle } from './components/common/ResizeHandle';
 import { ConnectionLostModal } from './components/common/ConnectionLostModal';
 import { useResizablePanel } from './hooks/useResizablePanel';
@@ -141,6 +217,9 @@ function App() {
   });
 
   const isOwner = user?.role === 'owner';
+  const wrapAdmin = (node: React.ReactNode) => (
+    <Suspense fallback={<ViewLoadingFallback />}>{node}</Suspense>
+  );
   const adminCategories: SettingsCategory[] = [
     ...(isOwner
       ? [
@@ -148,7 +227,9 @@ function App() {
             key: 'server-settings',
             label: 'Server Settings',
             icon: faGear,
-            content: <ServerSettings onDirtyChange={setServerSettingsDirty} />,
+            content: wrapAdmin(
+              <ServerSettings onDirtyChange={setServerSettingsDirty} />,
+            ),
           },
         ]
       : []),
@@ -156,38 +237,38 @@ function App() {
       key: 'user-management',
       label: 'User Management',
       icon: faUsers,
-      content: <UserManager />,
+      content: wrapAdmin(<UserManager />),
     },
     {
       key: 'invite-tokens',
       label: 'Invite Tokens',
       icon: faTicket,
-      content: <InviteManager />,
+      content: wrapAdmin(<InviteManager />),
     },
     {
       key: 'recovery-tokens',
       label: 'Account Recovery',
       icon: faKey,
-      content: <RecoveryTokenManager />,
+      content: wrapAdmin(<RecoveryTokenManager />),
     },
     {
       key: 'storage',
       label: 'Storage',
       icon: faHardDrive,
-      content: <StorageManager />,
+      content: wrapAdmin(<StorageManager />),
     },
     {
       key: 'system',
       label: 'System',
       icon: faGauge,
-      content: <SystemMonitor />,
+      content: wrapAdmin(<SystemMonitor />),
     },
     {
       key: 'join-requests',
       label: 'Join Requests',
       icon: faUserPlus,
       badge: pendingRequestCount,
-      content: <JoinRequests />,
+      content: wrapAdmin(<JoinRequests />),
     },
     ...(isOwner
       ? [
@@ -195,7 +276,7 @@ function App() {
             key: 'danger-zone',
             label: 'Danger Zone',
             icon: faTriangleExclamation,
-            content: <DangerZone />,
+            content: wrapAdmin(<DangerZone />),
           },
         ]
       : []),
@@ -408,21 +489,23 @@ function App() {
             isResizing={isSidebarResizing}
           />
         )}
-        {activeToolView?.type === 'files' ? (
-          <FileBrowser spaceId={activeToolView.spaceId} />
-        ) : activeToolView?.type === 'calendar' ? (
-          <CalendarView spaceId={activeToolView.spaceId} />
-        ) : activeToolView?.type === 'tasks' ? (
-          <TaskBoardView spaceId={activeToolView.spaceId} />
-        ) : activeToolView?.type === 'wiki' ? (
-          <WikiView spaceId={activeToolView.spaceId} />
-        ) : activeToolView?.type === 'minigames' ? (
-          <MinigamesView spaceId={activeToolView.spaceId} />
-        ) : activeView?.type === 'sandbox' ? (
-          <SandboxView />
-        ) : (
-          <ChatArea />
-        )}
+        <Suspense fallback={<ViewLoadingFallback />}>
+          {activeToolView?.type === 'files' ? (
+            <FileBrowser spaceId={activeToolView.spaceId} />
+          ) : activeToolView?.type === 'calendar' ? (
+            <CalendarView spaceId={activeToolView.spaceId} />
+          ) : activeToolView?.type === 'tasks' ? (
+            <TaskBoardView spaceId={activeToolView.spaceId} />
+          ) : activeToolView?.type === 'wiki' ? (
+            <WikiView spaceId={activeToolView.spaceId} />
+          ) : activeToolView?.type === 'minigames' ? (
+            <MinigamesView spaceId={activeToolView.spaceId} />
+          ) : activeView?.type === 'sandbox' ? (
+            <SandboxView />
+          ) : (
+            <ChatArea />
+          )}
+        </Suspense>
         {showAiPanel && (
           <div
             className='flex shrink-0 animate-[slide-in-right_200ms_ease-out]'
@@ -501,10 +584,16 @@ function App() {
         warning={isOwner && serverSettingsDirty ? 'Unsaved changes' : undefined}
       />
 
-      {showSettings && <UserSettings onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <UserSettings onClose={() => setShowSettings(false)} />
+        </Suspense>
+      )}
 
       {showSetupWizard && (
-        <SetupWizard onComplete={() => setShowSetupWizard(false)} />
+        <Suspense fallback={<ViewLoadingFallback />}>
+          <SetupWizard onComplete={() => setShowSetupWizard(false)} />
+        </Suspense>
       )}
 
       <SpaceInviteNotification />

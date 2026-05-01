@@ -1,4 +1,12 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  lazy,
+  Suspense,
+} from 'react';
 import { Button, Progress, Tooltip } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -11,8 +19,13 @@ import { formatFileSize } from '../../utils/format';
 import { useChatStore } from '../../stores/chatStore';
 import { MentionAutocomplete } from './MentionAutocomplete';
 import { getFilteredOptions, type MentionOption } from './mentionUtils';
-import { EmojiPickerPopup } from './EmojiPickerPopup';
 import type { Message } from '../../types';
+
+// Lazy-load the emoji picker (~510KB of emoji-mart data) — only loaded
+// when the user actually opens the picker.
+const EmojiPickerPopup = lazy(() =>
+  import('./EmojiPickerPopup').then((m) => ({ default: m.EmojiPickerPopup })),
+);
 
 interface Props {
   onSend: (content: string) => void;
@@ -376,13 +389,15 @@ export function MessageInput({
           </Tooltip>
           <div className='relative'>
             {emojiPickerOpen && (
-              <EmojiPickerPopup
-                onSelect={(emoji) => {
-                  insertEmoji(emoji);
-                  setEmojiPickerOpen(false);
-                }}
-                onClose={() => setEmojiPickerOpen(false)}
-              />
+              <Suspense fallback={null}>
+                <EmojiPickerPopup
+                  onSelect={(emoji) => {
+                    insertEmoji(emoji);
+                    setEmojiPickerOpen(false);
+                  }}
+                  onClose={() => setEmojiPickerOpen(false)}
+                />
+              </Suspense>
             )}
             <Tooltip content='Emoji' placement='top' delay={400}>
               <Button

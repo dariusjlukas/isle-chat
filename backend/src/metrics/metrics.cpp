@@ -58,6 +58,37 @@ Gauge& db_pool_in_use_g() {
   return g;
 }
 
+// --- Redis pub/sub families ------------------------------------------------
+LabeledCounters& redis_publish_total_family() {
+  static LabeledCounters c;
+  return c;
+}
+
+LabeledCounters& redis_subscribe_received_total_family() {
+  static LabeledCounters c;
+  return c;
+}
+
+Counter& redis_self_echo_dropped_total_c() {
+  static Counter c;
+  return c;
+}
+
+Counter& redis_health_check_failures_total_c() {
+  static Counter c;
+  return c;
+}
+
+Counter& redis_reconnect_total_c() {
+  static Counter c;
+  return c;
+}
+
+Gauge& redis_ok_g() {
+  static Gauge g;
+  return g;
+}
+
 // Escape Prometheus label values per the exposition format.
 // (We don't expect special chars in our labels — this is a defensive cheap
 // pass.)
@@ -144,6 +175,12 @@ void init() {
   (void)ws_connected_clients_g();
   (void)db_pool_size_g();
   (void)db_pool_in_use_g();
+  (void)redis_publish_total_family();
+  (void)redis_subscribe_received_total_family();
+  (void)redis_self_echo_dropped_total_c();
+  (void)redis_health_check_failures_total_c();
+  (void)redis_reconnect_total_c();
+  (void)redis_ok_g();
 }
 
 void observe_http_request(
@@ -200,6 +237,40 @@ Gauge& db_pool_in_use() {
   return db_pool_in_use_g();
 }
 
+void inc_redis_publish(std::string_view topic_kind) {
+  std::string key = "topic_kind=\"";
+  key += escape_label(topic_kind);
+  key += "\"";
+  auto& c = redis_publish_total_family();
+  std::lock_guard<std::mutex> lock(c.mu);
+  ++c.values[key];
+}
+
+void inc_redis_subscribe_received(std::string_view topic_kind) {
+  std::string key = "topic_kind=\"";
+  key += escape_label(topic_kind);
+  key += "\"";
+  auto& c = redis_subscribe_received_total_family();
+  std::lock_guard<std::mutex> lock(c.mu);
+  ++c.values[key];
+}
+
+Counter& redis_self_echo_dropped_total() {
+  return redis_self_echo_dropped_total_c();
+}
+
+Counter& redis_health_check_failures_total() {
+  return redis_health_check_failures_total_c();
+}
+
+Counter& redis_reconnect_total() {
+  return redis_reconnect_total_c();
+}
+
+Gauge& redis_ok() {
+  return redis_ok_g();
+}
+
 std::string render() {
   std::ostringstream os;
   // Use enough precision for histogram sums.
@@ -250,6 +321,52 @@ std::string render() {
      << "# HELP enclave_db_pool_in_use Connections currently checked out.\n"
      << "# TYPE enclave_db_pool_in_use gauge\n"
      << "enclave_db_pool_in_use " << db_pool_in_use_g().get() << "\n";
+
+  // ----- Redis publish counter -----
+  os << "# HELP enclave_redis_publish_total Redis PUBLISH calls by topic kind.\n"
+     << "# TYPE enclave_redis_publish_total counter\n";
+  {
+    auto& c = redis_publish_total_family();
+    std::lock_guard<std::mutex> lock(c.mu);
+    for (const auto& [labels, value] : c.values) {
+      os << "enclave_redis_publish_total{" << labels << "} " << value << "\n";
+    }
+  }
+
+  // ----- Redis subscribe-received counter -----
+  os << "# HELP enclave_redis_subscribe_received_total Non-self envelopes "
+        "received from Redis by topic kind.\n"
+     << "# TYPE enclave_redis_subscribe_received_total counter\n";
+  {
+    auto& c = redis_subscribe_received_total_family();
+    std::lock_guard<std::mutex> lock(c.mu);
+    for (const auto& [labels, value] : c.values) {
+      os << "enclave_redis_subscribe_received_total{" << labels << "} " << value << "\n";
+    }
+  }
+
+  // ----- Redis self-echo dropped counter -----
+  os << "# HELP enclave_redis_self_echo_dropped_total Envelopes dropped "
+        "because they originated on this instance.\n"
+     << "# TYPE enclave_redis_self_echo_dropped_total counter\n"
+     << "enclave_redis_self_echo_dropped_total " << redis_self_echo_dropped_total_c().get() << "\n";
+
+  // ----- Redis health-check failures -----
+  os << "# HELP enclave_redis_health_check_failures_total Redis client "
+        "errors (connect/publish/getReply).\n"
+     << "# TYPE enclave_redis_health_check_failures_total counter\n"
+     << "enclave_redis_health_check_failures_total " << redis_health_check_failures_total_c().get()
+     << "\n";
+
+  // ----- Redis reconnects -----
+  os << "# HELP enclave_redis_reconnect_total Subscriber thread reconnects.\n"
+     << "# TYPE enclave_redis_reconnect_total counter\n"
+     << "enclave_redis_reconnect_total " << redis_reconnect_total_c().get() << "\n";
+
+  // ----- Redis ok gauge -----
+  os << "# HELP enclave_redis_ok 1 if Redis pub/sub is healthy, 0 otherwise.\n"
+     << "# TYPE enclave_redis_ok gauge\n"
+     << "enclave_redis_ok " << redis_ok_g().get() << "\n";
 
   return os.str();
 }

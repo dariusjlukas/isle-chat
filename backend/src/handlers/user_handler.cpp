@@ -1,22 +1,26 @@
 #include "handlers/user_handler.h"
 #include "handlers/format_utils.h"
+#include "handlers/request_scope.h"
 
 using json = nlohmann::json;
 
 template <bool SSL>
 void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.get("/api/users", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -37,36 +41,41 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            {"profile_color", u.profile_color}});
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.get("/api/users/me", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
 
       auto user = db.find_user_by_id(*user_id);
       if (!user) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"User not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -85,30 +94,34 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         {"has_password", db.has_password(user->id)},
         {"has_totp", db.has_totp(user->id)}};
       auto body = resp.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.put("/api/users/me", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("PUT", "/api/users/me");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -117,11 +130,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto j = json::parse(body);
           auto current = db.find_user_by_id(*user_id);
           if (!current) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"User not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -153,6 +167,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         resp_body = std::move(resp_body),
                         broadcast_str = std::move(broadcast_str)]() {
             if (*aborted) {
@@ -161,12 +176,14 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             }
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
             ws.broadcast_to_presence(broadcast_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -174,32 +191,37 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.del("/api/users/me", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
 
       try {
         db.delete_user(*user_id);
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -208,7 +230,9 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // --- Avatar upload ---
 
   app.post("/api/users/me/avatar", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/avatar");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string content_type(req->getQuery("content_type"));
     if (content_type.empty()) content_type = "image/png";
 
@@ -228,6 +252,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  body,
                  max_size,
                  token = std::move(token),
@@ -245,14 +270,15 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body, token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body, token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -270,11 +296,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           std::string path = config.upload_dir + "/" + file_id;
           std::ofstream out(path, std::ios::binary);
           if (!out) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("500")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Failed to save avatar"})");
+              scope->observe(500);
             });
             return;
           }
@@ -303,6 +330,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         resp_body = std::move(resp_body),
                         broadcast_str = std::move(broadcast_str)]() {
             if (*aborted) {
@@ -311,12 +339,14 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             }
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
             ws.broadcast_to_presence(broadcast_str);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(500);
           });
         }
       });
@@ -324,17 +354,20 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.del("/api/users/me/avatar", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me/avatar");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -368,6 +401,7 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         loop_->defer([this,
                       res,
                       aborted,
+                      scope,
                       resp_body = std::move(resp_body),
                       broadcast_str = std::move(broadcast_str)]() {
           if (*aborted) {
@@ -376,12 +410,14 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
           ws.broadcast_to_presence(broadcast_str);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -389,6 +425,8 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Serve avatar files (public, no auth needed for displaying in chat)
   app.get("/api/avatars/:id", [this](auto* res, auto* req) {
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/avatars/:id");
+    handler_utils::set_request_id_header(res, *scope);
     std::string file_id(req->getParameter("id"));
 
     // Validate file_id is hex-only (prevent path traversal)
@@ -403,15 +441,16 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, file_id = std::move(file_id)]() {
+    pool_.submit([this, res, aborted, scope, file_id = std::move(file_id)]() {
       std::string path = config.upload_dir + "/" + file_id;
       std::ifstream in(path, std::ios::binary | std::ios::ate);
       if (!in) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Avatar not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -421,11 +460,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       std::string content(size, '\0');
       in.read(content.data(), size);
 
-      loop_->defer([res, aborted, content = std::move(content)]() {
+      loop_->defer([res, aborted, scope, content = std::move(content)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "image/png")
           ->writeHeader("Cache-Control", "public, max-age=31536000, immutable")
           ->end(content);
+        scope->observe(200);
       });
     });
   });
@@ -433,17 +473,20 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // --- Passkey management ---
 
   app.get("/api/users/me/passkeys", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/passkeys");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -455,25 +498,30 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           {{"id", c.credential_id}, {"device_name", c.device_name}, {"created_at", c.created_at}});
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.post("/api/users/me/passkeys/options", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/passkeys/options");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -481,11 +529,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       try {
         auto user = db.find_user_by_id(*user_id);
         if (!user) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"User not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -526,37 +575,43 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           {"timeout", defaults::WEBAUTHN_TIMEOUT_MS}};
 
         auto resp_body = options.dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(400);
         });
       }
     });
   });
 
   app.post("/api/users/me/passkeys/verify", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/passkeys/verify");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -583,22 +638,24 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto stored = db.get_webauthn_challenge(challenge);
           if (!stored) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid or expired challenge"})");
+              scope->observe(401);
             });
             return;
           }
 
           auto extra = json::parse(stored->extra_data);
           if (extra.at("type") != "add_passkey" || extra.at("user_id") != *user_id) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge mismatch"})");
+              scope->observe(400);
             });
             return;
           }
@@ -611,11 +668,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             config.webauthn_rp_id);
 
           if (!result) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"WebAuthn verification failed"})");
+              scope->observe(401);
             });
             return;
           }
@@ -629,15 +687,17 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             device_name,
             transports_str);
 
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -645,63 +705,77 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.del("/api/users/me/passkeys/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me/passkeys/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string credential_id(req->getParameter(0));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit(
-      [this, res, aborted, token = std::move(token), credential_id = std::move(credential_id)]() {
-        auto user_id = db.validate_session(token);
-        if (!user_id) {
-          loop_->defer([res, aborted]() {
+    pool_.submit([this,
+                  res,
+                  aborted,
+                  scope,
+                  token = std::move(token),
+                  credential_id = std::move(credential_id)]() {
+      auto user_id = db.validate_session(token);
+      if (!user_id) {
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeStatus("401")
+            ->writeHeader("Content-Type", "application/json")
+            ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
+        });
+        return;
+      }
+
+      try {
+        int total = db.count_user_credentials(*user_id);
+        if (total <= 1) {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
-            res->writeStatus("401")
+            res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Unauthorized"})");
+              ->end(R"({"error":"Cannot remove your only credential"})");
+            scope->observe(400);
           });
           return;
         }
-
-        try {
-          int total = db.count_user_credentials(*user_id);
-          if (total <= 1) {
-            loop_->defer([res, aborted]() {
-              if (*aborted) return;
-              res->writeStatus("400")
-                ->writeHeader("Content-Type", "application/json")
-                ->end(R"({"error":"Cannot remove your only credential"})");
-            });
-            return;
-          }
-          db.remove_webauthn_credential(credential_id, *user_id);
-          loop_->defer([res, aborted]() {
-            if (*aborted) return;
-            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-          });
-        } catch (const std::exception& e) {
-          auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
-            if (*aborted) return;
-            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
-          });
-        }
-      });
+        db.remove_webauthn_credential(credential_id, *user_id);
+        loop_->defer([res, aborted, scope]() {
+          if (*aborted) return;
+          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
+        });
+      } catch (const std::exception& e) {
+        auto err = json({{"error", e.what()}}).dump();
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
+          if (*aborted) return;
+          res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(400);
+        });
+      }
+    });
   });
 
   // --- PKI key management ---
 
   app.post("/api/users/me/keys/challenge", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/keys/challenge");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -711,37 +785,42 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         json extra = {{"type", "pki_add"}, {"user_id", *user_id}};
         db.store_webauthn_challenge(challenge, extra.dump());
         auto resp_body = json({{"challenge", challenge}}).dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
   });
 
   app.post("/api/users/me/keys", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/keys");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -755,32 +834,35 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto stored = db.get_webauthn_challenge(challenge);
           if (!stored) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid or expired challenge"})");
+              scope->observe(401);
             });
             return;
           }
 
           auto extra = json::parse(stored->extra_data);
           if (extra.at("type") != "pki_add" || extra.at("user_id") != *user_id) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Challenge mismatch"})");
+              scope->observe(400);
             });
             return;
           }
 
           if (!webauthn::verify_pki_signature(public_key, challenge, signature)) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Signature verification failed"})");
+              scope->observe(401);
             });
             return;
           }
@@ -800,15 +882,17 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
 
           auto resp_body = resp.dump();
-          loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+          loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -816,17 +900,20 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.get("/api/users/me/keys", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/keys");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -837,70 +924,82 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back({{"id", c.id}, {"device_name", c.device_name}, {"created_at", c.created_at}});
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.del("/api/users/me/keys/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me/keys/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string key_id(req->getParameter(0));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), key_id = std::move(key_id)]() {
-      auto user_id = db.validate_session(token);
-      if (!user_id) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("401")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Unauthorized"})");
-        });
-        return;
-      }
-
-      try {
-        int total = db.count_user_credentials(*user_id);
-        if (total <= 1) {
-          loop_->defer([res, aborted]() {
+    pool_.submit(
+      [this, res, aborted, scope, token = std::move(token), key_id = std::move(key_id)]() {
+        auto user_id = db.validate_session(token);
+        if (!user_id) {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
-            res->writeStatus("400")
+            res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Cannot remove your only credential"})");
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
-        db.remove_pki_credential(key_id, *user_id);
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-        });
-      } catch (const std::exception& e) {
-        auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
-          if (*aborted) return;
-          res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
-        });
-      }
-    });
+
+        try {
+          int total = db.count_user_credentials(*user_id);
+          if (total <= 1) {
+            loop_->defer([res, aborted, scope]() {
+              if (*aborted) return;
+              res->writeStatus("400")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Cannot remove your only credential"})");
+              scope->observe(400);
+            });
+            return;
+          }
+          db.remove_pki_credential(key_id, *user_id);
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
+          });
+        } catch (const std::exception& e) {
+          auto err = json({{"error", e.what()}}).dump();
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
+            if (*aborted) return;
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
+          });
+        }
+      });
   });
 
   // --- Device linking ---
 
   app.post("/api/users/me/device-tokens", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/device-tokens");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -908,32 +1007,37 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       try {
         std::string device_token = db.create_device_token(*user_id);
         auto resp_body = json({{"token", device_token}}).dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
   });
 
   app.get("/api/users/me/devices", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/devices");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -944,95 +1048,112 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back({{"id", k.id}, {"device_name", k.device_name}, {"created_at", k.created_at}});
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.del("/api/users/me/devices/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me/devices/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string key_id(req->getParameter(0));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token), key_id = std::move(key_id)]() {
-      auto user_id = db.validate_session(token);
-      if (!user_id) {
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeStatus("401")
-            ->writeHeader("Content-Type", "application/json")
-            ->end(R"({"error":"Unauthorized"})");
-        });
-        return;
-      }
-
-      try {
-        int total = db.count_user_credentials(*user_id);
-        if (total <= 1) {
-          loop_->defer([res, aborted]() {
+    pool_.submit(
+      [this, res, aborted, scope, token = std::move(token), key_id = std::move(key_id)]() {
+        auto user_id = db.validate_session(token);
+        if (!user_id) {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
-            res->writeStatus("400")
+            res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
-              ->end(R"({"error":"Cannot remove your only credential"})");
+              ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
-        db.remove_user_key(key_id, *user_id);
-        loop_->defer([res, aborted]() {
-          if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-        });
-      } catch (const std::exception& e) {
-        auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
-          if (*aborted) return;
-          res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
-        });
-      }
-    });
+
+        try {
+          int total = db.count_user_credentials(*user_id);
+          if (total <= 1) {
+            loop_->defer([res, aborted, scope]() {
+              if (*aborted) return;
+              res->writeStatus("400")
+                ->writeHeader("Content-Type", "application/json")
+                ->end(R"({"error":"Cannot remove your only credential"})");
+              scope->observe(400);
+            });
+            return;
+          }
+          db.remove_user_key(key_id, *user_id);
+          loop_->defer([res, aborted, scope]() {
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
+          });
+        } catch (const std::exception& e) {
+          auto err = json({{"error", e.what()}}).dump();
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
+            if (*aborted) return;
+            res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
+          });
+        }
+      });
   });
 
   // --- Recovery key management ---
 
   app.get("/api/users/me/recovery-keys/count", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/recovery-keys/count");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
 
       int remaining = db.count_remaining_recovery_keys(*user_id);
       auto body = json({{"remaining", remaining}}).dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.post("/api/users/me/recovery-keys/regenerate", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>(
+      "POST", "/api/users/me/recovery-keys/regenerate");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -1042,15 +1163,17 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         auto [plaintext, hashes] = webauthn::generate_recovery_keys();
         db.store_recovery_keys(*user_id, hashes);
         auto resp_body = json({{"recovery_keys", plaintext}}).dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -1059,41 +1182,48 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // --- TOTP management ---
 
   app.get("/api/users/me/totp/status", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/totp/status");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       bool enabled = db.has_totp(*user_id);
       auto body = json({{"enabled", enabled}}).dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.post("/api/users/me/totp/setup", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/totp/setup");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -1101,11 +1231,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       try {
         auto user = db.find_user_by_id(*user_id);
         if (!user) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"User not found"})");
+            scope->observe(404);
           });
           return;
         }
@@ -1117,37 +1248,42 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         auto uri = totp::build_uri(secret, user->username, server_name);
 
         auto resp_body = json({{"secret", secret}, {"uri", uri}}).dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
   });
 
   app.post("/api/users/me/totp/verify", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/users/me/totp/verify");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1158,11 +1294,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto secret = db.get_unverified_totp_secret(*user_id);
           if (!secret) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"No TOTP setup in progress"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1174,26 +1311,29 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
           auto matched_step = totp::verify_code(*secret, code, last_step);
           if (!matched_step) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid verification code"})");
+              scope->observe(401);
             });
             return;
           }
 
           db.verify_totp(*user_id);
           db.set_totp_last_step(*user_id, static_cast<int64_t>(*matched_step));
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1201,22 +1341,25 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.del("/api/users/me/totp", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("DEL", "/api/users/me/totp");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1227,11 +1370,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           auto secret = db.get_totp_secret(*user_id);
           if (!secret) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"TOTP is not enabled"})");
+              scope->observe(400);
             });
             return;
           }
@@ -1243,11 +1387,12 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           }
           auto matched_step = totp::verify_code(*secret, code, last_step);
           if (!matched_step) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("401")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid verification code"})");
+              scope->observe(401);
             });
             return;
           }
@@ -1281,23 +1426,26 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                     " login. Remove those authentication methods first or contact an "
                     "administrator."}})
                 .dump();
-            loop_->defer([res, aborted, err = std::move(err)]() {
+            loop_->defer([res, aborted, scope, err = std::move(err)]() {
               if (*aborted) return;
               res->writeStatus("403")->writeHeader("Content-Type", "application/json")->end(err);
+              scope->observe(403);
             });
             return;
           }
 
           db.delete_totp(*user_id);
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -1306,17 +1454,20 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // User settings (key-value preferences)
   app.get("/api/users/me/settings", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/users/me/settings");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    pool_.submit([this, res, aborted, token = std::move(token)]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -1326,30 +1477,34 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         j[key] = value;
       }
       auto body = j.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.put("/api/users/me/settings", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("PUT", "/api/users/me/settings");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, token = std::move(token), body = std::string()](
+    res->onData([this, res, aborted, scope, token = std::move(token), body = std::string()](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
 
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id = db.validate_session(token);
         if (!user_id) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1362,15 +1517,17 @@ void UserHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             if (key.substr(0, 6) != "agent_") continue;
             db.set_user_setting(*user_id, key, value.get<std::string>());
           }
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });

@@ -1,16 +1,19 @@
 /**
  * Playwright helpers for authenticating users via the browser.
  *
- * The app uses PKI (ECDSA P-256) keys stored in IndexedDB and session tokens
- * in localStorage. For most tests we bypass the UI registration flow by:
- * 1. Registering via the API (helpers/api.ts)
- * 2. Injecting the session token into localStorage
+ * Since P1.4 Release C the app uses cookie-based auth (HttpOnly `session`
+ * cookie + non-HttpOnly `csrf` cookie). For most tests we bypass the UI
+ * registration flow by:
+ * 1. Registering via the API (helpers/api.ts) — captures session cookie
+ *    from the Set-Cookie header
+ * 2. Injecting both cookies into the Playwright BrowserContext jar so the
+ *    browser sends them on its next navigation
  *
  * For tests that specifically test the registration/login UI flow, we drive
  * the actual UI elements.
  */
 
-import { type Page } from "@playwright/test";
+import { type Page, type BrowserContext } from "@playwright/test";
 import {
   apiRegisterUser,
   apiPasswordRegister,
@@ -75,20 +78,45 @@ export async function setupRegularUser(
 }
 
 /**
- * Inject a session token into the page's localStorage and navigate to the app.
- * This bypasses the login UI for faster test setup.
+ * P1.4 Release C: inject the session and csrf cookies into the browser
+ * context's cookie jar and navigate to the app. The session value here is
+ * the same value the server set on the original Set-Cookie response — i.e.
+ * the `token` field returned by `setupAdminUser` / `setupRegularUser` /
+ * `setupPasswordUser`. The csrf cookie value is matched by the api request
+ * wrapper's X-CSRF-Token header so the frontend's state-changing requests
+ * succeed.
  */
 export async function loginViaToken(
   page: Page,
   token: string,
 ): Promise<void> {
-  // Navigate to the app first to set the origin
+  const context: BrowserContext = page.context();
+  // Resolve the origin from the page's existing target URL (set in playwright
+  // config) — derive host from the apiBase which test runners point to.
+  const apiBase =
+    process.env.TEST_API_BASE ?? `http://localhost:${process.env.TEST_FRONTEND_PORT ?? "5173"}`;
+  const url = new URL(apiBase);
+  await context.addCookies([
+    {
+      name: "session",
+      value: token,
+      domain: url.hostname,
+      path: "/",
+      httpOnly: true,
+      sameSite: "Strict",
+    },
+    {
+      name: "csrf",
+      value: "e2e-csrf",
+      domain: url.hostname,
+      path: "/",
+      httpOnly: false,
+      sameSite: "Strict",
+    },
+  ]);
+  // Set the non-sensitive logged_in flag the frontend uses as a bootstrap probe.
   await page.goto("/");
-  // Inject the session token
-  await page.evaluate((t) => {
-    localStorage.setItem("session_token", t);
-  }, token);
-  // Reload to pick up the token
+  await page.evaluate(() => localStorage.setItem("logged_in", "1"));
   await page.goto("/");
   // Wait for the app to be loaded - look for the header with "EnclaveStation"
   await page.getByText("EnclaveStation").first().waitFor({ timeout: 10_000 });

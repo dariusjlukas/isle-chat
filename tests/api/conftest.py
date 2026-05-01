@@ -75,10 +75,25 @@ class PKIIdentity:
         return _base64url_encode(raw_sig)
 
 
+# P1.4 Release C: cookie-only auth.
+#
+# Each register/login call captures the session and CSRF cookies the server
+# set. Tests then construct an explicit Cookie + X-CSRF-Token header pair via
+# `auth_header(...)` for whichever user they want to act as. The shared client
+# jar is cleared after each capture so cookies from one user don't bleed into
+# another user's subsequent registration.
+def _capture_session(client: httpx.Client) -> tuple[str, str]:
+    session = client.cookies.get("session", "")
+    csrf = client.cookies.get("csrf", "")
+    # Clear so the next register/login on the shared client starts fresh.
+    client.cookies.clear()
+    return session, csrf
+
+
 def pki_register(client: httpx.Client, username: str, display_name: str,
                  identity: PKIIdentity | None = None,
                  token: str | None = None) -> dict:
-    """Register a new user via PKI and return {token, user, recovery_keys, identity}."""
+    """Register a new user via PKI and return {token, csrf, user, recovery_keys, identity}."""
     if identity is None:
         identity = PKIIdentity()
 
@@ -103,11 +118,14 @@ def pki_register(client: httpx.Client, username: str, display_name: str,
     r.raise_for_status()
     data = r.json()
     data["identity"] = identity
+    session, csrf = _capture_session(client)
+    data["token"] = session
+    data["csrf"] = csrf
     return data
 
 
 def pki_login(client: httpx.Client, identity: PKIIdentity) -> dict:
-    """Login via PKI and return {token, user}."""
+    """Login via PKI and return {token, csrf, user}."""
     r = client.post("/api/auth/pki/challenge",
                     json={"public_key": identity.public_key_b64url})
     r.raise_for_status()
@@ -120,13 +138,17 @@ def pki_login(client: httpx.Client, identity: PKIIdentity) -> dict:
         "signature": sig,
     })
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    session, csrf = _capture_session(client)
+    data["token"] = session
+    data["csrf"] = csrf
+    return data
 
 
 def password_register(client: httpx.Client, username: str, display_name: str,
                       password: str = "TestPass123!",
                       token: str | None = None) -> dict:
-    """Register a new user via password and return {token, user}."""
+    """Register a new user via password and return {token, csrf, user}."""
     body: dict = {
         "username": username,
         "display_name": display_name,
@@ -137,22 +159,40 @@ def password_register(client: httpx.Client, username: str, display_name: str,
 
     r = client.post("/api/auth/password/register", json=body)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    session, csrf = _capture_session(client)
+    data["token"] = session
+    data["csrf"] = csrf
+    return data
 
 
 def password_login(client: httpx.Client, username: str,
                    password: str = "TestPass123!") -> dict:
-    """Login via password and return {token, user}."""
+    """Login via password and return {token, csrf, user}."""
     r = client.post("/api/auth/password/login", json={
         "username": username,
         "password": password,
     })
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    session, csrf = _capture_session(client)
+    data["token"] = session
+    data["csrf"] = csrf
+    return data
 
 
-def auth_header(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
+def auth_header(token: str, csrf: str = "") -> dict:
+    """Build an explicit Cookie + X-CSRF-Token header pair for a given user.
+
+    Pass the captured session token; csrf defaults to a stable synthetic value
+    that the backend's csrf_ok helper will accept (it just checks header ==
+    cookie). Tests don't typically need to vary CSRF, so the default is fine.
+    """
+    csrf_value = csrf or "test-csrf"
+    return {
+        "Cookie": f"session={token}; csrf={csrf_value}",
+        "X-CSRF-Token": csrf_value,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +420,7 @@ def _clean_db(worker_db):
 def admin_user(client, worker_db):
     """Register the first user and promote to owner via DB. Return auth info."""
     data = pki_register(client, "admin", "Admin User")
-    headers = auth_header(data["token"])
+    headers = auth_header(data["token"], data.get("csrf", ""))
     # The first user should automatically get the "owner" role
     assert data["user"]["role"] == "owner"
     # Set registration mode to open so subsequent users can register freely
@@ -388,6 +428,7 @@ def admin_user(client, worker_db):
                json={"registration_mode": "open"}, headers=headers)
     return {
         "token": data["token"],
+        "csrf": data.get("csrf", ""),
         "user": data["user"],
         "identity": data["identity"],
         "headers": headers,
@@ -400,9 +441,10 @@ def regular_user(client, admin_user):
     data = pki_register(client, "regular", "Regular User")
     return {
         "token": data["token"],
+        "csrf": data.get("csrf", ""),
         "user": data["user"],
         "identity": data["identity"],
-        "headers": auth_header(data["token"]),
+        "headers": auth_header(data["token"], data.get("csrf", "")),
     }
 
 
@@ -412,7 +454,8 @@ def second_regular_user(client, admin_user):
     data = pki_register(client, "regular2", "Regular User 2")
     return {
         "token": data["token"],
+        "csrf": data.get("csrf", ""),
         "user": data["user"],
         "identity": data["identity"],
-        "headers": auth_header(data["token"]),
+        "headers": auth_header(data["token"], data.get("csrf", "")),
     }

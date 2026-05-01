@@ -67,7 +67,7 @@ export function AddDevice({ initialToken, onSwitchToLogin }: Props) {
         response: credential.response as unknown as Record<string, unknown>,
         device_name: deviceName || 'Passkey',
       });
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       if (e instanceof Error && e.name === 'NotAllowedError') {
         setError('Passkey creation was cancelled');
@@ -106,7 +106,7 @@ export function AddDevice({ initialToken, onSwitchToLogin }: Props) {
         signature,
         device_name: deviceName || 'Browser Key',
       });
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to link device');
     } finally {

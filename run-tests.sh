@@ -96,7 +96,8 @@ print_summary() {
                  "Frontend Build" "Backend Build" "Backend Static Analysis"
                  "Backend Unit Tests" "Backend Integration Tests"
                  "API Tests" "E2E Tests" "Docker Compose Config" "Docker Build"
-                 "Nginx Security Headers" "Sqitch Schema Check")
+                 "Nginx Security Headers" "Sqitch Schema Check"
+                 "Redis Multi-Instance")
 
     printf "\n${BOLD}========================================${NC}\n"
     printf "${BOLD}  TEST RESULTS SUMMARY${NC}\n"
@@ -150,6 +151,10 @@ Options:
   --docker           Run Docker container builds
   --nginx-headers    Assert security headers are emitted by nginx (needs running stack on :80)
   --sqitch-check     Verify sqitch schema matches run_migrations() output (needs docker)
+  --redis-multi-instance
+                     Bring up postgres + redis + 2 backends and verify cross-
+                     instance WS broadcast, Redis-down fallback, and self-echo
+                     filtering (needs docker, ~3min on first run)
   --no-build         Skip the backend CMake build step
   --help             Show this help message
 
@@ -178,6 +183,7 @@ RUN_DOCKER=false
 RUN_STATIC_ANALYSIS=false
 RUN_NGINX_HEADERS=false
 RUN_SQITCH_CHECK=false
+RUN_REDIS_MI=false
 SKIP_BUILD=false
 E2E_WORKERS=16
 API_WORKERS=64
@@ -228,6 +234,8 @@ for arg in "$@"; do
             RUN_NGINX_HEADERS=true; ANY_FLAG=true ;;
         --sqitch-check)
             RUN_SQITCH_CHECK=true; ANY_FLAG=true ;;
+        --redis-multi-instance)
+            RUN_REDIS_MI=true; ANY_FLAG=true ;;
         --no-build)
             SKIP_BUILD=true ;;
         --help)
@@ -735,6 +743,10 @@ fi
 
 if [ "$RUN_SQITCH_CHECK" = true ]; then
     run_check "Sqitch Schema Check" "$SCRIPT_DIR/tools/sqitch-check.sh"
+fi
+
+if [ "$RUN_REDIS_MI" = true ]; then
+    run_check "Redis Multi-Instance" "$SCRIPT_DIR/tests/integration/multi_instance/run.sh"
 fi
 
 # =====================================================================

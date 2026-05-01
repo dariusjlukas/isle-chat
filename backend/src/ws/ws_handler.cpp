@@ -6,12 +6,88 @@
 #include "handlers/handler_utils.h"
 #include "logging/logger.h"
 #include "metrics/metrics.h"
+#include "redis/redis_pubsub.h"
 
 using json = nlohmann::json;
 
 template <bool SSL>
-WsHandler<SSL>::WsHandler(Database& db, const Config& config, uWS::Loop* loop, DbThreadPool& pool)
-  : db(db), config(config), loop_(loop), pool_(pool) {}
+WsHandler<SSL>::WsHandler(
+  Database& db,
+  const Config& config,
+  uWS::Loop* loop,
+  DbThreadPool& pool,
+  enclave_redis::RedisPubSub* redis_pubsub)
+  : db(db), config(config), loop_(loop), pool_(pool), redis_pubsub_(redis_pubsub) {}
+
+// ---------- B.3 helpers ----------
+
+template <bool SSL>
+void WsHandler<SSL>::local_subscribe(WebSocket* socket, const std::string& topic) {
+  // Caller holds mutex_.
+  auto& set = topic_subscribers_[topic];
+  auto inserted = set.insert(socket).second;
+  socket->getUserData()->subscribed_topics.insert(topic);
+  // Keep uWS's own topic registration in sync so any residual code path
+  // that still uses uWS publish/subscribe (the wiki relay used to, etc.)
+  // keeps working. Idempotent on the uWS side.
+  socket->subscribe(topic);
+  (void)inserted;
+}
+
+template <bool SSL>
+void WsHandler<SSL>::local_unsubscribe(WebSocket* socket, const std::string& topic) {
+  // Caller holds mutex_.
+  auto it = topic_subscribers_.find(topic);
+  if (it != topic_subscribers_.end()) {
+    it->second.erase(socket);
+    if (it->second.empty()) topic_subscribers_.erase(it);
+  }
+  socket->getUserData()->subscribed_topics.erase(topic);
+  socket->unsubscribe(topic);
+}
+
+template <bool SSL>
+void WsHandler<SSL>::local_unsubscribe_all(WebSocket* socket) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto* data = socket->getUserData();
+  // Move out so we don't iterate while mutating via local_unsubscribe paths.
+  auto topics = std::move(data->subscribed_topics);
+  data->subscribed_topics.clear();
+  for (const auto& topic : topics) {
+    auto it = topic_subscribers_.find(topic);
+    if (it != topic_subscribers_.end()) {
+      it->second.erase(socket);
+      if (it->second.empty()) topic_subscribers_.erase(it);
+    }
+  }
+}
+
+template <bool SSL>
+void WsHandler<SSL>::local_fan_out(const std::string& topic, std::string_view payload) {
+  // Caller holds mutex_.
+  auto it = topic_subscribers_.find(topic);
+  if (it == topic_subscribers_.end()) return;
+  for (auto* s : it->second) {
+    s->send(payload, uWS::OpCode::TEXT);
+  }
+}
+
+template <bool SSL>
+void WsHandler<SSL>::broadcast_to_topic(const std::string& topic, const std::string& payload) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_fan_out(topic, payload);
+  }
+  if (redis_pubsub_ && redis_pubsub_->is_enabled()) {
+    redis_pubsub_->publish(topic, payload);
+  }
+}
+
+template <bool SSL>
+void WsHandler<SSL>::on_redis_message(const std::string& topic, const std::string& payload) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  local_fan_out(topic, payload);
+}
 
 template <bool SSL>
 void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
@@ -24,14 +100,10 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
      .upgrade =
        [this](auto* res, auto* req, auto* context) {
-         // Extract all request data synchronously (req invalid after return)
-         // Prefer the `session` cookie (P1.4 cookie-based auth); fall back
-         // to the legacy `?token=...` query param for clients that haven't
-         // migrated yet (will be removed once Release C lands).
+         // Extract all request data synchronously (req invalid after return).
+         // P1.4 Release C: cookie-only. The legacy `?token=...` query param
+         // fallback was removed; clients must send the `session` cookie.
          std::string token = extract_session_token(req);
-         if (token.empty()) {
-           token = std::string(req->getQuery("token"));
-         }
          auto key = std::string(req->getHeader("sec-websocket-key"));
          auto protocol = std::string(req->getHeader("sec-websocket-protocol"));
          auto extensions = std::string(req->getHeader("sec-websocket-extensions"));
@@ -88,14 +160,14 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
          LOG_INFO_N("ws", nullptr, "User connected: " + data->username);
          metrics::ws_connected_clients().inc();
 
-         // Register socket immediately (synchronous, on event loop)
+         // Register socket immediately (synchronous, on event loop) and
+         // subscribe it to the presence topic via local_subscribe so the
+         // online broadcast reaches it.
          {
            std::lock_guard<std::mutex> lock(mutex_);
            user_sockets_[data->user_id].insert(ws);
+           local_subscribe(ws, "presence");
          }
-
-         // Subscribe to presence immediately so online broadcast works
-         ws->subscribe("presence");
 
          // Offload DB queries to thread pool
          std::string user_id = data->user_id;
@@ -156,30 +228,34 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                          counts_str = std::move(counts_str),
                          notif_str = std::move(notif_str),
                          online_str = std::move(online_str)]() {
-             std::lock_guard<std::mutex> lock(mutex_);
-             auto it = user_sockets_.find(user_id);
-             if (it == user_sockets_.end()) return;  // disconnected already
+             {
+               std::lock_guard<std::mutex> lock(mutex_);
+               auto it = user_sockets_.find(user_id);
+               if (it == user_sockets_.end()) return;  // disconnected already
 
-             for (auto* s : it->second) {
-               for (const auto& ch : channels) {
-                 s->subscribe("channel:" + ch.id);
-               }
-               for (const auto& sp : spaces) {
-                 s->subscribe("space:" + sp.id);
-               }
-               if (is_admin) {
-                 for (const auto& ch : all_channels) {
-                   s->subscribe("channel:" + ch.id);
+               for (auto* s : it->second) {
+                 for (const auto& ch : channels) {
+                   local_subscribe(s, "channel:" + ch.id);
                  }
-                 for (const auto& sp : all_spaces) {
-                   s->subscribe("space:" + sp.id);
+                 for (const auto& sp : spaces) {
+                   local_subscribe(s, "space:" + sp.id);
                  }
+                 if (is_admin) {
+                   for (const auto& ch : all_channels) {
+                     local_subscribe(s, "channel:" + ch.id);
+                   }
+                   for (const auto& sp : all_spaces) {
+                     local_subscribe(s, "space:" + sp.id);
+                   }
+                 }
+                 s->send(counts_str, uWS::OpCode::TEXT);
+                 s->send(notif_str, uWS::OpCode::TEXT);
                }
-               s->send(counts_str, uWS::OpCode::TEXT);
-               s->send(notif_str, uWS::OpCode::TEXT);
-               s->publish("presence", online_str);
-               s->send(online_str, uWS::OpCode::TEXT);
              }
+             // Broadcast user_online to every presence subscriber (which
+             // includes the freshly-added sockets for this user — they're
+             // subscribed to "presence" by the open handler above).
+             broadcast_to_topic("presence", online_str);
            });
          });
        },
@@ -195,6 +271,11 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
          std::string user_id = data->user_id;
          bool was_last = false;
+
+         // B.3: scrub the socket from every topic before its memory is
+         // reclaimed. Otherwise topic_subscribers_ holds dangling pointers
+         // and the next broadcast UAFs.
+         local_unsubscribe_all(ws);
 
          {
            std::lock_guard<std::mutex> lock(mutex_);
@@ -218,19 +299,8 @@ void WsHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"type", "user_offline"}, {"user_id", user_id}, {"last_seen", last_seen}};
              std::string msg_str = offline_msg.dump();
 
-             loop_->defer([this, msg_str = std::move(msg_str)]() {
-               std::lock_guard<std::mutex> lock(mutex_);
-               for (auto& [uid, sockets] : user_sockets_) {
-                 if (!sockets.empty()) {
-                   auto* sender = *sockets.begin();
-                   sender->publish("presence", msg_str);
-                   for (auto* s : sockets) {
-                     s->send(msg_str, uWS::OpCode::TEXT);
-                   }
-                   return;
-                 }
-               }
-             });
+             loop_->defer(
+               [this, msg_str = std::move(msg_str)]() { broadcast_to_topic("presence", msg_str); });
            });
          }
        }});
@@ -286,8 +356,9 @@ void WsHandler<SSL>::subscribe_user_to_channel(
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = user_sockets_.find(user_id);
   if (it != user_sockets_.end()) {
+    std::string topic = "channel:" + channel_id;
     for (auto* ws : it->second) {
-      ws->subscribe("channel:" + channel_id);
+      local_subscribe(ws, topic);
     }
   }
 }
@@ -298,8 +369,9 @@ void WsHandler<SSL>::unsubscribe_user_from_channel(
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = user_sockets_.find(user_id);
   if (it != user_sockets_.end()) {
+    std::string topic = "channel:" + channel_id;
     for (auto* ws : it->second) {
-      ws->unsubscribe("channel:" + channel_id);
+      local_unsubscribe(ws, topic);
     }
   }
 }
@@ -307,19 +379,7 @@ void WsHandler<SSL>::unsubscribe_user_from_channel(
 template <bool SSL>
 void WsHandler<SSL>::broadcast_to_channel(
   const std::string& channel_id, const std::string& message) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::string topic = "channel:" + channel_id;
-  for (auto& [uid, sockets] : user_sockets_) {
-    if (!sockets.empty()) {
-      auto* ws = *sockets.begin();
-      ws->publish(topic, message);
-      // publish() excludes the publishing socket, so send to it directly
-      if (ws->isSubscribed(topic)) {
-        ws->send(message, uWS::OpCode::TEXT);
-      }
-      return;
-    }
-  }
+  broadcast_to_topic("channel:" + channel_id, message);
 }
 
 template <bool SSL>
@@ -327,12 +387,13 @@ void WsHandler<SSL>::subscribe_admins_to_channel(
   Database& database, const std::string& channel_id) {
   auto users = database.list_users();
   std::lock_guard<std::mutex> lock(mutex_);
+  std::string topic = "channel:" + channel_id;
   for (const auto& u : users) {
     if (u.role == "admin" || u.role == "owner") {
       auto it = user_sockets_.find(u.id);
       if (it != user_sockets_.end()) {
         for (auto* ws : it->second) {
-          ws->subscribe("channel:" + channel_id);
+          local_subscribe(ws, topic);
         }
       }
     }
@@ -345,8 +406,9 @@ void WsHandler<SSL>::subscribe_user_to_space(
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = user_sockets_.find(user_id);
   if (it != user_sockets_.end()) {
+    std::string topic = "space:" + space_id;
     for (auto* ws : it->second) {
-      ws->subscribe("space:" + space_id);
+      local_subscribe(ws, topic);
     }
   }
 }
@@ -357,49 +419,34 @@ void WsHandler<SSL>::unsubscribe_user_from_space(
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = user_sockets_.find(user_id);
   if (it != user_sockets_.end()) {
+    std::string topic = "space:" + space_id;
     for (auto* ws : it->second) {
-      ws->unsubscribe("space:" + space_id);
+      local_unsubscribe(ws, topic);
     }
   }
 }
 
 template <bool SSL>
 void WsHandler<SSL>::broadcast_to_presence(const std::string& message) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& [uid, sockets] : user_sockets_) {
-    for (auto* ws : sockets) {
-      ws->send(message, uWS::OpCode::TEXT);
-    }
-  }
+  broadcast_to_topic("presence", message);
 }
 
 template <bool SSL>
 void WsHandler<SSL>::broadcast_to_space(const std::string& space_id, const std::string& message) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::string topic = "space:" + space_id;
-  for (auto& [uid, sockets] : user_sockets_) {
-    if (!sockets.empty()) {
-      auto* ws = *sockets.begin();
-      ws->publish(topic, message);
-      // publish() excludes the publishing socket, so send to it directly
-      if (ws->isSubscribed(topic)) {
-        ws->send(message, uWS::OpCode::TEXT);
-      }
-      return;
-    }
-  }
+  broadcast_to_topic("space:" + space_id, message);
 }
 
 template <bool SSL>
 void WsHandler<SSL>::subscribe_admins_to_space(Database& database, const std::string& space_id) {
   auto users = database.list_users();
   std::lock_guard<std::mutex> lock(mutex_);
+  std::string topic = "space:" + space_id;
   for (const auto& u : users) {
     if (u.role == "admin" || u.role == "owner") {
       auto it = user_sockets_.find(u.id);
       if (it != user_sockets_.end()) {
         for (auto* ws : it->second) {
-          ws->subscribe("space:" + space_id);
+          local_subscribe(ws, topic);
         }
       }
     }
@@ -495,10 +542,12 @@ void WsHandler<SSL>::handle_message(
       handle_typing(ws, data, j);
     } else if (type == "wiki_join") {
       std::string page_id = j.at("page_id");
-      ws->subscribe("wiki:" + page_id);
+      std::lock_guard<std::mutex> lock(mutex_);
+      local_subscribe(ws, "wiki:" + page_id);
     } else if (type == "wiki_leave") {
       std::string page_id = j.at("page_id");
-      ws->unsubscribe("wiki:" + page_id);
+      std::lock_guard<std::mutex> lock(mutex_);
+      local_unsubscribe(ws, "wiki:" + page_id);
     } else if (
       type == "wiki_update" || type == "wiki_awareness" || type == "wiki_sync_step1" ||
       type == "wiki_sync_step2") {
@@ -508,7 +557,22 @@ void WsHandler<SSL>::handle_message(
       relay["user_id"] = data->user_id;
       relay["username"] = data->username;
       std::string msg_str = relay.dump();
-      ws->publish(topic, msg_str, uWS::OpCode::TEXT);
+      // Wiki relay used to be ws->publish(topic, ...) which excluded the
+      // sender. Preserve that behavior: do local fan-out manually so we
+      // can skip ws, then optionally publish to Redis for cross-instance.
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = topic_subscribers_.find(topic);
+        if (it != topic_subscribers_.end()) {
+          for (auto* s : it->second) {
+            if (s == ws) continue;  // sender exclusion (uWS publish semantics)
+            s->send(msg_str, uWS::OpCode::TEXT);
+          }
+        }
+      }
+      if (redis_pubsub_ && redis_pubsub_->is_enabled()) {
+        redis_pubsub_->publish(topic, msg_str);
+      }
     } else if (type == "ping") {
       json pong = {{"type", "pong"}};
       ws->send(pong.dump(), uWS::OpCode::TEXT);
@@ -748,22 +812,10 @@ void WsHandler<SSL>::handle_send_message(
         send_to_user(target_id, notif_str);
       }
 
-      // Broadcast message to channel — find a socket for this user to publish from
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto it = user_sockets_.find(user_id);
-      if (it != user_sockets_.end() && !it->second.empty()) {
-        auto* sender = *it->second.begin();
-        sender->publish("channel:" + channel_id, broadcast_str);
-        sender->send(broadcast_str, uWS::OpCode::TEXT);
-      } else {
-        // User disconnected, broadcast via any available socket
-        for (auto& [uid, sockets] : user_sockets_) {
-          if (!sockets.empty()) {
-            (*sockets.begin())->publish("channel:" + channel_id, broadcast_str);
-            break;
-          }
-        }
-      }
+      // B.3: unified broadcast — local fan-out + optional Redis publish.
+      // Replaces the old "pick a socket and publish from it" workaround.
+      (void)user_id;
+      broadcast_to_topic("channel:" + channel_id, broadcast_str);
     });
   });
 }
@@ -786,13 +838,8 @@ void WsHandler<SSL>::handle_edit_message(
 
     loop_->defer(
       [this, user_id, ch_id = std::move(ch_id), broadcast_str = std::move(broadcast_str)]() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = user_sockets_.find(user_id);
-        if (it != user_sockets_.end() && !it->second.empty()) {
-          auto* sender = *it->second.begin();
-          sender->publish("channel:" + ch_id, broadcast_str);
-          sender->send(broadcast_str, uWS::OpCode::TEXT);
-        }
+        (void)user_id;
+        broadcast_to_topic("channel:" + ch_id, broadcast_str);
       });
   });
 }
@@ -862,13 +909,8 @@ void WsHandler<SSL>::handle_delete_message(
 
     loop_->defer(
       [this, user_id, ch_id = std::move(ch_id), broadcast_str = std::move(broadcast_str)]() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = user_sockets_.find(user_id);
-        if (it != user_sockets_.end() && !it->second.empty()) {
-          auto* sender = *it->second.begin();
-          sender->publish("channel:" + ch_id, broadcast_str);
-          sender->send(broadcast_str, uWS::OpCode::TEXT);
-        }
+        (void)user_id;
+        broadcast_to_topic("channel:" + ch_id, broadcast_str);
       });
   });
 }
@@ -885,7 +927,22 @@ void WsHandler<SSL>::handle_typing(
     {"user_id", data->user_id},
     {"username", data->username}};
 
-  ws->publish("channel:" + channel_id, broadcast.dump());
+  std::string topic = "channel:" + channel_id;
+  std::string msg_str = broadcast.dump();
+  // Sender-excluding fan-out (matches the previous ws->publish semantics).
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = topic_subscribers_.find(topic);
+    if (it != topic_subscribers_.end()) {
+      for (auto* s : it->second) {
+        if (s == ws) continue;
+        s->send(msg_str, uWS::OpCode::TEXT);
+      }
+    }
+  }
+  if (redis_pubsub_ && redis_pubsub_->is_enabled()) {
+    redis_pubsub_->publish(topic, msg_str);
+  }
 }
 
 template <bool SSL>
@@ -915,10 +972,24 @@ void WsHandler<SSL>::handle_mark_read(
     auto broadcast_str = broadcast.dump();
 
     loop_->defer([this, user_id, channel_id, broadcast_str = std::move(broadcast_str)]() {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto it = user_sockets_.find(user_id);
-      if (it != user_sockets_.end() && !it->second.empty()) {
-        (*it->second.begin())->publish("channel:" + channel_id, broadcast_str);
+      // Original behavior: publish-only (no send to author's other tabs).
+      // Implement sender-exclusion against the user's sockets, not against
+      // a single picked socket — semantics-preserving and not dependent on
+      // any one connection being "the sender".
+      std::string topic = "channel:" + channel_id;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = topic_subscribers_.find(topic);
+        if (it != topic_subscribers_.end()) {
+          auto user_it = user_sockets_.find(user_id);
+          for (auto* s : it->second) {
+            if (user_it != user_sockets_.end() && user_it->second.count(s) > 0) continue;
+            s->send(broadcast_str, uWS::OpCode::TEXT);
+          }
+        }
+      }
+      if (redis_pubsub_ && redis_pubsub_->is_enabled()) {
+        redis_pubsub_->publish(topic, broadcast_str);
       }
     });
   });
@@ -950,13 +1021,8 @@ void WsHandler<SSL>::handle_add_reaction(
                     user_id,
                     channel_id = std::move(channel_id),
                     broadcast_str = std::move(broadcast_str)]() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = user_sockets_.find(user_id);
-        if (it != user_sockets_.end() && !it->second.empty()) {
-          auto* sender = *it->second.begin();
-          sender->publish("channel:" + channel_id, broadcast_str);
-          sender->send(broadcast_str, uWS::OpCode::TEXT);
-        }
+        (void)user_id;
+        broadcast_to_topic("channel:" + channel_id, broadcast_str);
       });
     });
 }
@@ -987,13 +1053,8 @@ void WsHandler<SSL>::handle_remove_reaction(
                     user_id,
                     channel_id = std::move(channel_id),
                     broadcast_str = std::move(broadcast_str)]() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto it = user_sockets_.find(user_id);
-        if (it != user_sockets_.end() && !it->second.empty()) {
-          auto* sender = *it->second.begin();
-          sender->publish("channel:" + channel_id, broadcast_str);
-          sender->send(broadcast_str, uWS::OpCode::TEXT);
-        }
+        (void)user_id;
+        broadcast_to_topic("channel:" + channel_id, broadcast_str);
       });
     });
 }

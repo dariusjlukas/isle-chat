@@ -1,9 +1,9 @@
-"""Tests for P1.4 cookie-based session auth (Release A).
+"""Tests for P1.4 Release C cookie-only session auth.
 
-The backend now issues an HttpOnly `session` cookie + non-HttpOnly `csrf`
-cookie on every login flow. Cookie-authed requests work for the existing
-endpoints alongside the legacy Bearer header (dual-mode acceptance — Bearer
-support is removed later in Release C).
+The backend issues an HttpOnly `session` cookie + non-HttpOnly `csrf` cookie
+on every login flow. Cookies are the sole auth mechanism — Bearer header and
+?token= query param have been removed. State-changing methods require a
+matching X-CSRF-Token header (double-submit pattern).
 """
 
 import re
@@ -85,8 +85,8 @@ class TestLoginIssuesCookies:
         assert csrf["attrs"].get("path") == "/"
         assert "max-age" in csrf["attrs"]
 
-        # Cookie value matches the JSON token (so legacy clients keep working).
-        assert session["value"] == r.json()["token"]
+        # P1.4 Release C: no `token` field in the response body anymore.
+        assert "token" not in r.json()
 
     def test_pki_login_sets_cookies(self, client):
         reg = pki_register(client, "cookielogin", "Cookie Login")
@@ -137,35 +137,47 @@ class TestCookieAuthenticatedRequests:
             assert r.status_code == 200
             assert r.json()["username"] == "ckonly"
 
-    def test_post_with_cookie_only_succeeds(self, client, base_url):
-        # State-changing request via cookie — works during Release A even
-        # without the X-CSRF-Token header (csrf_ok is provided but not yet
-        # enforced; that's a Release C concern).
+    def test_state_changing_request_without_csrf_is_403(self, client, base_url):
+        # Release C: state-changing requests require X-CSRF-Token matching
+        # the csrf cookie. Without it, even with a valid session cookie,
+        # the request is rejected with 403.
         with httpx.Client(base_url=base_url, timeout=10.0) as fresh:
-            data = pki_register(fresh, "ckpost", "Cookie Post")
-            # Without explicit Authorization header — cookie only.
+            pki_register(fresh, "csrfneg", "CSRF Negative")
+            # Fresh client has both cookies in the jar but we strip the
+            # X-CSRF-Token header (httpx auto-attaches the csrf cookie via
+            # the Cookie header but does NOT auto-attach X-CSRF-Token).
             r = fresh.put(
-                "/api/users/me", json={"display_name": "Updated Name"}
+                "/api/users/me", json={"display_name": "No CSRF"}
+            )
+            assert r.status_code == 403
+
+    def test_state_changing_request_with_csrf_succeeds(self, client, base_url):
+        with httpx.Client(base_url=base_url, timeout=10.0) as fresh:
+            pki_register(fresh, "csrfok", "CSRF OK")
+            csrf = fresh.cookies.get("csrf", "")
+            assert csrf, "expected csrf cookie after register"
+            r = fresh.put(
+                "/api/users/me",
+                json={"display_name": "With CSRF"},
+                headers={"X-CSRF-Token": csrf},
             )
             assert r.status_code == 200
 
 
-class TestBearerStillWorks:
-    """Regression: the Bearer fallback must still work during the dual-mode
-    rollout (Release A keeps it; Release C removes it)."""
+class TestBearerNoLongerWorks:
+    """Release C regression: Bearer header alone (no cookie) gets 401."""
 
-    def test_get_users_me_with_bearer_only(self, client, base_url):
+    def test_get_users_me_with_bearer_only_is_401(self, client, base_url):
         # Fresh client without the cookie jar.
         with httpx.Client(base_url=base_url, timeout=10.0) as fresh:
-            reg = pki_register(fresh, "beareruser", "Bearer User")
+            reg = pki_register(fresh, "beareronly", "Bearer Only")
             token = reg["token"]
 
         with httpx.Client(base_url=base_url, timeout=10.0) as bearer_only:
             r = bearer_only.get(
-                "/api/users/me", headers=auth_header(token)
+                "/api/users/me", headers={"Authorization": f"Bearer {token}"}
             )
-            assert r.status_code == 200
-            assert r.json()["username"] == "beareruser"
+            assert r.status_code == 401
 
 
 class TestLogoutClearsCookies:

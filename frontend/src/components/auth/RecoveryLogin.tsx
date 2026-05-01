@@ -48,7 +48,7 @@ export function RecoveryLogin({ onSwitchToLogin }: Props) {
     setError('');
     try {
       const result = await api.recoveryLogin(recoveryKey.trim());
-      setAuth(result.user, result.token);
+      setAuth(result.user);
       if (result.must_setup_key) {
         alert(
           'You are logged in with a recovery key. Please add a new authentication method in Settings.',
@@ -72,7 +72,7 @@ export function RecoveryLogin({ onSwitchToLogin }: Props) {
     setError('');
     try {
       const result = await api.recoverAccount(recoveryToken.trim());
-      setAuth(result.user, result.token);
+      setAuth(result.user);
       if (result.must_setup_key) {
         alert(
           'You are logged in with a recovery token. Please add a new authentication method in Settings.',

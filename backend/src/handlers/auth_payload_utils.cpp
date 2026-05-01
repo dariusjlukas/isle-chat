@@ -105,7 +105,12 @@ json build_exclude_credentials(const std::vector<Database::WebAuthnCredential>& 
 }
 
 json build_token_user_response(const std::string& token, const json& user_json, const json& extra) {
-  json response = {{"token", token}, {"user", user_json}};
+  // P1.4 Release C: token is no longer returned in the response body.
+  // Authentication is via the `session` cookie set in the response headers
+  // (see emit_session_cookies in handler_utils.h). The `token` parameter is
+  // retained for API compatibility but ignored.
+  (void)token;
+  json response = {{"user", user_json}};
 
   if (extra.is_object()) {
     for (auto it = extra.begin(); it != extra.end(); ++it) {
@@ -124,11 +129,11 @@ json build_join_request_status_response(
   const std::string& status,
   const std::optional<std::string>& token,
   const std::optional<json>& user) {
+  // P1.4 Release C: token is no longer returned in the response body.
+  // Callers issuing a Set-Cookie should do so on the response object directly.
+  (void)token;
   json response = {{"status", status}};
 
-  if (token && !token->empty()) {
-    response["token"] = *token;
-  }
   if (user) {
     response["user"] = *user;
   }

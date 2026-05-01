@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { Modal, ModalContent, ModalBody } from '@heroui/react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faWifi, faMicrochip, faCube } from '@fortawesome/free-solid-svg-icons';
@@ -7,7 +7,12 @@ import {
   useHasConnected,
 } from '../../hooks/useConnectionState';
 import { PCBRouter } from './PCBRouter';
-import { RubiksCube } from './RubiksCube';
+
+// Lazy-load the three.js-backed Rubik's cube — avoids bundling three.js
+// into the main chunk just so the disconnect modal can offer a minigame.
+const RubiksCube = lazy(() =>
+  import('./RubiksCube').then((m) => ({ default: m.RubiksCube })),
+);
 
 type GameChoice = null | 'pcb' | 'rubiks';
 
@@ -91,7 +96,11 @@ export function ConnectionLostModal() {
           {effectiveGame ? (
             <div className='mt-4 pt-4 border-t border-default-200'>
               {effectiveGame === 'pcb' && <PCBRouter />}
-              {effectiveGame === 'rubiks' && <RubiksCube />}
+              {effectiveGame === 'rubiks' && (
+                <Suspense fallback={null}>
+                  <RubiksCube />
+                </Suspense>
+              )}
               <button
                 onClick={() => setActiveGame(null)}
                 className='mt-3 text-xs text-default-400 hover:text-default-600 transition-colors cursor-pointer'

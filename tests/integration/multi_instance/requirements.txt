@@ -1,0 +1,3 @@
+httpx>=0.27,<1
+websockets>=13,<15
+cryptography>=43,<45

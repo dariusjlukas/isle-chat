@@ -27,6 +27,7 @@
 #include "handlers/wiki_handler.h"
 #include "logging/logger.h"
 #include "metrics/metrics.h"
+#include "redis/redis_pubsub.h"
 #include "upload_manager.h"
 #include "ws/ws_handler.h"
 
@@ -82,7 +83,26 @@ void run_server(
   DbThreadPool& pool) {
   auto* loop = uWS::Loop::get();
 
-  WsHandler<SSL> ws_handler(db, config, loop, pool);
+  // B.3 wiring: construct WsHandler first with redis_pubsub=nullptr, then
+  // construct RedisPubSub with a dispatch callback that captures the
+  // WsHandler reference, then attach the pubsub pointer back to ws_handler.
+  // This breaks the apparent circular dependency between the two.
+  WsHandler<SSL> ws_handler(db, config, loop, pool, /*redis_pubsub=*/nullptr);
+
+  // The dispatch callback runs on the RedisSubscriber thread. We bounce it
+  // through loop->defer so all topic_subscribers_ fan-out happens on the
+  // event loop (consistent with how every other broadcast site touches
+  // ws_handler).
+  enclave_redis::RedisPubSub redis_pubsub(
+    config.redis_url,
+    config.instance_id,
+    [&ws_handler, loop](std::string topic, std::shared_ptr<std::string> payload) {
+      loop->defer([&ws_handler, topic = std::move(topic), payload = std::move(payload)]() {
+        ws_handler.on_redis_message(topic, *payload);
+      });
+    });
+  ws_handler.set_redis_pubsub(&redis_pubsub);
+  redis_pubsub.start();
   AuthHandler<SSL> auth_handler{db, config, ws_handler, loop, pool};
   ChannelHandler<SSL> channel_handler{db, ws_handler, loop, pool};
   SpaceHandler<SSL> space_handler{db, ws_handler, config, loop, pool};

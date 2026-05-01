@@ -44,73 +44,46 @@ constexpr int MESSAGE_DEFAULT_LIMIT = 50;
 constexpr int WEBAUTHN_TIMEOUT_MS = 60000;
 }  // namespace defaults
 
-// Extract the session token from the request. Prefers the `session` cookie
-// (set by login handlers since P1.4); falls back to the Authorization Bearer
-// header for backwards compatibility with localStorage-based clients (which
-// will be removed once Release C lands).
+// Extract the session token from the request's `session` cookie.
+// Returns empty string if the cookie is missing.
+//
+// History: prior to P1.4 Release C, this also fell back to the
+// `Authorization: Bearer ...` header for legacy localStorage clients.
+// Bearer support has been removed; cookies are the sole auth mechanism.
 inline std::string extract_session_token(uWS::HttpRequest* req) {
-  // Try the `session` cookie first.
   std::string_view cookie_header = req->getHeader("cookie");
-  if (!cookie_header.empty()) {
-    // Cookie header format: "name1=val1; name2=val2; ..."
-    constexpr std::string_view kKey = "session=";
-    size_t pos = 0;
-    while (pos < cookie_header.size()) {
-      // skip leading spaces and ';'
-      while (pos < cookie_header.size() &&
-             (cookie_header[pos] == ' ' || cookie_header[pos] == ';')) {
-        ++pos;
-      }
-      // does this token start with "session="?
-      if (
-        cookie_header.size() - pos >= kKey.size() &&
-        cookie_header.substr(pos, kKey.size()) == kKey) {
-        size_t val_start = pos + kKey.size();
-        size_t val_end = cookie_header.find(';', val_start);
-        if (val_end == std::string_view::npos) val_end = cookie_header.size();
-        return std::string(cookie_header.substr(val_start, val_end - val_start));
-      }
-      // skip to next ';'
-      pos = cookie_header.find(';', pos);
-      if (pos == std::string_view::npos) break;
+  if (cookie_header.empty()) return "";
+  // Cookie header format: "name1=val1; name2=val2; ..."
+  constexpr std::string_view kKey = "session=";
+  size_t pos = 0;
+  while (pos < cookie_header.size()) {
+    // skip leading spaces and ';'
+    while (pos < cookie_header.size() && (cookie_header[pos] == ' ' || cookie_header[pos] == ';')) {
+      ++pos;
     }
+    // does this token start with "session="?
+    if (
+      cookie_header.size() - pos >= kKey.size() && cookie_header.substr(pos, kKey.size()) == kKey) {
+      size_t val_start = pos + kKey.size();
+      size_t val_end = cookie_header.find(';', val_start);
+      if (val_end == std::string_view::npos) val_end = cookie_header.size();
+      return std::string(cookie_header.substr(val_start, val_end - val_start));
+    }
+    // skip to next ';'
+    pos = cookie_header.find(';', pos);
+    if (pos == std::string_view::npos) break;
   }
-  // Fall back to Authorization Bearer header.
-  std::string token(req->getHeader("authorization"));
-  if (token.rfind("Bearer ", 0) == 0) token = token.substr(7);
-  return token;
-}
-
-// Compatibility alias — until all callers migrate. Same behavior as
-// extract_session_token. Existing call sites keep using this name; new code
-// should call extract_session_token directly.
-inline std::string extract_bearer_token(uWS::HttpRequest* req) {
-  return extract_session_token(req);
+  return "";
 }
 
 // CSRF double-submit check. Returns true if the X-CSRF-Token header matches
-// the `csrf` cookie, OR if the request is using Bearer auth (legacy clients
-// don't have a cookie-based CSRF problem, since attacker-origin requests
-// can't read or forge the Bearer token from localStorage).
-//
-// Caller should only invoke for state-changing methods (POST/PUT/DELETE/PATCH).
-//
-// IMPORTANT (P1.4 Release A): this helper is intentionally *not* yet wired
-// into validate_session_or_401 / validate_admin_or_403 / etc. Enforcing CSRF
-// on every endpoint at rollout would break any client mid-flight that hadn't
-// been updated with the X-CSRF-Token header yet. The frontend changes in
-// Release B set up the cookie + header. Once Release C lands (Bearer fallback
-// removed), csrf_ok can be added to the validate_*_or_* helpers as a
-// one-liner gate for state-changing requests.
+// the `csrf` cookie. Use only for state-changing methods (POST/PUT/DELETE/PATCH).
+// Wired into validate_session_or_401 et al. since P1.4 Release C.
 inline bool csrf_ok(uWS::HttpRequest* req) {
-  // If there's no `session=` cookie at all, this is a Bearer-only client;
-  // CSRF doesn't apply.
-  std::string_view cookie_header = req->getHeader("cookie");
-  if (cookie_header.find("session=") == std::string_view::npos) return true;
-  // Cookie-authed: require X-CSRF-Token header to match the csrf cookie.
   std::string_view header_token = req->getHeader("x-csrf-token");
   if (header_token.empty()) return false;
-  // Extract csrf cookie value (similar parsing as extract_session_token).
+  std::string_view cookie_header = req->getHeader("cookie");
+  if (cookie_header.empty()) return false;
   constexpr std::string_view kKey = "csrf=";
   size_t pos = 0;
   while (pos < cookie_header.size()) {
@@ -128,6 +101,12 @@ inline bool csrf_ok(uWS::HttpRequest* req) {
     if (pos == std::string_view::npos) break;
   }
   return false;
+}
+
+// Returns true if the HTTP method is one that mutates state and therefore
+// requires a CSRF check.
+inline bool is_state_changing_method(std::string_view method) {
+  return method == "post" || method == "put" || method == "delete" || method == "patch";
 }
 
 // Send a 403 with a CSRF error and return — caller must then return immediately.
@@ -191,11 +170,13 @@ bool parse_bool_setting_or(const std::optional<std::string>& setting, bool fallb
 json parse_auth_methods_setting(const std::optional<std::string>& setting);
 bool auth_methods_include(const json& methods, const std::string& method);
 
-// Validate session and return user_id, or send 401 and return empty string
+// Validate session and return user_id, or send 401/403 and return empty string.
+// State-changing methods (POST/PUT/DELETE/PATCH) additionally require a valid
+// CSRF double-submit token (X-CSRF-Token header matching the `csrf` cookie).
 template <bool SSL>
 std::string validate_session_or_401(
   uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req, Database& db) {
-  auto token = extract_bearer_token(req);
+  auto token = extract_session_token(req);
   auto user_id = db.validate_session(token);
   if (!user_id) {
     res->writeStatus("401")
@@ -203,19 +184,28 @@ std::string validate_session_or_401(
       ->end(R"({"error":"Unauthorized"})");
     return "";
   }
+  if (is_state_changing_method(req->getMethod()) && !csrf_ok(req)) {
+    send_csrf_403(res);
+    return "";
+  }
   return *user_id;
 }
 
-// Validate session + require admin/owner role, or send 401/403 and return empty string
+// Validate session + require admin/owner role, or send 401/403 and return empty string.
+// Also enforces CSRF on state-changing methods.
 template <bool SSL>
 std::string validate_admin_or_403(
   uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req, Database& db) {
-  auto token = extract_bearer_token(req);
+  auto token = extract_session_token(req);
   auto user_id = db.validate_session(token);
   if (!user_id) {
     res->writeStatus("401")
       ->writeHeader("Content-Type", "application/json")
       ->end(R"({"error":"Unauthorized"})");
+    return "";
+  }
+  if (is_state_changing_method(req->getMethod()) && !csrf_ok(req)) {
+    send_csrf_403(res);
     return "";
   }
   auto user = db.find_user_by_id(*user_id);
@@ -228,16 +218,21 @@ std::string validate_admin_or_403(
   return *user_id;
 }
 
-// Validate session + require owner role, or send 401/403 and return empty string
+// Validate session + require owner role, or send 401/403 and return empty string.
+// Also enforces CSRF on state-changing methods.
 template <bool SSL>
 std::string validate_owner_or_403(
   uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req, Database& db) {
-  auto token = extract_bearer_token(req);
+  auto token = extract_session_token(req);
   auto user_id = db.validate_session(token);
   if (!user_id) {
     res->writeStatus("401")
       ->writeHeader("Content-Type", "application/json")
       ->end(R"({"error":"Unauthorized"})");
+    return "";
+  }
+  if (is_state_changing_method(req->getMethod()) && !csrf_ok(req)) {
+    send_csrf_403(res);
     return "";
   }
   auto user = db.find_user_by_id(*user_id);

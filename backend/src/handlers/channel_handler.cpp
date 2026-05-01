@@ -1,4 +1,5 @@
 #include "handlers/channel_handler.h"
+#include "handlers/request_scope.h"
 
 #include <algorithm>
 
@@ -7,7 +8,9 @@ using json = nlohmann::json;
 template <bool SSL>
 void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   app.get("/api/channels", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/channels");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string limit_str(req->getQuery("limit"));
     std::string offset_str(req->getQuery("offset"));
     auto aborted = std::make_shared<bool>(false);
@@ -25,14 +28,15 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     int limit = std::clamp(handler_utils::safe_parse_int(limit_str, 100), 1, 500);
     int offset = offset_parsed.value_or(0);
 
-    pool_.submit([this, res, aborted, token = std::move(token), limit, offset]() {
+    pool_.submit([this, res, aborted, scope, token = std::move(token), limit, offset]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -79,30 +83,34 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back(ch_json);
       }
       auto body = arr.dump();
-      loop_->defer([res, aborted, body = std::move(body)]() {
+      loop_->defer([res, aborted, scope, body = std::move(body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(body);
+        scope->observe(200);
       });
     });
   });
 
   app.post("/api/channels", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, body = std::move(body), token = std::move(token)](
+    res->onData([this, res, aborted, scope, body = std::move(body), token = std::move(token)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -114,7 +122,9 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Register /public BEFORE /:id routes to avoid route collision
   app.get("/api/channels/public", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/channels/public");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string search(req->getQuery("search"));
     std::string space_id(req->getQuery("space_id"));
     auto aborted = std::make_shared<bool>(false);
@@ -122,16 +132,18 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   search = std::move(search),
                   space_id = std::move(space_id)]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -175,15 +187,18 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
            {"created_at", ch.created_at}});
       }
       auto resp_body = arr.dump();
-      loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+      loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_body);
+        scope->observe(200);
       });
     });
   });
 
   app.get("/api/channels/:id/messages", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/channels/:id/messages");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     std::string before(req->getQuery("before"));
     std::string limit_str(req->getQuery("limit"));
@@ -192,17 +207,19 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   channel_id = std::move(channel_id),
                   before = std::move(before),
                   limit_str = std::move(limit_str)]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -214,11 +231,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       // Server admins can view any channel's messages
       std::string role = db.get_effective_role(channel_id, user_id);
       if (role.empty()) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this channel"})");
+          scope->observe(403);
         });
         return;
       }
@@ -267,27 +285,32 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         arr.push_back(m);
       }
       auto resp_body = arr.dump();
-      loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+      loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
         if (*aborted) return;
         res->writeHeader("Content-Type", "application/json")->end(resp_body);
+        scope->observe(200);
       });
     });
   });
 
   app.get("/api/channels/:id/read-receipts", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/channels/:id/read-receipts");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit(
-      [this, res, aborted, token = std::move(token), channel_id = std::move(channel_id)]() {
+      [this, res, aborted, scope, token = std::move(token), channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -295,11 +318,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         std::string role = db.get_effective_role(channel_id, user_id);
         if (role.empty()) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Not a member of this channel"})");
+            scope->observe(403);
           });
           return;
         }
@@ -314,30 +338,34 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
              {"last_read_at", r.last_read_at}});
         }
         auto resp_body = arr.dump();
-        loop_->defer([res, aborted, resp_body = std::move(resp_body)]() {
+        loop_->defer([res, aborted, scope, resp_body = std::move(resp_body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(resp_body);
+          scope->observe(200);
         });
       });
   });
 
   app.post("/api/channels/dm", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/dm");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string body;
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
-    res->onData([this, res, aborted, body = std::move(body), token = std::move(token)](
+    res->onData([this, res, aborted, scope, body = std::move(body), token = std::move(token)](
                   std::string_view data, bool last) mutable {
       body.append(data);
       if (!last) return;
-      pool_.submit([this, res, aborted, body = std::move(body), token = std::move(token)]() {
+      pool_.submit([this, res, aborted, scope, body = std::move(body), token = std::move(token)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -348,19 +376,22 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   });
 
   app.post("/api/channels/:id/join", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/:id/join");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit(
-      [this, res, aborted, token = std::move(token), channel_id = std::move(channel_id)]() {
+      [this, res, aborted, scope, token = std::move(token), channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -368,20 +399,22 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         auto ch = db.find_channel_by_id(channel_id);
         if (!ch) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("404")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Channel not found"})");
+            scope->observe(404);
           });
           return;
         }
         if (ch->is_direct) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Cannot join a DM channel"})");
+            scope->observe(400);
           });
           return;
         }
@@ -401,28 +434,32 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         }
 
         if (!ch->is_public && !is_space_admin) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"This is a private channel. You need an invite."})");
+            scope->observe(403);
           });
           return;
         }
 
         std::string join_role = is_space_admin ? "admin" : ch->default_role;
         db.add_channel_member(channel_id, user_id, join_role);
-        loop_->defer([this, res, aborted, user_id, channel_id]() {
+        loop_->defer([this, res, aborted, scope, user_id, channel_id]() {
           ws.subscribe_user_to_channel(user_id, channel_id);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
   });
 
   // Invite user to channel
   app.post("/api/channels/:id/members", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/:id/members");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -430,6 +467,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  channel_id = std::move(channel_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -437,17 +475,19 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       if (!last) return;
       pool_.submit([this,
                     aborted,
+                    scope,
                     res,
                     body = std::move(body),
                     token = std::move(token),
                     channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -455,11 +495,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         std::string role = db.get_effective_role(channel_id, user_id);
         if (role != "admin") {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Admin permission required"})");
+            scope->observe(403);
           });
           return;
         }
@@ -506,20 +547,26 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             notify_str = notify.dump();
           }
 
-          loop_->defer(
-            [this, res, aborted, target_user_id, channel_id, notify_str = std::move(notify_str)]() {
-              ws.subscribe_user_to_channel(target_user_id, channel_id);
-              if (!notify_str.empty()) {
-                ws.send_to_user(target_user_id, notify_str);
-              }
-              if (*aborted) return;
-              res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-            });
+          loop_->defer([this,
+                        res,
+                        aborted,
+                        scope,
+                        target_user_id,
+                        channel_id,
+                        notify_str = std::move(notify_str)]() {
+            ws.subscribe_user_to_channel(target_user_id, channel_id);
+            if (!notify_str.empty()) {
+              ws.send_to_user(target_user_id, notify_str);
+            }
+            if (*aborted) return;
+            res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -528,7 +575,10 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Kick user from channel
   app.del("/api/channels/:id/members/:userId", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("DEL", "/api/channels/:id/members/:userId");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter(0));
     std::string target_user_id(req->getParameter(1));
     auto aborted = std::make_shared<bool>(false);
@@ -536,16 +586,18 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   channel_id = std::move(channel_id),
                   target_user_id = std::move(target_user_id)]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -553,21 +605,23 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       std::string role = db.get_effective_role(channel_id, user_id);
       if (role != "admin") {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Admin permission required"})");
+          scope->observe(403);
         });
         return;
       }
 
       if (target_user_id == user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("400")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Cannot remove yourself"})");
+          scope->observe(400);
         });
         return;
       }
@@ -576,19 +630,28 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
       json notify = {{"type", "channel_removed"}, {"channel_id", channel_id}};
       auto notify_str = notify.dump();
-      loop_->defer(
-        [this, res, aborted, target_user_id, channel_id, notify_str = std::move(notify_str)]() {
-          ws.unsubscribe_user_from_channel(target_user_id, channel_id);
-          ws.send_to_user(target_user_id, notify_str);
-          if (*aborted) return;
-          res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
-        });
+      loop_->defer([this,
+                    res,
+                    aborted,
+                    scope,
+                    target_user_id,
+                    channel_id,
+                    notify_str = std::move(notify_str)]() {
+        ws.unsubscribe_user_from_channel(target_user_id, channel_id);
+        ws.send_to_user(target_user_id, notify_str);
+        if (*aborted) return;
+        res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+        scope->observe(200);
+      });
     });
   });
 
   // Change member role
   app.put("/api/channels/:id/members/:userId", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("PUT", "/api/channels/:id/members/:userId");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter(0));
     std::string target_user_id(req->getParameter(1));
     std::string body;
@@ -597,6 +660,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  channel_id = std::move(channel_id),
                  target_user_id = std::move(target_user_id),
@@ -606,17 +670,19 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     channel_id = std::move(channel_id),
                     target_user_id = std::move(target_user_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -624,11 +690,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         std::string role = db.get_effective_role(channel_id, user_id);
         if (role != "admin") {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Admin permission required"})");
+            scope->observe(403);
           });
           return;
         }
@@ -637,11 +704,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           auto j = json::parse(body);
           std::string new_role = j.at("role");
           if (new_role != "admin" && new_role != "write" && new_role != "read") {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Invalid role. Must be admin, write, or read"})");
+              scope->observe(400);
             });
             return;
           }
@@ -653,22 +721,24 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
           // Cannot promote above own rank
           if (new_rank > actor_rank) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot promote above your own rank"})");
+              scope->observe(403);
             });
             return;
           }
 
           // Cannot demote someone of equal or higher rank (unless self-demotion)
           if (new_rank < target_rank && target_rank >= actor_rank && user_id != target_user_id) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("403")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot demote a user of equal or higher rank"})");
+              scope->observe(403);
             });
             return;
           }
@@ -677,11 +747,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           if (current_role == "admin" && new_role != "admin") {
             int admin_count = db.count_channel_members_with_role(channel_id, "admin");
             if (admin_count <= 1) {
-              loop_->defer([res, aborted]() {
+              loop_->defer([res, aborted, scope]() {
                 if (*aborted) return;
                 res->writeStatus("400")
                   ->writeHeader("Content-Type", "application/json")
                   ->end(R"({"error":"Cannot demote last admin","last_admin":true})");
+                scope->observe(400);
               });
               return;
             }
@@ -703,6 +774,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         target_user_id,
                         channel_id,
                         notify_str = std::move(notify_str),
@@ -711,12 +783,14 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
             ws.broadcast_to_channel(channel_id, broadcast_str);
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -725,7 +799,9 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Update channel settings
   app.put("/api/channels/:id", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("PUT", "/api/channels/:id");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     std::string body;
     auto aborted = std::make_shared<bool>(false);
@@ -733,6 +809,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     res->onData([this,
                  res,
                  aborted,
+                 scope,
                  token = std::move(token),
                  channel_id = std::move(channel_id),
                  body = std::move(body)](std::string_view data, bool last) mutable {
@@ -741,16 +818,18 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
       pool_.submit([this,
                     res,
                     aborted,
+                    scope,
                     body = std::move(body),
                     token = std::move(token),
                     channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -758,11 +837,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
         std::string role = db.get_effective_role(channel_id, user_id);
         if (role != "admin") {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Admin permission required"})");
+            scope->observe(403);
           });
           return;
         }
@@ -770,11 +850,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         try {
           auto current = db.find_channel_by_id(channel_id);
           if (!current) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("404")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Channel not found"})");
+              scope->observe(404);
             });
             return;
           }
@@ -805,18 +886,21 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           loop_->defer([this,
                         res,
                         aborted,
+                        scope,
                         channel_id,
                         broadcast_str = std::move(broadcast_str),
                         resp_body = std::move(resp_body)]() {
             ws.broadcast_to_channel(channel_id, broadcast_str);
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(resp_body);
+            scope->observe(200);
           });
         } catch (const std::exception& e) {
           auto err = json({{"error", e.what()}}).dump();
-          loop_->defer([res, aborted, err = std::move(err)]() {
+          loop_->defer([res, aborted, scope, err = std::move(err)]() {
             if (*aborted) return;
             res->writeStatus("400")->writeHeader("Content-Type", "application/json")->end(err);
+            scope->observe(400);
           });
         }
       });
@@ -825,44 +909,50 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Leave channel
   app.post("/api/channels/:id/leave", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/:id/leave");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   channel_id = std::move(channel_id)]() {
       auto user_id_opt = db.validate_session(token);
       if (!user_id_opt) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
       auto user_id = *user_id_opt;
 
       if (!db.is_channel_member(channel_id, user_id)) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("400")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member"})");
+          scope->observe(400);
         });
         return;
       }
 
       auto ch = db.find_channel_by_id(channel_id);
       if (!ch) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("404")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Channel not found"})");
+          scope->observe(404);
         });
         return;
       }
@@ -896,6 +986,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         loop_->defer([this,
                       res,
                       aborted,
+                      scope,
                       user_id,
                       channel_id,
                       should_archive,
@@ -912,6 +1003,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           ws.send_to_user(user_id, removed_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       } else {
         // Regular channel: check last admin (skip if already archived)
@@ -919,12 +1011,13 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         if (role == "admin" && !ch->is_archived) {
           int admin_count = db.count_channel_members_with_role(channel_id, "admin");
           if (admin_count <= 1) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(
                   R"({"error":"You are the last admin. Assign a new admin or archive the channel.","last_admin":true})");
+              scope->observe(400);
             });
             return;
           }
@@ -942,6 +1035,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         loop_->defer([this,
                       res,
                       aborted,
+                      scope,
                       user_id,
                       channel_id,
                       left_notify_str = std::move(left_notify_str),
@@ -951,6 +1045,7 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           ws.send_to_user(user_id, removed_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       }
     });
@@ -958,19 +1053,22 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Archive channel
   app.post("/api/channels/:id/archive", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/:id/archive");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit(
-      [this, res, aborted, token = std::move(token), channel_id = std::move(channel_id)]() {
+      [this, res, aborted, scope, token = std::move(token), channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -989,11 +1087,12 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         }
 
         if (role != "admin" && !is_server_privileged && !is_space_owner) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Permission denied"})");
+            scope->observe(403);
           });
           return;
         }
@@ -1002,29 +1101,34 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         json notify = {
           {"type", "channel_updated"}, {"channel", {{"id", channel_id}, {"is_archived", true}}}};
         auto notify_str = notify.dump();
-        loop_->defer([this, res, aborted, channel_id, notify_str = std::move(notify_str)]() {
+        loop_->defer([this, res, aborted, scope, channel_id, notify_str = std::move(notify_str)]() {
           ws.broadcast_to_channel(channel_id, notify_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
   });
 
   // Unarchive channel
   app.post("/api/channels/:id/unarchive", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("POST", "/api/channels/:id/unarchive");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     auto aborted = std::make_shared<bool>(false);
     res->onAborted([aborted]() { *aborted = true; });
     pool_.submit(
-      [this, res, aborted, token = std::move(token), channel_id = std::move(channel_id)]() {
+      [this, res, aborted, scope, token = std::move(token), channel_id = std::move(channel_id)]() {
         auto user_id_opt = db.validate_session(token);
         if (!user_id_opt) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("401")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Unauthorized"})");
+            scope->observe(401);
           });
           return;
         }
@@ -1042,22 +1146,24 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           // Reject if parent space is archived
           auto sp = db.find_space_by_id(ch->space_id);
           if (sp && sp->is_archived) {
-            loop_->defer([res, aborted]() {
+            loop_->defer([res, aborted, scope]() {
               if (*aborted) return;
               res->writeStatus("400")
                 ->writeHeader("Content-Type", "application/json")
                 ->end(R"({"error":"Cannot unarchive: parent space is archived"})");
+              scope->observe(400);
             });
             return;
           }
         }
 
         if (role != "admin" && !is_server_privileged && !is_space_owner) {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("403")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Permission denied"})");
+            scope->observe(403);
           });
           return;
         }
@@ -1066,10 +1172,11 @@ void ChannelHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
         json notify = {
           {"type", "channel_updated"}, {"channel", {{"id", channel_id}, {"is_archived", false}}}};
         auto notify_str = notify.dump();
-        loop_->defer([this, res, aborted, channel_id, notify_str = std::move(notify_str)]() {
+        loop_->defer([this, res, aborted, scope, channel_id, notify_str = std::move(notify_str)]() {
           ws.broadcast_to_channel(channel_id, notify_str);
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(R"({"ok":true})");
+          scope->observe(200);
         });
       });
   });

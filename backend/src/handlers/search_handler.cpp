@@ -1,6 +1,7 @@
 #include "handlers/search_handler.h"
 #include <algorithm>
 #include <sstream>
+#include "handlers/request_scope.h"
 
 using json = nlohmann::json;
 
@@ -8,7 +9,9 @@ template <bool SSL>
 void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
   // Global search endpoint
   app.get("/api/search", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/search");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string query(req->getQuery("q"));
     std::string type(req->getQuery("type"));
     std::string mode(req->getQuery("mode"));
@@ -27,6 +30,7 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   query = std::move(query),
                   type = std::move(type),
@@ -35,11 +39,12 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                   offset_str = std::move(offset_str)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -70,9 +75,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"profile_color", u.profile_color}});
           }
           auto body = json({{"type", "users"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (type == "messages") {
           auto user = db.find_user_by_id(*user_id);
@@ -98,9 +104,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_direct", m.is_direct}});
           }
           auto body = json({{"type", "messages"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (type == "files") {
           auto user = db.find_user_by_id(*user_id);
@@ -125,9 +132,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_folder", f.is_folder}});
           }
           auto body = json({{"type", "files"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (type == "channels") {
           auto user = db.find_user_by_id(*user_id);
@@ -144,9 +152,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_public", c.is_public}});
           }
           auto body = json({{"type", "channels"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (type == "spaces") {
           auto user = db.find_user_by_id(*user_id);
@@ -163,9 +172,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"profile_color", s.profile_color}});
           }
           auto body = json({{"type", "spaces"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (type == "wiki") {
           auto user = db.find_user_by_id(*user_id);
@@ -189,24 +199,27 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"created_by_username", w.created_by_username}});
           }
           auto body = json({{"type", "wiki"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(
                 R"({"error":"Invalid type. Use users, messages, files, channels, spaces, or wiki"})");
+            scope->observe(400);
           });
         }
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -214,7 +227,9 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Composite search endpoint
   app.get("/api/search/composite", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope = std::make_shared<handler_utils::RequestScope>("GET", "/api/search/composite");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string filters_str(req->getQuery("filters"));
     std::string result_type(req->getQuery("result_type"));
     std::string mode(req->getQuery("mode"));
@@ -241,6 +256,7 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   result_type = std::move(result_type),
                   mode = std::move(mode),
@@ -249,11 +265,12 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                   filters = std::move(filters)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
@@ -285,9 +302,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_direct", m.is_direct}});
           }
           auto body = json({{"type", "messages"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (effective_result_type == "files") {
           auto results =
@@ -311,9 +329,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_folder", f.is_folder}});
           }
           auto body = json({{"type", "files"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (effective_result_type == "users") {
           auto results =
@@ -333,9 +352,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"profile_color", u.profile_color}});
           }
           auto body = json({{"type", "users"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (effective_result_type == "channels") {
           auto results = db.search_composite_channels(
@@ -351,9 +371,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"is_public", c.is_public}});
           }
           auto body = json({{"type", "channels"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else if (effective_result_type == "spaces") {
           auto results =
@@ -369,23 +390,26 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
                {"profile_color", s.profile_color}});
           }
           auto body = json({{"type", "spaces"}, {"results", arr}}).dump();
-          loop_->defer([res, aborted, body = std::move(body)]() {
+          loop_->defer([res, aborted, scope, body = std::move(body)]() {
             if (*aborted) return;
             res->writeHeader("Content-Type", "application/json")->end(body);
+            scope->observe(200);
           });
         } else {
-          loop_->defer([res, aborted]() {
+          loop_->defer([res, aborted, scope]() {
             if (*aborted) return;
             res->writeStatus("400")
               ->writeHeader("Content-Type", "application/json")
               ->end(R"({"error":"Invalid result_type"})");
+            scope->observe(400);
           });
         }
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });
@@ -393,7 +417,10 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
 
   // Messages around a target (for jump-to-message)
   app.get("/api/channels/:id/messages/around", [this](auto* res, auto* req) {
-    auto token = extract_bearer_token(req);
+    auto scope =
+      std::make_shared<handler_utils::RequestScope>("GET", "/api/channels/:id/messages/around");
+    handler_utils::set_request_id_header(res, *scope);
+    auto token = extract_session_token(req);
     std::string channel_id(req->getParameter("id"));
     std::string message_id(req->getQuery("message_id"));
     std::string limit_str(req->getQuery("limit"));
@@ -410,28 +437,31 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
     pool_.submit([this,
                   res,
                   aborted,
+                  scope,
                   token = std::move(token),
                   channel_id = std::move(channel_id),
                   message_id = std::move(message_id),
                   limit_str = std::move(limit_str)]() {
       auto user_id = db.validate_session(token);
       if (!user_id) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("401")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Unauthorized"})");
+          scope->observe(401);
         });
         return;
       }
 
       std::string role = db.get_effective_role(channel_id, *user_id);
       if (role.empty()) {
-        loop_->defer([res, aborted]() {
+        loop_->defer([res, aborted, scope]() {
           if (*aborted) return;
           res->writeStatus("403")
             ->writeHeader("Content-Type", "application/json")
             ->end(R"({"error":"Not a member of this channel"})");
+          scope->observe(403);
         });
         return;
       }
@@ -480,15 +510,17 @@ void SearchHandler<SSL>::register_routes(uWS::TemplatedApp<SSL>& app) {
           arr.push_back(j);
         }
         auto body = arr.dump();
-        loop_->defer([res, aborted, body = std::move(body)]() {
+        loop_->defer([res, aborted, scope, body = std::move(body)]() {
           if (*aborted) return;
           res->writeHeader("Content-Type", "application/json")->end(body);
+          scope->observe(200);
         });
       } catch (const std::exception& e) {
         auto err = json({{"error", e.what()}}).dump();
-        loop_->defer([res, aborted, err = std::move(err)]() {
+        loop_->defer([res, aborted, scope, err = std::move(err)]() {
           if (*aborted) return;
           res->writeStatus("500")->writeHeader("Content-Type", "application/json")->end(err);
+          scope->observe(500);
         });
       }
     });

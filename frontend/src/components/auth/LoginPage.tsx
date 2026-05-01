@@ -113,7 +113,7 @@ export function LoginPage({
       }
       return;
     }
-    setAuth(result.user, result.token);
+    setAuth(result.user);
   };
 
   const handleSetupVerify = async (code: string) => {
@@ -125,7 +125,7 @@ export function LoginPage({
         mfa_token: setupToken,
         code,
       });
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Verification failed');
       setSetupCode('');
@@ -143,7 +143,7 @@ export function LoginPage({
         mfa_token: mfaToken,
         totp_code: code,
       });
-      setAuth(result.user, result.token);
+      setAuth(result.user);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Verification failed');
       setTotpCode('');
